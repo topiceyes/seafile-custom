@@ -1,0 +1,64 @@
+# Seafile 12 CE 二开开发环境（自签 HTTPS，见 docs/006）
+# 官方模板参考：https://manual.seafile.com/docker/11.0/
+#
+# 密钥不写在本文件：从 deploy/.env 读取（.env 不入库，模板见 .env.example）。
+# 首次部署：cp .env.example .env && 填值 && ./init-conf.sh && ./gen-ssl-cert.sh
+services:
+  db:
+    image: mariadb:10.11
+    container_name: seafile-mysql
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=${SEAFILE_MYSQL_ROOT_PASSWORD}
+      - MYSQL_LOG_CONSOLE=true
+      - MARIADB_AUTO_UPGRADE=1
+    volumes:
+      - ${SEAFILE_MYSQL_VOLUME}:/var/lib/mysql
+    networks:
+      - seafile-net
+
+  memcached:
+    image: memcached:1.6.29
+    container_name: seafile-memcached
+    restart: unless-stopped
+    entrypoint: memcached -m 256
+    networks:
+      - seafile-net
+
+  seafile:
+    image: seafileltd/seafile-mc:12.0-latest
+    container_name: seafile
+    restart: unless-stopped
+    ports:
+      # HTTPS 主入口（自签证书；客户端 SSO 必须走 https）
+      - "443:443"
+      # 80 → nginx 会自动 301 到 https://127.0.0.1
+      - "80:80"
+      - "8180:80"
+    volumes:
+      - ${SEAFILE_VOLUME}:/shared
+      # seahub 二开源码（只挂 Python 包目录；勿挂整个 seahub/，容器内 thirdpart 含已装依赖和 gunicorn）
+      # 注意：版本目录硬编码，升级 Seafile 镜像版本后需同步修改
+      - ../seahub/seahub:/opt/seafile/seafile-server-12.0.14/seahub/seahub
+      # 离职员工同步定时任务（容器自带 cron 服务加载 /etc/cron.d/）
+      - ./dingtalk-sync.cron:/etc/cron.d/dingtalk-sync:ro
+    environment:
+      - DB_HOST=${SEAFILE_MYSQL_DB_HOST}
+      - DB_ROOT_PASSWD=${SEAFILE_MYSQL_ROOT_PASSWORD}
+      - TIME_ZONE=Asia/Shanghai
+      # HTTPS 站点（证书 /shared/ssl/127.0.0.1.crt|key，即 deploy/seafile-data/ssl/）
+      # 注意：这里不能带端口，否则 SERVICE_URL/回调地址会带端口
+      - SEAFILE_SERVER_HOSTNAME=127.0.0.1
+      - SEAFILE_SERVER_PROTOCOL=https
+      # 初始化时自动创建管理员（仅首次启动生效）
+      - SEAFILE_ADMIN_EMAIL=${SEAFILE_ADMIN_EMAIL}
+      - SEAFILE_ADMIN_PASSWORD=${SEAFILE_ADMIN_PASSWORD}
+      - JWT_PRIVATE_KEY=${JWT_PRIVATE_KEY}
+    depends_on:
+      - db
+      - memcached
+    networks:
+      - seafile-net
+
+networks:
+  seafile-net:

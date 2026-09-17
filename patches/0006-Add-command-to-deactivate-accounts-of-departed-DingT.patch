@@ -1,0 +1,172 @@
+From 6e93410cec7181769ae8fe265b2a123361aa40fe Mon Sep 17 00:00:00 2001
+From: iceyes <iceyes@iceyesdeMac-mini.local>
+Date: Thu, 17 Sep 2026 12:09:28 +0800
+Subject: [PATCH 6/7] Add command to deactivate accounts of departed DingTalk
+ users
+
+Fetch the unionId set of current corp members from DingTalk contact
+API (topapi v2), compare with SocialAuthUser bindings, and deactivate
+accounts whose binding is no longer in the list. Data is preserved.
+
+Safety: abort if fetched member set is empty; skip admin users; skip
+already-inactive accounts. Supports --dry-run.
+---
+ .../commands/deactivate_departed_users.py     | 149 ++++++++++++++++++
+ 1 file changed, 149 insertions(+)
+ create mode 100644 seahub/dingtalk/management/commands/deactivate_departed_users.py
+
+diff --git a/seahub/dingtalk/management/commands/deactivate_departed_users.py b/seahub/dingtalk/management/commands/deactivate_departed_users.py
+new file mode 100644
+index 0000000..f1ea63c
+--- /dev/null
++++ b/seahub/dingtalk/management/commands/deactivate_departed_users.py
+@@ -0,0 +1,149 @@
++# Copyright (c) 2012-2026 Seafile Ltd.
++# encoding: utf-8
++#
++# [dev] 离职员工账号自动禁用（方案 A：定时比对同步）
++#
++# 从钉钉企业通讯录拉取在职成员的 unionId 全集，与 Seafile 中 provider=dingtalk
++# 的绑定记录比对；绑定已不在通讯录的账号视为离职，置 is_active=False（数据保留）。
++#
++# 用法：
++#   docker exec seafile /opt/seafile/seafile-server-latest/seahub.sh python-env \
++#     python3 manage.py deactivate_departed_users [--dry-run]
++#
++# 安全阀：
++#   - 钉钉侧拉取结果为空（token 失效、权限被回收等）时直接中止，不动任何账号
++#   - 跳过管理员（is_staff）
++#   - 已禁用账号不重复处理
++# 需要钉钉应用开通「通讯录部门成员读权限」（qyapi_get_department_member）。
++
++import logging
++
++import requests
++from django.core.management.base import BaseCommand
++
++from seahub.auth.models import SocialAuthUser
++from seahub.base.accounts import User
++from seahub.dingtalk.settings import (get_dingtalk_app_key,
++                                      get_dingtalk_app_secret,
++                                      is_dingtalk_enabled)
++from seahub.utils import inactive_user
++
++logger = logging.getLogger(__name__)
++
++# 钉钉服务端 API（新版 topapi v2，返回 unionid）
++DEPARTMENT_LIST_SUB_URL = 'https://oapi.dingtalk.com/topapi/v2/department/listsub'
++USER_LIST_URL = 'https://oapi.dingtalk.com/topapi/v2/user/list'
++ROOT_DEPT_ID = 1
++PAGE_SIZE = 100
++
++
++def _get_orgapp_token():
++    from seahub.dingtalk.utils import dingtalk_get_orgapp_token
++    return dingtalk_get_orgapp_token()
++
++
++def _all_department_ids(token):
++    """广度遍历全部子部门（根部门 id=1 本身也计入）。"""
++    ids = [ROOT_DEPT_ID]
++    stack = [ROOT_DEPT_ID]
++    while stack:
++        dept_id = stack.pop()
++        resp = requests.post(DEPARTMENT_LIST_SUB_URL,
++                             params={'access_token': token},
++                             json={'dept_id': dept_id}).json()
++        if resp.get('errcode') != 0:
++            raise RuntimeError('department/listsub failed: %s' % resp)
++        for dept in resp.get('result', []):
++            ids.append(dept['dept_id'])
++            stack.append(dept['dept_id'])
++    return ids
++
++
++def _active_union_ids(token, dept_ids):
++    """按部门分页拉取在职成员 unionId 全集。"""
++    union_ids = set()
++    for dept_id in dept_ids:
++        cursor = 0
++        while True:
++            resp = requests.post(USER_LIST_URL,
++                                 params={'access_token': token},
++                                 json={'dept_id': dept_id, 'cursor': cursor,
++                                       'size': PAGE_SIZE}).json()
++            if resp.get('errcode') != 0:
++                raise RuntimeError('user/list failed (dept %s): %s' % (dept_id, resp))
++            result = resp.get('result', {})
++            for member in result.get('list', []):
++                union_id = member.get('unionid', '')
++                if union_id:
++                    union_ids.add(union_id)
++            if not result.get('has_more'):
++                break
++            cursor = result.get('next_cursor', cursor + PAGE_SIZE)
++    return union_ids
++
++
++class Command(BaseCommand):
++
++    help = 'Deactivate Seafile accounts whose DingTalk binding has left the corp contact list.'
++
++    def add_arguments(self, parser):
++        parser.add_argument('--dry-run', action='store_true',
++                            help='Only print what would be deactivated.')
++
++    def handle(self, *args, **options):
++        dry_run = bool(options['dry_run'])
++
++        if not is_dingtalk_enabled():
++            self.stderr.write('DingTalk login is not enabled, skip.')
++            return
++        if not (get_dingtalk_app_key() and get_dingtalk_app_secret()):
++            self.stderr.write('DingTalk AppKey/Secret not configured, skip.')
++            return
++
++        token = _get_orgapp_token()
++        if not token:
++            self.stderr.write('Failed to get DingTalk orgapp token, abort.')
++            return
++
++        try:
++            dept_ids = _all_department_ids(token)
++            active_union_ids = _active_union_ids(token, dept_ids)
++        except Exception as e:
++            logger.error(e)
++            self.stderr.write('Failed to fetch corp members, abort: %s' % e)
++            return
++
++        self.stdout.write('Departments: %d, active members: %d' % (len(dept_ids), len(active_union_ids)))
++
++        # 安全阀：拉到空集合大概率是钉钉侧异常（token/权限），绝不能把所有人禁了
++        if not active_union_ids:
++            logger.error('Empty active member set from DingTalk, abort.')
++            self.stderr.write('Empty active member set from DingTalk, abort.')
++            return
++
++        deactivated = 0
++        for binding in SocialAuthUser.objects.filter(provider='dingtalk'):
++            if binding.uid in active_union_ids:
++                continue
++            try:
++                user = User.objects.get(email=binding.username)
++            except User.DoesNotExist:
++                logger.warning('Bound user %s not found in Seafile.' % binding.username)
++                continue
++
++            if user.is_staff:
++                logger.info('Skip admin user %s (not in corp list).' % binding.username)
++                continue
++            if not user.is_active:
++                continue
++
++            self.stdout.write('%s departed: %s' % ('WOULD deactivate' if dry_run else 'Deactivating', binding.username))
++            logger.info('Deactivating departed user %s (unionId %s...)' % (binding.username, binding.uid[:8]))
++            if not dry_run:
++                user.is_active = False
++                inactive_user(binding.username)
++                user.save()
++            deactivated += 1
++
++        self.stdout.write('Done. Deactivated %d user(s)%s.'
++                          % (deactivated, ' (dry-run)' if dry_run else ''))

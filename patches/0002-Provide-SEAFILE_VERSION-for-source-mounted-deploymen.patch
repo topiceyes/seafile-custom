@@ -1,0 +1,24 @@
+From bc6529dbcada182bddf1c10c67bceaa4589d0b59 Mon Sep 17 00:00:00 2001
+From: iceyes <iceyes@iceyesdeMac-mini.local>
+Date: Wed, 16 Sep 2026 22:19:44 +0800
+Subject: [PATCH 2/7] Provide SEAFILE_VERSION for source-mounted deployment
+
+The release build injects SEAFILE_VERSION into settings.py at packaging
+time. Provide it explicitly so the source tree works when bind-mounted
+into the container.
+---
+ seahub/settings.py | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/seahub/settings.py b/seahub/settings.py
+index dd10df2..0edd822 100644
+--- a/seahub/settings.py
++++ b/seahub/settings.py
+@@ -1257,4 +1257,7 @@ if ENABLE_LDAP:
+ 
+ # settings.py
+ 
++# [dev] 发布构建时会在打包阶段注入此变量；源码运行（挂载进容器）时需手动提供，
++# 否则 seahub.base.context_processors 的 import 会失败
++SEAFILE_VERSION = "12.0.14-dev"
+ 

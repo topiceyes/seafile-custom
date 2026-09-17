@@ -1,0 +1,19 @@
+# ============ 本地调试数据（不入库）============
+# 运行时卷：MariaDB 库文件、用户上传的文件实体、日志、已渲染的配置
+deploy/seafile-data/
+deploy/seafile-mysql-db/
+
+# ============ 含真实密钥的本地配置（模板见 deploy/.env.example）============
+deploy/.env
+
+# ============ 上游源码克隆 ============
+# seahub/ 与 seafile/ 各自是独立 git 仓库（上游 haiwen/*）。
+# 二开改动通过 patches/ 记录，或推送到自己的 fork（见 README）。
+seafile/
+seahub/
+
+# ============ 系统 / 编辑器 / 工具 ============
+.DS_Store
+*.pyc
+__pycache__/
+.claude/settings.local.json

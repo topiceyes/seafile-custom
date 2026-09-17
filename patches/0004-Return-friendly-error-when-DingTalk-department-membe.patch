@@ -1,0 +1,31 @@
+From ddfba6e0bd6e50c0a2c6727322945a44ef193e26 Mon Sep 17 00:00:00 2001
+From: iceyes <iceyes@iceyesdeMac-mini.local>
+Date: Wed, 16 Sep 2026 23:12:08 +0800
+Subject: [PATCH 4/7] Return friendly error when DingTalk department member
+ list API fails
+
+DingTalk returns errcode/errmsg (e.g. 60011 permission not granted)
+without 'userlist' key; the bare resp_json['userlist'] lookup crashed
+with KeyError 500. Surface the errmsg instead.
+---
+ seahub/api2/endpoints/admin/dingtalk.py | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/seahub/api2/endpoints/admin/dingtalk.py b/seahub/api2/endpoints/admin/dingtalk.py
+index ad3c518..98bdc03 100644
+--- a/seahub/api2/endpoints/admin/dingtalk.py
++++ b/seahub/api2/endpoints/admin/dingtalk.py
+@@ -150,6 +150,13 @@ class AdminDingtalkDepartmentMembers(APIView):
+         }
+         resp_json = requests.get(DINGTALK_DEPARTMENT_GET_DEPARTMENT_USER_LIST_URL, params=data).json()
+ 
++        # [dev] 钉钉侧失败时（如应用未开通通讯录部门成员读权限，errcode 60011），
++        # 响应中没有 userlist，直接取键会 KeyError 500。原样返回错误信息给前端。
++        if 'userlist' not in resp_json:
++            error_msg = resp_json.get('errmsg', '获取钉钉部门成员失败')
++            logger.warning('dingtalk user/listbypage failed: %s' % resp_json)
++            return api_error(status.HTTP_404_NOT_FOUND, error_msg)
++
+         user_id_name_dict = {}
+         auth_users = SocialAuthUser.objects.filter(provider='dingtalk')
+         for user in auth_users:

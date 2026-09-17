@@ -1,0 +1,3 @@
+# 离职员工同步（容器内 cron 自动加载本文件）
+# 日志：宿主机 deploy/seafile-data/seafile/logs/dingtalk-sync.log
+17 * * * * root cd /opt/seafile/seafile-server-12.0.14/seahub && /opt/seafile/seafile-server-latest/seahub.sh python-env python3 manage.py deactivate_departed_users >> /shared/seafile/logs/dingtalk-sync.log 2>&1
