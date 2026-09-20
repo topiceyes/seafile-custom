@@ -37,6 +37,21 @@ server {
 
     server_name {{ domain }};
 
+{% if https %}
+    # TLS 在本容器内终止：$scheme 就是真实协议，直接透传
+    set $seafile_fwd_proto $scheme;
+{%- else %}
+    # ---- 反向代理模式（TLS 在上游云代理终止，本容器 nginx 只监听 80）----
+    # 此时 $scheme 恒为 http，不能直接透传给 Django：那会让 request.is_secure()
+    # 为假，CSRF 校验、Secure cookie、重定向都会出问题，且症状零散难查。
+    # 优先采用上游代理传来的 X-Forwarded-Proto；缺失时假定 https
+    # （本模式下容器只应通过那个 https 代理被访问，不对公网直连）。
+    set $seafile_fwd_proto $http_x_forwarded_proto;
+    if ($seafile_fwd_proto = "") {
+        set $seafile_fwd_proto https;
+    }
+{%- endif %}
+
     client_max_body_size 10m;
 
     location / {
@@ -46,8 +61,8 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Host $server_name;
         proxy_set_header X-Real-IP $remote_addr;
-        # [dev] 让后端识别原始协议（官方模板缺失；Django 在 TLS 终止后需要它判断 https）
-        proxy_set_header X-Forwarded-Proto $scheme;
+        # 让后端识别原始协议（官方模板缺失）；取值见 server 块顶部的 $seafile_fwd_proto
+        proxy_set_header X-Forwarded-Proto $seafile_fwd_proto;
         proxy_set_header Connection "";
         proxy_http_version 1.1;
 
@@ -93,7 +108,7 @@ server {
         proxy_set_header   X-Real-IP $remote_addr;
         proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Host $server_name;
-        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   X-Forwarded-Proto $seafile_fwd_proto;
         proxy_read_timeout  1200s;
         client_max_body_size 0;
 

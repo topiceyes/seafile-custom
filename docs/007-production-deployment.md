@@ -96,7 +96,7 @@ docker run --rm --entrypoint sh \
 `gh workflow run build-image.yml -f force=true` 重跑一次。）
 
 脚本还会打印三个指纹（二开 overlay 内容哈希、被服务的前端产物清单、media/assets 清单），
-CI 的 run summary 里也有一份 —— 用于比对 CI 的 amd64 产物与开发机的 arm64 产物（§9）。
+CI 的 run summary 里也有一份 —— 用于比对 CI 的 amd64 产物与开发机的 arm64 产物（§10）。
 
 ## 4. 服务器部署
 
@@ -212,7 +212,11 @@ cd deploy
 
 # 2) 彩排环境配置（独立数据目录 + 独立项目名 + macOS db 覆盖）
 cp .env.prod.example .env.rehearsal
-vi .env.rehearsal     # SEAFILE_DOMAIN=<生产规划域名>（仅本机解析，curl 用 --resolve 即可不改 /etc/hosts）
+vi .env.rehearsal     # ⚠️ SEAFILE_SERVER_LETSENCRYPT='true' —— 彩排必须显式设回 true！
+                      #    模板默认是 false（反代模式，见 §9），那会让容器只监听 80、
+                      #    不渲染 443 块，下面的自签证书就白做了。LE 模式才是
+                      #    「证书有效期>30天则跳过签发」这条彩排技巧成立的前提。
+                      # SEAFILE_DOMAIN=<生产规划域名>（仅本机解析，curl 用 --resolve 即可不改 /etc/hosts）
                       # SEAFILE_PRO_IMAGE=seafile-mc-devbuild:<tag>
                       # SEAFILE_VOLUME=./rehearsal-data
                       # SEAFILE_MYSQL_VOLUME=./rehearsal-mysql（数据卷改相对路径）
@@ -270,7 +274,64 @@ rm -rf rehearsal-data rehearsal2-* .env.rehearsal .env.rehearsal-restore
 | `DB_ROOT_PASSWD` | 首启初始化库 + 容器内 backup.sh 都用它 |
 | `JWT_PRIVATE_KEY` | Seafile 12 内部服务认证（openssl rand -base64 48） |
 
-## 9. 验证记录
+## 9. 反代模式：TLS 在上游终止（本项目生产实际形态）
+
+
+生产不是「容器自己签 LE 证书」，而是：**docker 跑在本地，公网服务由云上的反向代理提供**。
+代理持有证书并终止 TLS，用明文 http 转发到本机的 80 端口。
+
+```
+浏览器 ──https──→ 云反向代理（证书在这，TLS 终止）
+                      └──http──→ 本地 docker 的 nginx:80 ──→ seahub:8000
+```
+
+### 配置（`.env`）
+
+```bash
+SEAFILE_DOMAIN='<用户在浏览器里输入的域名>'   # 不是容器地址
+SEAFILE_SERVER_LETSENCRYPT='false'            # 不签 LE 证书 → 容器只监听 80
+SEAFILE_SERVER_PROTOCOL='https'               # ⚠️ 必须显式设，见下
+```
+
+### ⚠️ 两个变量为什么要分开设
+
+`bootstrap.py` 与 `setup-seafile-mysql.py` 里各有一份 `get_proto()`，逻辑一致：
+
+```python
+proto = 'https' if is_https() else 'http'          # is_https() 只认 LETSENCRYPT
+if os.environ.get('SEAFILE_SERVER_PROTOCOL') == 'https':
+    proto = 'https'                                 # 这一条独立生效
+```
+
+- `LETSENCRYPT` 决定 **nginx 监听什么**（443+证书，还是只有 80）
+- `PROTOCOL` 决定 **生成的链接是什么协议**（`SERVICE_URL` / `FILE_SERVER_ROOT`）
+
+反代模式下前者必须 false、后者必须 https。**漏设 `PROTOCOL` 的症状很隐蔽**：页面能正常
+打开（因为浏览器确实在 https 上），但 `SERVICE_URL` 会写成 `http://域名`，于是文件上传
+下载、分享链接、钉钉回调地址全部指向 http —— 在只放行 https 的代理后面就是坏的。
+
+### X-Forwarded-Proto（模板已处理）
+
+容器 nginx 只监听 80 时 `$scheme` 恒为 `http`，直接透传给 Django 会让
+`request.is_secure()` 为假 → CSRF 校验、Secure cookie、重定向出零散问题。
+模板现在在 server 块顶部定义一次 `$seafile_fwd_proto`：
+
+- `https=true` → `$scheme`（容器内终止，就是真实协议）
+- `https=false` → 取上游代理传来的 `$http_x_forwarded_proto`，**缺失时假定 https**
+
+`deploy/smoke-test.sh` 会把两种模式都渲染一遍并跑 `nginx -t`，模板语法坏会在 CI 就拦住。
+
+### 代理侧必须注意
+
+| 项 | 说明 |
+|---|---|
+| **请求体大小上限** | 容器 `location /` 已设 `client_max_body_size 0`（不限），但**代理默认通常是 1m** —— 不改的话大文件上传会 413 |
+| **转发头** | 建议设 `X-Forwarded-Proto $scheme`、`X-Forwarded-For`、`Host`。不设也能工作（容器会假定 https），但设了更准确 |
+| **超时** | 大文件上传/下载走 `/seafhttp`，容器侧给了 36000s，代理侧的 `proxy_read_timeout` 要跟上 |
+| **WebSocket** | `/notification` 需要 `Upgrade`/`Connection` 透传，否则通知不实时（功能不致命） |
+| **不要只转 80** | `/media` 是容器 nginx 直接从磁盘发的，`/seafhttp` 走 8082，都由容器 nginx 内部分流。代理只要把**整个域名**转给容器 80 即可，不用按路径拆 |
+
+## 10. 验证记录
 
 **本地彩排（2026-09-20，arm64，镜像 12.0.14-dingtalk.8）——全链路通过：**
 

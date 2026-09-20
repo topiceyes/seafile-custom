@@ -66,7 +66,43 @@ if missing:
 print("✓ webpack chunk 全部落地：%d 个（collectstatic 产物齐全）" % total)
 PY
 
-# ---- 5) 指纹：供跨架构（CI 的 amd64 vs 开发机 arm64）比对 ----
+# ---- 5) nginx 模板：两种部署模式都要能渲染且语法合法 ----
+#
+# 模板坏了 = 站点直接起不来，而这类错误在构建期完全看不出来（COPY 一个文本文件而已）。
+# 这里用镜像自己的 render_template 渲染，再交给 nginx -t 解析：
+#   https=true  → 容器内终止 TLS（Let's Encrypt 模式，需 443 与证书文件）
+#   https=false → 上游反向代理终止 TLS，容器只监听 80（本项目的生产形态，见 docs/007 §9）
+# 反代模式那支还需要 $seafile_fwd_proto 变量，语法错会被 nginx -t 抓到。
+D=smoke.test
+mkdir -p /shared/ssl /etc/nginx/sites-enabled
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+  -keyout /shared/ssl/$D.key -out /shared/ssl/$D.crt -subj "/CN=$D" 2>/dev/null
+
+for mode in False True; do
+  python3 -c "
+import sys; sys.path.insert(0, '/scripts')
+from utils import render_template
+render_template('/templates/seafile.nginx.conf.template',
+                '/etc/nginx/sites-enabled/seafile.nginx.conf',
+                {'https': $mode, 'domain': '$D', 'is_tmp': False})
+" || fail "nginx 模板渲染失败（https=$mode）"
+  nginx -t >/dev/null 2>&1 \
+    || { nginx -t; fail "nginx 配置语法非法（https=$mode）"; }
+  ok "nginx 模板渲染且语法合法（https=$mode）"
+
+  # 反代模式下必须不能直接透传 $scheme（那恒为 http，Django 会以为请求是明文）。
+  # 这条断言有牙齿：模板一旦回退成 proxy_set_header X-Forwarded-Proto $scheme 就会红。
+  if [ "$mode" = "False" ]; then
+    grep -q 'X-Forwarded-Proto *\$scheme' /etc/nginx/sites-enabled/seafile.nginx.conf \
+      && fail "反代模式下 X-Forwarded-Proto 直接用了 \$scheme（应交给 \$seafile_fwd_proto 处理）"
+    grep -q 'X-Forwarded-Proto *\$seafile_fwd_proto' /etc/nginx/sites-enabled/seafile.nginx.conf \
+      || fail "反代模式下 X-Forwarded-Proto 未走 \$seafile_fwd_proto"
+    ok "反代模式 X-Forwarded-Proto 取值正确"
+  fi
+done
+rm -f /etc/nginx/sites-enabled/seafile.nginx.conf
+
+# ---- 6) 指纹：供跨架构（CI 的 amd64 vs 开发机 arm64）比对 ----
 echo "--- 指纹 ---"
 printf 'overlay_seahub_pkg  n=%-6s %s\n' \
   "$(find "$S/seahub" -type f -not -path '*/__pycache__/*' | wc -l | tr -d ' ')" \
