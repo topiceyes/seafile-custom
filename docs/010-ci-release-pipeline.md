@@ -18,7 +18,7 @@ seahub/dev-dingtalk 提交
                                          ├ git am patches/*.patch
                                          ├ 断言源码树 == MANIFEST.tree_sha
                                          ├ deploy/build-image.sh（与开发机同一脚本）
-                                         └ push → ghcr.io/topiceyes/seafile-mc:12.0.14-dingtalk.N
+                                         └ push → ghcr.io/topiceyes/seafile-mc:12.0.14-dingtalk.<N>.<hash>
                                                                                   │
                                              api.github.com tarball ──────────────┤ 免代理取 deploy/
                                                                                   ↓
@@ -150,7 +150,7 @@ PAT=<fine-grained PAT：对 topiceyes/seafile-custom 有 Contents:Read，且有 
 curl -fL --max-time 120 -H "Authorization: Bearer $PAT" \
   https://api.github.com/repos/topiceyes/seafile-custom/tarball/main -o /tmp/deploy.tar.gz
 mkdir -p /opt/seafile-custom && tar -xzf /tmp/deploy.tar.gz --strip-components=1 -C /opt/seafile-custom
-cd /opt/seafile-custom/deploy        # 固定目录：compose 的 ./backup.sh 等绑定挂载依赖相对路径
+cd /opt/seafile-custom/deploy        # 习惯而已：生产 compose 已无宿主机相对路径，放哪都行
 cp .env.prod.example .env            # .env 不在 tarball 内，重取代码不会覆盖它
 
 # 0b) 登录私有镜像仓库

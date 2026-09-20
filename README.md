@@ -10,18 +10,21 @@
 .
 ├── deploy/                 # Docker 部署（本仓库的主体）
 │   ├── seafile-server.yml      # dev compose（源码 bind-mount，本地开发）
-│   ├── seafile-prod.yml        # 生产 compose（自建镜像 + Let's Encrypt）
+│   ├── seafile-prod.yml        # 生产 compose（自建镜像；无宿主机相对路径）
 │   ├── .env.example / .env.prod.example   # dev / 生产配置模板
-│   ├── init-conf.sh            # 把 conf-templates/ 渲染进数据卷（--prod 生产模式）
+│   ├── init-conf.sh            # 渲染/追加配置进数据卷（默认 dev，--prod 生产）
 │   ├── gen-ssl-cert.sh         # 自签证书（dev IP / 彩排域名）
 │   ├── build-image.sh          # 镜像构建（开发机与 CI 共用的唯一构建入口）
 │   ├── export-patches.sh       # 重导补丁 + 刷新 MANIFEST（改完二开代码必跑）
 │   ├── smoke-test.sh           # 镜像冒烟断言（CI 与人工验证共用的唯一一份）
-│   ├── image/                  # Dockerfile + 修好的 nginx 模板
-│   ├── backup.sh / backup.cron # 每日备份（三库 dump + 数据打包）
 │   ├── rebuild-frontend.sh     # dev 前端构建（生产走镜像内构建）
-│   ├── sync-dingtalk-users.sh / dingtalk-sync.cron
+│   ├── sync-dingtalk-users.sh  # 手动触发离职同步
 │   ├── rehearsal-db-override.yml  # 本地彩排的 macOS MariaDB 覆盖
+│   ├── image/                  # ⬇ 这里的东西全部烘进生产镜像（不是挂载）
+│   │   ├── Dockerfile              # 镜像定义
+│   │   ├── nginx/seafile.nginx.conf.template
+│   │   ├── backup.sh / backup.cron # 每日备份（三库 dump + 数据打包）
+│   │   └── dingtalk-sync.cron      # 离职员工同步（dev 从同一路径挂载）
 │   ├── conf-templates/         # 配置模板（占位符形式，无密钥）
 │   └── seafile-data/           # ⛔ 运行时数据，不入库
 ├── patches/                # seahub 二开改动（patch 系列 + MANIFEST.md 基线清单）
@@ -86,7 +89,7 @@ cp .env.example .env          # 填入数据库密码、JWT 密钥等
 docker compose up -d
 ```
 
-**生产部署**（CI 构建镜像 → ghcr.io → 服务器拉取，Let's Encrypt 正式证书）：见 [docs/007](docs/007-production-deployment.md)。上线前先跑本地彩排（docs/007 §7）。
+**生产部署**（CI 构建镜像 → ghcr.io → 服务器拉取；TLS 由上游反向代理终止，见 [docs/007 §9](docs/007-production-deployment.md)）：完整流程见 [docs/007](docs/007-production-deployment.md)。上线前先跑本地彩排（docs/007 §7）。
 
 启动后访问 <https://127.0.0.1>（自签证书，浏览器需点「继续前往」）。
 
@@ -102,8 +105,8 @@ docker compose up -d
 seahub 改代码                          Actions（ubuntu-latest, amd64）        docker compose pull
   └ deploy/export-patches.sh   ──push──→  按 MANIFEST 的固定 SHA 浅取上游       （ghcr.io 私有镜像）
        └ patches/ + MANIFEST.md            → git am patches/*.patch                  │
-                                           → 断言 tree sha                          └ LE 自动签发/续期
-                                           → deploy/build-image.sh（同一份脚本）       80/443 ← 公网
+                                           → 断言 tree sha                          └ 云反向代理终止 TLS
+                                           → deploy/build-image.sh（同一份脚本）       明文转发到本机 :80
                                            → ghcr.io/topiceyes/seafile-mc:<tag>
 ```
 

@@ -1,4 +1,4 @@
-# Seafile 每日备份（由 seafile-prod.yml 挂载到 /etc/cron.d/seafile-backup）
+# Seafile 每日备份（随镜像烘到 /etc/cron.d/seafile-backup，见 image/Dockerfile 第 7 项）
 # 错开整点高峰与钉钉离职同步（xx:17）。备份脚本：/usr/local/bin/seafile-backup.sh
 # ⚠️ 备份窗口内不要安排 seafile-gc（一致性设计见 backup.sh 头注与 docs/009）
 30 3 * * * root /usr/local/bin/seafile-backup.sh >> /shared/seafile/logs/backup.log 2>&1

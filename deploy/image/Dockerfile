@@ -8,6 +8,8 @@
 #   4. SEAFILE_VERSION 由 0002 补丁的 "-dev" 修正为发布号
 #   5. nginx 模板补 X-Forwarded-Proto（官方模板 location / 与 /seafdav/ 两处缺失）
 #   6. 安装 mariadb-client（官方镜像无 mysqldump，容器内 backup.sh 需要）
+#   7. 运维脚本与 cron（backup.sh + 备份/离职同步两个 cron）烘进镜像，
+#      不再由 compose 从宿主机挂载 —— 生产部署因此不需要固定目录
 #
 # 注意：路径写死 12.0.14（镜像内无 seafile-server-latest 软链，运行时才建）。
 # 升级 Seafile 版本 = 同步改 BASE_IMAGE、INSTALLPATH 和 seahub 基线（见 docs/007）。
@@ -35,6 +37,20 @@ ARG INSTALLPATH=/opt/seafile/seafile-server-12.0.14
 # 6) 备份依赖（mysqldump）
 RUN apt-get update && apt-get install -y --no-install-recommends mariadb-client \
     && rm -rf /var/lib/apt/lists/*
+
+# 7) 运维脚本与 cron —— 烘进镜像，不从宿主机 bind-mount。
+#    原先这三个文件是 compose 挂载的宿主机相对路径，副作用是：
+#    · 部署必须先 checkout 仓库，且必须待在固定目录（换目录挂载落空，
+#      容器照样起得来，备份和离职同步静默失效）
+#    · 脚本改动不进镜像，与镜像内容脱钩
+#    烘进来之后，服务器上只需要一个 compose 文件 + 一个 .env。
+#    cron 要求 /etc/cron.d/ 下的文件属主为 root 且不可被 group/other 写。
+COPY image/backup.sh /usr/local/bin/seafile-backup.sh
+COPY image/backup.cron /etc/cron.d/seafile-backup
+COPY image/dingtalk-sync.cron /etc/cron.d/dingtalk-sync
+RUN chmod 0755 /usr/local/bin/seafile-backup.sh \
+ && chmod 0644 /etc/cron.d/seafile-backup /etc/cron.d/dingtalk-sync \
+ && chown root:root /etc/cron.d/seafile-backup /etc/cron.d/dingtalk-sync
 
 # 2) 前端构建产物
 COPY --from=frontend /frontend/build ${INSTALLPATH}/seahub/frontend/build

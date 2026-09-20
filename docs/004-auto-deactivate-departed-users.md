@@ -33,7 +33,7 @@ orgapp token（复用 dingtalk/utils.py 带缓存实现）
 
 **定时执行（系统自带，无需宿主机配置）**：
 - Seafile 容器是 phusion/baseimage 镜像，**自带 cron 服务**（runit 管理）
-- `deploy/dingtalk-sync.cron` 由 compose 挂载到容器 `/etc/cron.d/dingtalk-sync`（只读），容器重建不丢
+- `deploy/image/dingtalk-sync.cron` 已烘进镜像的 `/etc/cron.d/dingtalk-sync`（生产）；dev 用官方镜像，由 compose 从同一路径挂载进去。两处同一份文件，不会漂移
 - 每小时第 17 分自动执行，日志：`deploy/seafile-data/seafile/logs/dingtalk-sync.log`（卷内，宿主机直接可看）
 - 已实测：cron 服务确实触发执行（临时任务 2 分钟内跑通）
 

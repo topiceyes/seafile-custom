@@ -30,9 +30,22 @@ test "$(grep -c X-Forwarded-Proto /templates/seafile.nginx.conf.template)" -ge 2
   || fail "nginx 模板的 X-Forwarded-Proto 少于 2 处（location / 与 /seafdav/ 各需一处）"
 ok "二开补丁痕迹齐全"
 
-# ---- 3) 备份依赖 ----
+# ---- 3) 备份依赖与运维脚本（已烘进镜像，不再由 compose 挂载）----
+#
+# 这三个文件以前是 bind-mount 进容器的，副作用是「必须先 checkout 仓库 + 必须待在
+# 固定目录」——换目录时挂载落空，容器照样起得来，但备份和离职同步会静默失效。
+# 烘进镜像后部署只需 compose + .env，这里断言它们确实在。
 command -v mysqldump >/dev/null || fail "缺 mysqldump（容器内 backup.sh 依赖）"
-ok "mysqldump 可用"
+test -x /usr/local/bin/seafile-backup.sh || fail "缺 /usr/local/bin/seafile-backup.sh 或不可执行"
+test -f /etc/cron.d/seafile-backup       || fail "缺 /etc/cron.d/seafile-backup"
+test -f /etc/cron.d/dingtalk-sync        || fail "缺 /etc/cron.d/dingtalk-sync"
+# cron 会静默拒绝加载属主非 root、或 group/other 可写的文件——那种失败没有任何提示，
+# 只表现为「定时任务不跑」，所以在这里拦下。
+for f in /etc/cron.d/seafile-backup /etc/cron.d/dingtalk-sync; do
+  perms=$(stat -c '%a %U' "$f")
+  [ "$perms" = "644 root" ] || fail "$f 属性是 [$perms]，cron 要求 [644 root]（否则不加载且无提示）"
+done
+ok "运维脚本与 cron 就位（backup.sh + 两个 cron，属性符合 cron 要求）"
 
 # ---- 4) 前端：验证【真正被浏览器请求的那份】，而不是构建的中间产物 ----
 #

@@ -4,7 +4,7 @@
 
 ## 1. 方案
 
-容器内每日 cron（03:30，避开整点与钉钉同步 xx:17）跑 `deploy/backup.sh`（由 seafile-prod.yml 挂载为 `/usr/local/bin/seafile-backup.sh`）。备份脚本用镜像内的 mariadb-client（官方镜像没有，自建镜像已装）。
+容器内每日 cron（03:30，避开整点与钉钉同步 xx:17）跑 `deploy/image/backup.sh`——它已烘进镜像的 `/usr/local/bin/seafile-backup.sh`，不再由 compose 挂载（挂载会带来「换目录即静默失效」）。备份脚本用镜像内的 mariadb-client（官方镜像没有，自建镜像已装）。
 
 产物：`<SEAFILE_VOLUME>/backup/<时间戳>/`
 

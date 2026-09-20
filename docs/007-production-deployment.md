@@ -5,18 +5,19 @@
 ## 1. 架构
 
 ```
-开发机（Mac）                        GitHub                              生产服务器（amd64，已装 docker compose）
-─────────────────                    ──────                              ──────────────────────────────────────
+开发机（Mac）                        GitHub                              生产服务器（本地 docker + 云反代）
+─────────────────                    ──────                              ──────────────────────────────────
 seahub 二开分支 ──┐
 export-patches.sh │                  Actions:                            docker compose pull
                   ├→ patches/ ──push→  ├ 取上游 seahub @固定SHA             （ghcr.io 私有镜像）──→ docker compose up -d
-deploy/image/*   ─┘                    ├ git am patches/                                                  ├ LE 自动签发/续期
-                                       ├ 断言 tree sha                                                    └ 80/443 ← 公网
+deploy/image/*   ─┘                    ├ git am patches/                                                  ├ 云代理终止 TLS
+                                       ├ 断言 tree sha                                                    └ 明文转发到本机 :80
                                        └ 构建 amd64 → ghcr.io
 ```
 
 镜像由 **GitHub Actions 构建并推送到 ghcr.io**（见 [010](010-ci-release-pipeline.md)），
 生产机只 `docker compose pull`，不需要 node、不需要 seahub 源码、不需要构建工具链。
+TLS 由云上反向代理终止（本项目的实际形态，见 §9）；容器自签 LE 也已支持，两种模式配置见 §9。
 
 与 dev 环境的本质差异：**二开代码不再 bind-mount，全部烘进镜像**（seahub Python 包 + 前端构建产物 + collectstatic 静态资源），容器重建不丢任何东西。
 
@@ -105,20 +106,29 @@ CI 的 run summary 里也有一份 —— 用于比对 CI 的 amd64 产物与开
 服务器在国内网络，到 `github.com` 的 **git 协议不通**，但 `api.github.com` /
 `codeload.github.com` 可直连（已实测），所以用 tarball 取部署文件，不需要配代理。
 
+**运行时只需要 `seafile-prod.yml` + `.env` 两个文件。** 生产 compose 里**没有任何
+宿主机相对路径**（`backup.sh` 与两个 cron 已烘进镜像），所以
+
+> **放哪个目录都能起。** 这一点是刻意设计的：以前那三个 bind-mount 会让「换个目录
+> 启动」变成**静默故障** —— 挂载落空、容器照常起，但备份和离职同步都不再执行。
+
+唯一还需要仓库文件的地方是**首启之后**跑一次 `deploy/init-conf.sh --prod`（见 4.5），
+所以下面仍然取整个 tarball —— 仓库很小，且这样脚本与文档永远同版本。
+
 ```bash
 # ---- 4.1 取部署文件（免代理）----
 # PAT 需对 topiceyes/seafile-custom 有 Contents:Read，且有 Packages:Read
 PAT=<你的 PAT>
+mkdir -p /opt/seafile-custom && cd /opt/seafile-custom
 curl -fL --max-time 120 -H "Authorization: Bearer $PAT" \
   https://api.github.com/repos/topiceyes/seafile-custom/tarball/main -o /tmp/deploy.tar.gz
-mkdir -p /opt/seafile-custom
 tar -xzf /tmp/deploy.tar.gz --strip-components=1 -C /opt/seafile-custom
-cd /opt/seafile-custom/deploy     # 固定目录：compose 的 ./backup.sh 等绑定挂载依赖相对路径
+cd deploy                          # 只是习惯，不再是硬要求
 
 # ---- 4.2 配置 ----
 cp .env.prod.example .env
 vi .env    # 填：域名、所有密码/密钥（都重新生成，勿沿用 dev 值）
-           # SEAFILE_PRO_IMAGE 默认已指向 ghcr.io；想钉死版本就换成 digest 形式
+           # SEAFILE_PRO_IMAGE 默认已钉 digest，不用改
 
 mkdir -p /data/seafile /data/seafile-mysql
 
@@ -136,7 +146,8 @@ docker compose up -d db memcached
 # 等到能真正连上（看到 "ready for connections" 还不够——MariaDB 初始化分两阶段）
 docker exec seafile-mysql mariadb -uroot -p"$SEAFILE_MYSQL_ROOT_PASSWORD" -e "select 1"
 
-docker compose up -d seafile   # 首启：LE 签发 + setup 生成基础配置 + 建管理员
+docker compose up -d seafile   # 首启：setup 生成基础配置 + 建管理员
+                               # （LETSENCRYPT=true 时这里还会签发证书；本项目是反代模式，不签）
 docker logs -f seafile         # 等到 seahub 启动完成（能 curl 通登录页）
 
 ./init-conf.sh --prod          # ⚠️ 必须在首启完成后跑：追加钉钉/SSO/账号管控 + 开 WebDAV
@@ -153,9 +164,12 @@ docker logs -f seafile         # 等到 seahub 启动完成（能 curl 通登录
 
 **为什么 init-conf --prod 在首启之后**：全新数据卷首启时，镜像内 `setup-seafile-mysql.py` 用 `open('w')` **无条件重写** `seahub_settings.py`（SECRET_KEY 随机、DB 密码取 `DB_PASSWORD` 环境变量、SERVICE_URL 取 `SEAFILE_SERVER_*`）。预渲染会被覆盖。所以流程是：环境变量喂给 setup 完成基础配置 → 首启后追加二开定制块（幂等，带标记）→ 重启生效。
 
-**首启时容器内发生的事**（顺序）：
-1. `init_letsencrypt()`：先起临时 http 配置 → acme.sh webroot 验证 → 证书落 `/shared/ssl/<域名>.crt|key` → 装每日续期 cron
-2. `generate_local_nginx_conf()`：渲染 443 server 块（我们修过的模板，含 X-Forwarded-Proto）
+**首启时容器内发生的事**（顺序，两处按 §9 的模式分叉）：
+1. `init_letsencrypt()`：**仅 `LETSENCRYPT=true` 时执行** —— 先起临时 http 配置 → acme.sh
+   webroot 验证 → 证书落 `/shared/ssl/<域名>.crt|key` → 装每日续期 cron。
+   本项目是反代模式，这一步整个跳过（证书在云代理上）
+2. `generate_local_nginx_conf()`：渲染 nginx server 块（我们修过的模板，含 X-Forwarded-Proto）。
+   监听 443+证书 还是只有 80，由第 1 步结果决定
 3. setup 初始化 MariaDB 三库（`DB_USER`/`DB_PASSWORD` 环境变量决定 seafile 库用户）+ 建 `INIT_SEAFILE_ADMIN_EMAIL` 管理员 + 生成基础 seahub_settings.py
 4. 起 seafile/seahub/seafdav
 
