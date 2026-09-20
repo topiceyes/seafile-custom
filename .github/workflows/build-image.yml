@@ -21,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: '覆盖已存在的 tag（tag 由提交数推导，重复构建会得到同 tag 不同内容）'
+        description: '覆盖已存在的 tag（tag 是内容寻址的，同 tag 即同内容；覆盖的正当理由只有「重建以刷新基础镜像」）'
         type: boolean
         default: false
 
@@ -119,9 +119,10 @@ jobs:
           PATCHES=$(ls patches/*.patch | wc -l | tr -d ' ')
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-          # ① tag 里的提交数 == 补丁文件数
-          [ "$TAG" = "12.0.14-dingtalk.$PATCHES" ] \
-            || { echo "::error::tag ($TAG) 与补丁数 ($PATCHES) 不符"; exit 1; }
+          # ① tag 形如 12.0.14-dingtalk.<补丁数>.<构建输入哈希>（哈希在 build-image.sh 里算）
+          echo "$TAG" | grep -qE "^12\.0\.14-dingtalk\.${PATCHES}\.[0-9a-f]{8}$" \
+            || { echo "::error::tag ($TAG) 与补丁数 ($PATCHES) 不符";
+                 echo "::error::期望形如 12.0.14-dingtalk.$PATCHES.<8位十六进制>"; exit 1; }
 
           # ② tag 的版本前缀 == Dockerfile 里 BASE_IMAGE 的版本。
           #    升级 Seafile 时要同步改 BASE_IMAGE/INSTALLPATH/版本前缀/tag，
@@ -137,6 +138,8 @@ jobs:
             || { echo "::error::补丁编号不连续：期望 [$EXPECT]，实际 [$ACTUAL]"; exit 1; }
 
           echo "✅ tag 血缘校验通过：$TAG（补丁 $PATCHES 个，基础镜像 $DLVER）"
+          echo "   哈希段是【构建输入的内容哈希】（补丁内容 + deploy/image/** + build-image.sh），"
+          echo "   所以同 tag ⇒ 同内容；改任何构建输入都会自动得到新 tag，不需要 force。"
 
       - uses: docker/setup-buildx-action@v3     # type=gha 缓存导出需要 docker-container driver
 
@@ -155,9 +158,10 @@ jobs:
         run: |
           set -euo pipefail
           if docker buildx imagetools inspect "$IMAGE:$TAG" >/dev/null 2>&1; then
-            echo "::error::$IMAGE:$TAG 已存在。tag 由提交数推导——若你【修改】了既有补丁（而非新增），"
-            echo "::error::会得到同 tag 不同内容，钉了该 tag 的服务器下次 pull 就会静默漂移。"
-            echo "::error::要么新增一个提交（推荐），要么用 force=true 显式覆盖并同步更新服务器。"
+            echo "::error::$IMAGE:$TAG 已存在。tag 是内容寻址的（含构建输入哈希），所以同 tag 就"
+            echo "::error::意味着同内容——这次构建不会产出任何新东西。多半是你的改动没触及任何"
+            echo "::error::构建输入（例如只改了文档）。确认后无需重建。"
+            echo "::error::确实要覆盖（例如重建以拉取上游更新过的基础镜像）：-f force=true"
             exit 1
           fi
           echo "✅ tag 未被占用：$TAG"

@@ -70,7 +70,9 @@ cd deploy
 ./build-image.sh registry.cn-hangzhou.aliyuncs.com/myns    # 推 ACR（ghcr 不可达时的后路）
 ```
 
-- tag 由 `./build-image.sh --print-tag` 算出：`12.0.14-dingtalk.<N>`（N = seahub 领先基线的提交数）
+- tag 由 `./build-image.sh --print-tag` 算出：`12.0.14-dingtalk.<N>.<8位哈希>`。
+  哈希段是**构建输入的内容哈希**（补丁内容 + `deploy/image/**` + `build-image.sh`），
+  所以改模板/Dockerfile 也会自动得到新 tag —— 同 tag 即同内容（详见 010 §4）
 - 防呆：seahub 工作区不干净、或补丁树与分支树不一致，都会拒绝构建
 - 推 registry 默认双架构（amd64+arm64）；CI 只构建 amd64（runner 原生，arm64 走 QEMU 会拖到一小时以上）
 
@@ -366,7 +368,8 @@ if os.environ.get('SEAFILE_SERVER_PROTOCOL') == 'https':
 |---|---|
 | 补丁串行 `git am` 复现二开分支 | ✅ 在 `git worktree` 的干净 0877ad7 检出上应用 8 个补丁，`HEAD^{tree}` == `a0fe634…` |
 | `build-image.sh --check-tree` 硬校验 | ✅ 通过；人为改动补丁后能正确拒绝 |
-| `--print-tag` | ✅ `12.0.14-dingtalk.8`（补丁数与 tag 数字一致） |
+| `--print-tag` | ✅ 补丁数与 tag 数字一致（当时格式还是 `12.0.14-dingtalk.8`，现已加哈希段） |
+| tag 内容寻址 | ✅ 连续两次相同；改 nginx 模板或补丁内容都会得到新 tag；还原后回到原值 |
 | `git archive` 文件完整性 | ✅ 3812 个文件，含 `frontend/package-lock.json` |
 | 取上游 tarball（免代理） | ✅ `api.github.com` → `codeload.github.com` 直连 200 |
 | 首次 CI 运行 + 镜像发布 | ✅ 构建 8m27s；tag `12.0.14-dingtalk.8`，digest 记在 [010 §9](010-ci-release-pipeline.md) 台账 |

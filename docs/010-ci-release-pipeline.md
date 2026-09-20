@@ -76,9 +76,16 @@ gh workflow run build-image.yml -f force=true    # 覆盖已存在的 tag
 
 ## 4. tag 规则与血缘断言
 
-tag 形如 `12.0.14-dingtalk.<N>`，`N` = `git rev-list --count <base_commit>..HEAD`，
-也就是补丁个数（必然递增）。tag 由 `./deploy/build-image.sh --print-tag` 算出，
-**不在 YAML 里重算** —— 那是 CI 与本地最可能发生漂移的地方。
+tag 形如 `12.0.14-dingtalk.<N>.<8位哈希>`：
+
+| 段 | 含义 |
+|---|---|
+| `12.0.14` | Seafile 版本（与 Dockerfile 的 `BASE_IMAGE` 耦合） |
+| `N` | 补丁个数（= `git rev-list --count <base_commit>..HEAD`）。**给人看的**，便于沟通 |
+| `<8位哈希>` | **构建输入的内容哈希**：补丁内容 + `deploy/image/**` + `build-image.sh` |
+
+tag 由 `./deploy/build-image.sh --print-tag` 算出，**不在 YAML 里重算** ——
+那是 CI 与本地最可能发生漂移的地方。
 
 CI 在构建前跑三条断言：
 
@@ -88,18 +95,26 @@ CI 在构建前跑三条断言：
    这条能在「只改了一半」时提前拦住，避免发出 12.0.14 与 12.1.x 混搭的镜像）
 3. 补丁文件名 `0001..000N` 连续无缺口
 
-### ⚠️ tag 是可变的
+### 为什么 tag 里要带内容哈希
 
-`N` 是**提交数**，所以：**修改**一个既有补丁（而不是新增提交）会得到**同一个 tag、
-不同内容**——钉了该 tag 的服务器下次 `pull` 就会静默漂移。
+早期版本只有 `12.0.14-dingtalk.<N>`。问题在于 **镜像内容不只取决于补丁个数**：
+改一次 nginx 模板、改一行 Dockerfile，补丁数不变，于是产出**同 tag 不同内容** ——
+钉了该 tag 的机器下次 `pull` 会静默漂移。这不是理论风险：本项目第一次改 nginx
+模板就撞上了，只能靠 `force=true` 覆盖，而「同一个 tag 指过三个不同镜像」本身就
+是不健康的状态。
 
-三道防线，按推荐顺序：
+现在把构建输入的内容哈希并进 tag 后，**「同 tag ⇒ 同内容」重新成立**：
 
-1. **新增提交而不是修改旧补丁**（最省事，tag 自然递增）
-2. CI 的「tag 已存在即失败」守卫（要覆盖需显式 `force=true`）
-3. 生产 `.env` 里**钉 digest**（`ghcr.io/topiceyes/seafile-mc@sha256:...`）——最严格
+- 改任何构建输入 → 自动得到新 tag，**不需要 force**
+- tag 已存在 → 说明输入一字未改，重建是多余的，守卫拦下是对的
 
-每次构建的 digest 会写进 GitHub Actions 的 run summary，也在下节的台账里记一份。
+`force=true` 因此只剩下一个正当用途：**重建以拉取上游更新过的基础镜像**
+（`seafileltd/seafile-mc:12.0.14` 是按 tag 引用的，上游若重推同一 tag，
+本仓库的输入没变而镜像内容可能变 —— 那是 tag 哈希覆盖不到的部分）。
+
+即便如此，生产 `.env` 里**钉 digest 仍是默认做法**（模板已是 digest 形式）：
+它是唯一不依赖任何命名约定的保障。每次构建的 digest 会写进 GitHub Actions 的
+run summary，也在下节的台账里记一份。
 
 ## 5. 漂移控制（三层）
 
@@ -163,7 +178,7 @@ docker compose pull && docker compose up -d
 |---|---|
 | CI 失败于「校验源码树 == tree_sha」 | 补丁与 `MANIFEST.tree_sha` 不同步。跑 `deploy/export-patches.sh` 重导补丁并提交 |
 | CI 失败于「按 SHA 取上游」 | 基线 SHA 在上游不可达（极少见）。确认 `MANIFEST.base_commit` 拼写，或改用 `--filter=blob:none` 全量 clone |
-| CI 失败于「tag 已存在」 | 你修改了既有补丁而非新增提交。**新增一个提交**（推荐），或 `force=true` 覆盖并同步更新所有钉了该 tag 的服务器 |
+| CI 失败于「tag 已存在」 | 构建输入一字未改，重建是多余的。多半是你的改动没触及 `patches/`、`deploy/image/`、`build-image.sh`（例如只改了文档）。确认后无需重建；只有要刷新上游基础镜像才用 `force=true` |
 | 冒烟验证失败「缺 frontend/build 或 chunk 未落地」 | 前端产物没进镜像，或 `collectstatic` 没把它收进 `media/assets`。断言在 `deploy/smoke-test.sh`；改完断言要 `-f force=true` 重跑才验得到（改该文件不会自动触发构建） |
 | 冒烟验证报 `toomanyrequests` | Docker Hub 对共享 runner IP 的匿名限流。在仓库 secrets 里配 `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`，workflow 会自动登录 |
 | 服务器 `docker pull` 报 `denied` | ① PAT 过期或权限不足（需 `read:packages`）② 没 `docker login ghcr.io` ③ 包权限里没给 `seafile-custom` 仓库访问权（Package settings → Manage Actions access） |
@@ -194,7 +209,11 @@ docker login registry.cn-hangzhou.aliyuncs.com
 |---|---|---|---|---|---|
 | 2026-09-20 | `12.0.14-dingtalk.8` | 8 | `a0fe6349…a65f5d25489` | `sha256:add45ed6…23665527` | 首次 CI 发布（run 35495223406），构建 8m27s |
 
-> ⚠️ 这一行本身就是「tag 可变」的实例：当天更早一次构建（run 35494641254）曾把**同一个 tag**
-> 推到 `sha256:dcf18a2e…aedbfa`，因冒烟断言写错而失败，修好后 `force=true` 重跑覆盖。
-> 当时无任何服务器消费过旧 digest，所以无影响——但若已有生产机钉了这个 tag，那次覆盖
-> 就是一次静默漂移。**结论：生产 `.env` 钉 digest 不是可选项而是默认做法。**
+> **tag 规则的由来**：首次发布当天，`12.0.14-dingtalk.8` 这个 tag 前后指过三个不同镜像 ——
+> 第一次冒烟断言写错（run 35494641254，`sha256:dcf18a2e…`），修好后 `force` 覆盖；
+> 之后支持反代模式改了 nginx 模板，又是一次同 tag 覆盖。每次都靠 `force=true` 硬来，
+> 因为**补丁数没变而镜像内容变了**。
+>
+> 这正是 §4 把构建输入哈希并进 tag 的直接动因。改完之后，上面这两次修改都会各自
+> 得到新 tag，不需要任何 force。**当时的旧 digest 无任何服务器消费过，所以没有实际影响** ——
+> 但若已有生产机钉了该 tag，每次覆盖都是一次静默漂移。

@@ -6,7 +6,11 @@
 #   ./build-image.sh --print-tag              # 只打印本次会用的 tag（供 CI 取用）
 #   ./build-image.sh --check-tree             # 只校验「补丁能复现分支树」（供 export-patches.sh 复用）
 #
-# tag 规则：12.0.14-dingtalk.<N>，N = seahub 分支相对基线的提交数（必然递增）。
+# tag 规则：12.0.14-dingtalk.<N>.<构建输入哈希>
+#   N        = seahub 分支相对基线的提交数（= 补丁个数，对人可读）
+#   <哈希>   = 补丁内容 + deploy/image/** + 本脚本 的 sha256 前 8 位
+# 把构建输入并进 tag 是为了让「同 tag ⇒ 同内容」成立——只按 N 编号的话，
+# 改一次 nginx 模板或 Dockerfile 就会产出同 tag 不同内容（静默漂移）。
 # 基线从 patches/MANIFEST.md 读取 —— 勿在此硬编码，否则会与 CI 各写一份而漂移。
 #
 # 环境变量旋钮（CI 用）：
@@ -29,7 +33,7 @@ while [[ $# -gt 0 ]]; do
     --print-tag)  PRINT_TAG=1; shift ;;
     --check-tree) CHECK_TREE=1; shift ;;
     -h|--help)
-      sed -n '2,17p' "$0" | sed 's/^#\{1,\} \{0,1\}//'
+      sed -n '2,21p' "$0" | sed 's/^#\{1,\} \{0,1\}//'
       exit 0 ;;
     --*)  echo "未知参数：$1（支持 --local / --print-tag / --check-tree）" >&2; exit 1 ;;
     *)    break ;;
@@ -95,10 +99,35 @@ git -C "$SEAHUB_DIR" diff --quiet && git -C "$SEAHUB_DIR" diff --cached --quiet 
   || { echo "错误：seahub 工作区有未提交改动，先提交再构建" >&2; exit 1; }
 
 N=$(git -C "$SEAHUB_DIR" rev-list --count "$BASE_FULL..HEAD")
+PATCH_COUNT=$(ls "$PATCHES_DIR"/*.patch 2>/dev/null | wc -l | tr -d ' ')
+
+# ---- tag = 版本.补丁数.构建输入哈希 ----
+#
+# 只用「补丁数」当 tag 是不够的：镜像内容还取决于补丁【内容】、deploy/image/**
+# （Dockerfile、nginx 模板）和本脚本。改这些而不加 seahub 提交，就会产出
+# 【同 tag 不同内容】——钉了该 tag 的机器下次 pull 会静默漂移。
+# 这在实践中真的会发生：改一次 nginx 模板就中招。
+#
+# 所以把全部构建输入的内容哈希并进 tag，让「同 tag ⇒ 同内容」重新成立。
+# 补丁数仍然留在 tag 里，是因为它对人不言自明（第几个二开版本），便于沟通。
+build_inputs_hash() {
+  {
+    # 补丁内容（不只是个数）
+    cat "$PATCHES_DIR"/*.patch
+    # 除补丁外的构建输入：Dockerfile、nginx 模板、本脚本
+    ( cd "$REPO_ROOT" && find deploy/image deploy/build-image.sh -type f \
+        -exec sha256sum {} + | LC_ALL=C sort -k2 )
+  } | sha256sum | cut -c1-8
+}
+BUILD_HASH=$(build_inputs_hash)
+
 # 版本前缀 12.0.14 与 Dockerfile 的 BASE_IMAGE/INSTALLPATH 耦合，
 # 升级 Seafile 时三处要同步（docs/007 §6）；CI 有断言兜住半途而废的升级。
-TAG="12.0.14-dingtalk.${N}"
-PATCH_COUNT=$(ls "$PATCHES_DIR"/*.patch 2>/dev/null | wc -l | tr -d ' ')
+TAG="12.0.14-dingtalk.${N}.${BUILD_HASH}"
+
+# 说明：tag 覆盖的是【本仓库的构建输入】。基础镜像 seafileltd/seafile-mc:12.0.14
+# 是按 tag 引用的，上游若重新推同一个 tag，溯源内容仍可能变——那属于上游行为，
+# 靠生产侧钉 digest + 发布台账（docs/010 §9）覆盖。
 
 if [[ "$PRINT_TAG" == "1" ]]; then
   # 只输出 tag，诊断信息一律走 stderr，便于 CI 用 $(...) 捕获
