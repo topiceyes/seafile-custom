@@ -26,8 +26,11 @@ TLS 由云上反向代理终止（本项目的实际形态，见 §9）；容器
 
 ## 2. 前置条件（上线检查清单）
 
-- [ ] 域名 DNS 已指向**云反向代理**（不是本机）：`dig +short <域名>` 确认解析到代理的 IP
+- [ ] **（上线时才需要，不是部署前提）** 域名 DNS 已指向**云反向代理**（不是本机）：
+  `dig +short <域名>` 确认解析到代理的 IP
   - 反代模式下本机不需要公网 DNS；`SEAFILE_DOMAIN` 填的就是这个域名
+  - **域名还没定也能先装**：`init-prod-env.sh` 默认用占位值 `seafile.local`，
+    装完随时 `./set-domain.sh <域名>` 换掉——见 §4.2.1
 - [ ] **本机 80 端口可被云代理访问到**（反代模式下只需要这一个）
   - 验证：从云代理那台机器 `curl -I http://<本机IP>/` 有响应即可
   - 反代模式下**不需要**本机 443 公网可达，也不需要 DNS 指向本机——证书和 DNS 都在云代理侧
@@ -128,15 +131,15 @@ curl -fL --max-time 120 \
   | tar -xz --strip-components=1 -C /opt/seafile-custom
 cd deploy                          # 只是习惯，不再是硬要求
 
-# ---- 4.2 配置：一条命令生成 .env（密钥自动生成，不用手抄）----
-./init-prod-env.sh
-# 只会问 4 项：域名、管理员邮箱、管理员密码（直接回车 = 自动生成强密码）、
-#             钉钉凭据（可留空，装完在管理后台「设置」页填，见 docs/002）
-# 无人值守：./init-prod-env.sh --domain seafile.x.cn --admin-email a@x.cn \
-#                              --admin-password 'xxx'
+# ---- 4.2 配置：一条命令生成 .env（密钥自动生成，零提问）----
+./init-prod-env.sh                 # 什么都不用给，直接回车到底
+# 想提前定好就带参数（都可省略）：
+#   ./init-prod-env.sh --domain seafile.x.cn --admin-email a@x.cn --admin-password 'xxx'
 #
-# 脚本做三件事：生成密钥、只改该改的行（反代模式那两个开关原样保留，并会自检）、
+# 脚本做三件事：生成全部密钥、只改该改的行（反代模式那两个开关原样保留，并会自检）、
 # 拒绝含单引号的值（单引号会破坏 .env 的 '值' 解析）。末尾直接打印后续命令。
+
+# 管理员密码默认自动生成、只在终端显示这一次 —— 记得抄进密码管理器。
 
 mkdir -p /data/seafile /data/seafile-mysql
 
@@ -160,6 +163,34 @@ docker logs -f seafile         # 等到 seahub 启动完成（能 curl 通登录
 
 要点：tarball 根目录是 `<owner>-<repo>-<sha>/` 故需 `--strip-components=1`；`.env` 不在
 tarball 内，重取代码不会覆盖它。
+
+### 4.2.1 部署时不需要知道的东西（装完再配）
+
+上面这套流程刻意**不要求部署时就知道域名和钉钉凭据**——这两样都能装完之后再定，而且
+`init-prod-env.sh` 因此可以零提问地一口气跑完。分别说明：
+
+**域名**：默认写占位值 `seafile.local`。它只影响三处，且都可在首启后改：
+
+| 位置 | 作用 | 改法 |
+|---|---|---|
+| `seahub_settings.py` 的 `SERVICE_URL` | **唯一真正要紧的**：生成分享链接、下载链接、钉钉回调地址都从它派生 | `./set-domain.sh <新域名>` |
+| `seahub_settings.py` 的 `FILE_SERVER_ROOT` | 文件上传下载走它 | 同上 |
+| nginx `server_name` | 反代模式下只有一个 server 块，**装饰性**（它就是默认虚拟主机） | 同上 |
+
+```bash
+./set-domain.sh seafile.acme.cn     # 首启之后任何时候都行，改完 restart 即可
+```
+
+> **为什么不能只改 `.env` 重来**：容器里的 `bootstrap.py:generate_local_nginx_conf()` 只在
+> `/shared/nginx/conf/seafile.nginx.conf` **不存在**时才渲染。首启之后这个文件就在了，
+> 后面改环境变量不再有任何效果——改 `.env` 只会在下次「全新数据卷」时生效。
+> `set-domain.sh` 直接改数据卷里的最终文件（先备份成 `.bak-<时间戳>`），绕开这个一次性渲染。
+
+**钉钉凭据**：`.env` 里的 `SEAHUB_DINGTALK_APP_KEY/SECRET` 留空即可。钉钉配置走 constance
+（数据库表），装完在**系统管理 → 设置**页填，**免重启生效**（见 [docs/002](002-dingtalk-admin-config.md)）。
+先填后填不影响首启，也不影响扫码登录之外的任何功能。
+
+**管理员密码**：自动生成并只显示一次。登录后自己在页面上改，不用记在 `.env` 里。
 
 > **（历史记录）转 public 之前，这一步是本项目最容易卡住的地方**：当时仓库与镜像包都是私有，
 > 要用一个 classic PAT（`repo` + `read:packages`）覆盖「取 tarball + 拉镜像」两件事。
@@ -192,6 +223,13 @@ tarball 内，重取代码不会覆盖它。
 
 ## 5. 上线后动作
 
+0. **如果部署时用的是占位域名**（`seafile.local`），先切真域名，再往下走：
+   ```bash
+   cd /opt/seafile-custom/deploy
+   ./set-domain.sh seafile.acme.cn
+   docker compose restart seafile
+   ```
+   然后试一次**文件上传 + 下载**——这条过了就说明 `SERVICE_URL` 与 `FILE_SERVER_ROOT` 都对了。
 1. **钉钉开发者后台**：回调域名改为 `https://<域名>/dingtalk/callback/`
 2. 管理员登录 → 系统管理 → 设置：核对钉钉开关与密钥（constance 默认值来自渲染的 seahub_settings.py）
 3. 验证清单：
@@ -368,6 +406,20 @@ if os.environ.get('SEAFILE_SERVER_PROTOCOL') == 'https':
 | backup.sh | ✅ 44K 两件套（详见 docs/009 §5） |
 | 恢复演练 | ✅ 第三目录完整恢复可登录（踩坑：需重建 seafile@% 用户，已写入 docs/009） |
 | 钉钉扫码 | 留生产切换时验（需临时改真实回调域名；dev 已验同代码路径） |
+
+**部署脚本（2026-09-20，两地 fixture 实测）**：
+
+| 项 | 实测 |
+|---|---|
+| `init-prod-env.sh` 零提问 | ✅ 无参数直接跑通，密钥全自动生成；自检「反代两开关未被改动」通过 |
+| `set-domain.sh` 双引号 `SERVICE_URL` | ✅ `"https://127.0.0.1"` → `"https://seafile.acme.cn"`，`FILE_SERVER_ROOT` 同步 |
+| `set-domain.sh` 单引号 `SERVICE_URL` | ✅ `'http://seafile.local'` → 正确识别旧域名（首版正则漏了单引号，已修） |
+| **不误伤 `server_name _ default_server;`** | ✅ 双 server 块 fixture 下，只改含旧域名那一行，80 端口默认虚拟主机完好（首版无差别替换，已修） |
+| 幂等性 | ✅ 同域名重跑输出「无需改动」并退出 0 |
+| 备份 | ✅ 两个文件都留 `.bak-<时间戳>` |
+
+> 两个 bug 都是 fixture 测出来的、不是推演出来的——尤其第二个：无差别替换 `server_name`
+> 会悄悄把 80 端口的默认虚拟主机改掉，症状（别的 Host 头 404）离原因很远。
 
 **彩排踩坑记录**（都已固化到流程/文件）：
 1. MariaDB 竞态 → db-first 启动顺序（§7 步骤 4）

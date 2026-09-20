@@ -12,7 +12,8 @@
 │   ├── seafile-server.yml      # dev compose（源码 bind-mount，本地开发）
 │   ├── seafile-prod.yml        # 生产 compose（自建镜像；无宿主机相对路径）
 │   ├── .env.example / .env.prod.example   # dev / 生产配置模板
-│   ├── init-prod-env.sh        # 生成生产 .env（密钥自动生成，只问 4 项）
+│   ├── init-prod-env.sh        # 生成生产 .env（密钥自动生成，零提问）
+│   ├── set-domain.sh           # 装完后改站点域名（首启用占位域名）
 │   ├── init-conf.sh            # 渲染/追加配置进数据卷（默认 dev，--prod 生产）
 │   ├── gen-ssl-cert.sh         # 自签证书（dev IP / 彩排域名）
 │   ├── build-image.sh          # 镜像构建（开发机与 CI 共用的唯一构建入口）
@@ -91,6 +92,9 @@ docker compose up -d
 ```
 
 **生产部署**（CI 构建镜像 → ghcr.io → 服务器拉取；TLS 由上游反向代理终止，见 [docs/007 §9](docs/007-production-deployment.md)）：完整流程见 [docs/007](docs/007-production-deployment.md)。上线前先跑本地彩排（docs/007 §7）。
+
+部署**零提问**：`./init-prod-env.sh` 不带参数直接跑（密钥全自动生成），域名先用占位值，
+装完 `./set-domain.sh <域名>` 换掉，钉钉凭据在管理后台填。理由见 [docs/007 §4.2.1](docs/007-production-deployment.md)。
 
 启动后访问 <https://127.0.0.1>（自签证书，浏览器需点「继续前往」）。
 
