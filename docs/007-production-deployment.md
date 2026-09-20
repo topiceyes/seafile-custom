@@ -128,10 +128,15 @@ curl -fL --max-time 120 \
   | tar -xz --strip-components=1 -C /opt/seafile-custom
 cd deploy                          # 只是习惯，不再是硬要求
 
-# ---- 4.2 配置 ----
-cp .env.prod.example .env
-vi .env    # 填：域名、所有密码/密钥（都重新生成，勿沿用 dev 值）
-           # SEAFILE_PRO_IMAGE 默认已钉 digest，不用改
+# ---- 4.2 配置：一条命令生成 .env（密钥自动生成，不用手抄）----
+./init-prod-env.sh
+# 只会问 4 项：域名、管理员邮箱、管理员密码（直接回车 = 自动生成强密码）、
+#             钉钉凭据（可留空，装完在管理后台「设置」页填，见 docs/002）
+# 无人值守：./init-prod-env.sh --domain seafile.x.cn --admin-email a@x.cn \
+#                              --admin-password 'xxx'
+#
+# 脚本做三件事：生成密钥、只改该改的行（反代模式那两个开关原样保留，并会自检）、
+# 拒绝含单引号的值（单引号会破坏 .env 的 '值' 解析）。末尾直接打印后续命令。
 
 mkdir -p /data/seafile /data/seafile-mysql
 
