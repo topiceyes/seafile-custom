@@ -186,22 +186,16 @@ jobs:
           ./deploy/build-image.sh ghcr.io/${{ github.repository_owner }}
           echo "TAG=$TAG" >> "$GITHUB_ENV"
 
-      # 验证【真正推上去的那份字节】，而不是本地构建结果（runner 是 amd64，native 执行）
+      # 验证【真正推上去的那份字节】，而不是本地构建结果（runner 是 amd64，native 执行）。
+      # 断言本身在 deploy/smoke-test.sh —— 与开发机人工验证共用同一份，避免两处漂移
+      # （这套断言曾因 workflow 与 docs 各存一份而写错了路径，见该脚本头部注释）。
       - name: 冒烟验证已推送的镜像
         run: |
           set -euo pipefail
           docker pull "$IMAGE:$TAG"
-          docker run --rm --entrypoint sh "$IMAGE:$TAG" -c '
-            set -e
-            grep -q "^SEAFILE_VERSION = \"12.0.14\"" /opt/seafile/seafile-server-12.0.14/seahub/seahub/settings.py
-            test -f /opt/seafile/seafile-server-12.0.14/seahub/frontend/webpack-stats.pro.json
-            ls /opt/seafile/seafile-server-12.0.14/seahub/frontend/build/static/js >/dev/null
-            test $(grep -c X-Forwarded-Proto /templates/seafile.nginx.conf.template) -ge 2
-            command -v mysqldump
-            grep -q PASSWORD_LOGIN_ADMIN_ONLY /opt/seafile/seafile-server-12.0.14/seahub/seahub/settings.py
-            ls /opt/seafile/seafile-server-12.0.14/seahub/media/assets >/dev/null
-            echo SMOKE_OK'
-          echo "✅ 冒烟通过"
+          docker run --rm --entrypoint sh \
+            -v "$PWD/deploy/smoke-test.sh:/smoke.sh:ro" \
+            "$IMAGE:$TAG" /smoke.sh 2>&1 | tee /tmp/smoke.log
 
       - name: 记录 digest
         run: |
@@ -223,5 +217,12 @@ jobs:
             echo '```'
             echo "${DIGEST%%@*}@${DIGEST#*@}"
             echo '```'
+            echo ""
+            echo "<details><summary>冒烟验证与镜像指纹（跨架构比对用）</summary>"
+            echo ""
+            echo '```'
+            cat /tmp/smoke.log
+            echo '```'
+            echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "已发布：$DIGEST"

@@ -77,20 +77,24 @@ cd deploy
 - Dockerfile 不用 `# syntax=` 指令（会去 docker.io 拉前端镜像，同样受 DNS 污染影响）
 - git 经代理推送偶发 HTTP/2 中断（`stream ... was not CANCEL cleanly`）：重试，或改用 SSH
 
-**冒烟验证**（CI 会自动跑同一套；手工验证镜像时用）：
+**冒烟验证**（CI 对每个推上去的镜像自动跑同一套；手工验证时用）：
 
 ```bash
-docker run --rm --entrypoint sh seafile-mc-devbuild:<tag> -c '
-  set -e
-  grep "^SEAFILE_VERSION = \"12.0.14\"" /opt/seafile/seafile-server-12.0.14/seahub/seahub/settings.py
-  test -f /opt/seafile/seafile-server-12.0.14/seahub/frontend/webpack-stats.pro.json
-  ls /opt/seafile/seafile-server-12.0.14/seahub/frontend/build/static/js >/dev/null
-  test $(grep -c X-Forwarded-Proto /templates/seafile.nginx.conf.template) -ge 2
-  command -v mysqldump
-  grep -q PASSWORD_LOGIN_ADMIN_ONLY /opt/seafile/seafile-server-12.0.14/seahub/seahub/settings.py
-  ls /opt/seafile/seafile-server-12.0.14/seahub/media/assets >/dev/null
-  echo SMOKE_OK'
+docker run --rm --entrypoint sh \
+  -v "$PWD/deploy/smoke-test.sh:/smoke.sh:ro" \
+  <镜像> /smoke.sh
+# 例：<镜像> = seafile-mc-devbuild:12.0.14-dingtalk.8（本地彩排）或 ghcr.io/topiceyes/seafile-mc:<tag>
 ```
+
+断言都在 [`deploy/smoke-test.sh`](../deploy/smoke-test.sh)，**只有这一份** —— CI 与本文都引用它。
+（这套断言曾在 workflow 和本文里各维护一份，结果本文那份写错了路径：断言
+`frontend/build/static/js`，而 CRA 的 `appBuild` 实际是 `build/frontend`，且真正被浏览器
+请求的是 collectstatic 产物 `media/assets/frontend/static/js`。CI 首次运行才暴露。
+**改断言只改那个脚本**，并注意：改它不会自动触发构建，要验证得
+`gh workflow run build-image.yml -f force=true` 重跑一次。）
+
+脚本还会打印三个指纹（二开 overlay 内容哈希、被服务的前端产物清单、media/assets 清单），
+CI 的 run summary 里也有一份 —— 用于比对 CI 的 amd64 产物与开发机的 arm64 产物（§9）。
 
 ## 4. 服务器部署
 

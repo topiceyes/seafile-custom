@@ -164,6 +164,7 @@ docker compose pull && docker compose up -d
 | CI 失败于「校验源码树 == tree_sha」 | 补丁与 `MANIFEST.tree_sha` 不同步。跑 `deploy/export-patches.sh` 重导补丁并提交 |
 | CI 失败于「按 SHA 取上游」 | 基线 SHA 在上游不可达（极少见）。确认 `MANIFEST.base_commit` 拼写，或改用 `--filter=blob:none` 全量 clone |
 | CI 失败于「tag 已存在」 | 你修改了既有补丁而非新增提交。**新增一个提交**（推荐），或 `force=true` 覆盖并同步更新所有钉了该 tag 的服务器 |
+| 冒烟验证失败「缺 frontend/build 或 chunk 未落地」 | 前端产物没进镜像，或 `collectstatic` 没把它收进 `media/assets`。断言在 `deploy/smoke-test.sh`；改完断言要 `-f force=true` 重跑才验得到（改该文件不会自动触发构建） |
 | 冒烟验证报 `toomanyrequests` | Docker Hub 对共享 runner IP 的匿名限流。在仓库 secrets 里配 `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`，workflow 会自动登录 |
 | 服务器 `docker pull` 报 `denied` | ① PAT 过期或权限不足（需 `read:packages`）② 没 `docker login ghcr.io` ③ 包权限里没给 `seafile-custom` 仓库访问权（Package settings → Manage Actions access） |
 | 生产机连不上 ghcr.io | 见 §8 的 ACR 备选 |

@@ -16,6 +16,7 @@
 │   ├── gen-ssl-cert.sh         # 自签证书（dev IP / 彩排域名）
 │   ├── build-image.sh          # 镜像构建（开发机与 CI 共用的唯一构建入口）
 │   ├── export-patches.sh       # 重导补丁 + 刷新 MANIFEST（改完二开代码必跑）
+│   ├── smoke-test.sh           # 镜像冒烟断言（CI 与人工验证共用的唯一一份）
 │   ├── image/                  # Dockerfile + 修好的 nginx 模板
 │   ├── backup.sh / backup.cron # 每日备份（三库 dump + 数据打包）
 │   ├── rebuild-frontend.sh     # dev 前端构建（生产走镜像内构建）
