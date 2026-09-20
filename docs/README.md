@@ -16,6 +16,7 @@
 | 008 | [密码登录仅限管理员](008-restrict-password-login.md) | 钉钉 SSO 成为普通用户唯一入口 | ✅ 已完成（2026-09-20） |
 | 009 | [备份与恢复](009-backup-restore.md) | 三库 dump + 数据目录打包，每日 cron | ✅ 已完成（2026-09-20） |
 | 010 | [CI 发布流水线](010-ci-release-pipeline.md) | 推 GitHub → Actions 构建 → ghcr.io → 生产机拉取 | ✅ 已完成（2026-09-20） |
+| 011 | [站点地址管理化](011-service-url-admin-config.md) | SERVICE_URL 挪到管理后台、免重启生效 | ✅ 已完成（2026-09-20） |
 
 ## 工作区结构
 

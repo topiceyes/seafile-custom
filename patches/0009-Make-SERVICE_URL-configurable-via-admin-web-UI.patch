@@ -1,0 +1,291 @@
+From 0a2cfccbcd24a2001616b4f9baa882ed273962cf Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
+Date: Sun, 20 Sep 2026 17:56:11 +0800
+Subject: [PATCH 9/9] Make SERVICE_URL configurable via admin web UI
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+站点的公开地址此前是首启时由 SEAFILE_SERVER_* 环境变量写进 seahub_settings.py
+的，之后想改得跑脚本改文件 + 重启。这是错的：它是运行期部署参数，不是首启产物。
+
+改成 constance（与 0003 的钉钉配置同一套机制）：管理后台「系统管理 → 设置 →
+Site → Site URL」填，保存即生效、不用重启。
+
+改动要点：
+
+· get_service_url() 读 constance，读到空则回落 settings。try/except 不是冗余——
+  migrate 期间、以及不经过 Django 启动的独立脚本里，constance 读表会抛异常，而
+  SERVICE_URL 在这些路径上也会被读到，不能让它们把启动期打断。
+  所有派生地址跟着它走：分享链接、下载链接、钉钉回调地址（经
+  get_site_scheme_and_netloc()）。
+
+· FILE_SERVER_ROOT 不再单独配置，由 SERVICE_URL 的 scheme+netloc 推导。上游让这
+  两个值分开填是冗余，改一处忘另一处的症状是「页面能开、上传下载坏」。从 netloc
+  而非整串拼，是因为上游 settings.py 里 FILE_SERVER_ROOT 取的是 host_url（不带
+  SITE_ROOT）。INNER_FILE_SERVER_ROOT（127.0.0.1:8082）不受影响。
+
+· 修掉三处 import 期绑定。`from seahub.settings import SERVICE_URL` 会在启动期
+  固化值，改了什么也不发生、还不报错——静默失效。其中 context_processors.py 的
+  FILE_SERVER_ROOT 最要命，前端上传下载用的正是它。OCM 两处一并修（未启用，但
+  留着就是雷）。
+
+· 后台 API 白名单加 SERVICE_URL（允许清空 = 回落默认）。该 API 用显式白名单决定
+  读写权限，只加 constance 键不加白名单会 400。
+
+· 前端字段是硬编码列表而非按注册表渲染，必须手工加 InputItem（与 0003 同理）。
+
+dev 已验证：跨进程即时生效（进程 A 写 → 全新进程 B 立刻读到）、后台 API GET/PUT
+通过、改完请求 /dingtalk/login/ 其 redirect_uri 立刻变成新域名（走 gunicorn、没
+重启）、清空回落、删行回出厂。前端经 npm build + collectstatic 后确认字段进了
+实际被服务的那份产物。
+---
+ .../sys-admin/web-settings/web-settings.js    | 12 +++++++
+ frontend/webpack-stats.pro.json               | 14 ++++----
+ seahub/api2/endpoints/admin/web_settings.py   |  4 ++-
+ seahub/api2/endpoints/ocm.py                  |  7 ++--
+ seahub/base/context_processors.py             |  8 +++--
+ seahub/ocm_via_webdav/ocm_api.py              |  7 ++--
+ seahub/settings.py                            |  5 +++
+ seahub/utils/__init__.py                      | 35 +++++++++++++++++--
+ 8 files changed, 72 insertions(+), 20 deletions(-)
+
+diff --git a/frontend/src/pages/sys-admin/web-settings/web-settings.js b/frontend/src/pages/sys-admin/web-settings/web-settings.js
+index 30f226c..8c9e0c7 100644
+--- a/frontend/src/pages/sys-admin/web-settings/web-settings.js
++++ b/frontend/src/pages/sys-admin/web-settings/web-settings.js
+@@ -99,6 +99,18 @@ class WebSettings extends Component {
+               <Fragment>
+                 <p className="small text-secondary my-4">{gettext('Note: Settings via web interface are saved in database table (seahub-db/constance_config). They have a higher priority over the settings in config files.')}</p>
+ 
++                <Section headingText={gettext('Site')}>
++                  <Fragment>
++                    <InputItem
++                      saveSetting={this.saveSetting}
++                      displayName={gettext('Site URL')}
++                      keyText='SERVICE_URL'
++                      value={config_dict['SERVICE_URL']}
++                      helpTip={gettext('Public URL of this site, e.g. https://seafile.example.com (trailing slash optional). Share links, download links and the DingTalk callback URL are all built from it, so it must be the address users reach the site at -- not an internal IP. Takes effect without restarting. Leave empty to use the SERVICE_URL from the config file.')}
++                    />
++                  </Fragment>
++                </Section>
++
+                 <Section headingText={gettext('Branding')}>
+                   <Fragment>
+                     <InputItem
+diff --git a/frontend/webpack-stats.pro.json b/frontend/webpack-stats.pro.json
+index 67f4d8d..be25694 100644
+--- a/frontend/webpack-stats.pro.json
++++ b/frontend/webpack-stats.pro.json
+@@ -757,13 +757,13 @@
+       "name": "static/js/subscription.7e92e763.js",
+       "path": "/Volumes/newdisc/appdev/Seafile/seahub/frontend/build/frontend/static/js/subscription.7e92e763.js"
+     },
+-    "static/js/sysAdmin.0954a22d.js": {
+-      "name": "static/js/sysAdmin.0954a22d.js",
+-      "path": "/Volumes/newdisc/appdev/Seafile/seahub/frontend/build/frontend/static/js/sysAdmin.0954a22d.js"
++    "static/js/sysAdmin.6c35e327.js": {
++      "name": "static/js/sysAdmin.6c35e327.js",
++      "path": "/Volumes/newdisc/appdev/Seafile/seahub/frontend/build/frontend/static/js/sysAdmin.6c35e327.js"
+     },
+-    "static/js/sysAdmin.0954a22d.js.LICENSE.txt": {
+-      "name": "static/js/sysAdmin.0954a22d.js.LICENSE.txt",
+-      "path": "/Volumes/newdisc/appdev/Seafile/seahub/frontend/build/frontend/static/js/sysAdmin.0954a22d.js.LICENSE.txt"
++    "static/js/sysAdmin.6c35e327.js.LICENSE.txt": {
++      "name": "static/js/sysAdmin.6c35e327.js.LICENSE.txt",
++      "path": "/Volumes/newdisc/appdev/Seafile/seahub/frontend/build/frontend/static/js/sysAdmin.6c35e327.js.LICENSE.txt"
+     },
+     "static/js/TCAccept.c8d6d3b8.js": {
+       "name": "static/js/TCAccept.c8d6d3b8.js",
+@@ -1019,7 +1019,7 @@
+       "static/css/commons.943850d3.css",
+       "static/js/commons.ec00e3ef.js",
+       "static/css/sysAdmin.b3d82405.css",
+-      "static/js/sysAdmin.0954a22d.js"
++      "static/js/sysAdmin.6c35e327.js"
+     ],
+     "TCAccept": [
+       "static/js/runtime.b5181da3.js",
+diff --git a/seahub/api2/endpoints/admin/web_settings.py b/seahub/api2/endpoints/admin/web_settings.py
+index 98eef05..7f5e269 100644
+--- a/seahub/api2/endpoints/admin/web_settings.py
++++ b/seahub/api2/endpoints/admin/web_settings.py
+@@ -34,7 +34,9 @@ DIGIT_WEB_SETTINGS = [
+ ]
+ 
+ # 允许保存为空字符串的字符串项（密钥类配置需要可清空）
+-STRING_WEB_SETTINGS_ALLOW_EMPTY = ('CUSTOM_CSS', 'DINGTALK_APP_KEY', 'DINGTALK_APP_SECRET')
++# SERVICE_URL 也允许清空——清空 = 回落到 settings/环境变量里的默认值
++STRING_WEB_SETTINGS_ALLOW_EMPTY = ('CUSTOM_CSS', 'DINGTALK_APP_KEY', 'DINGTALK_APP_SECRET',
++                                   'SERVICE_URL')
+ 
+ STRING_WEB_SETTINGS = ('TEXT_PREVIEW_EXT', 'SITE_NAME', 'SITE_TITLE') + STRING_WEB_SETTINGS_ALLOW_EMPTY
+ 
+diff --git a/seahub/api2/endpoints/ocm.py b/seahub/api2/endpoints/ocm.py
+index bb752ee..d2555a5 100644
+--- a/seahub/api2/endpoints/ocm.py
++++ b/seahub/api2/endpoints/ocm.py
+@@ -17,7 +17,8 @@ from seahub.api2.utils import api_error
+ 
+ from seaserv import seafile_api
+ 
+-from seahub.settings import SERVICE_URL
++# [dev] SERVICE_URL 已 constance 化，不能在模块级 import（启动期固化、后台改了不生效）
++from seahub.utils import get_service_url
+ from seahub.utils.repo import get_available_repo_perms, get_repo_owner
+ from seahub.base.templatetags.seahub_tags import email2nickname, email2contact_email
+ from seahub.constants import PERMISSION_READ, PERMISSION_READ_WRITE
+@@ -85,7 +86,7 @@ class OCMProtocolView(APIView):
+         result = {
+             'enabled': True,
+             'apiVersion': OCM_API_VERSION,
+-            'endPoint': SERVICE_URL + '/' + OCM_ENDPOINT,
++            'endPoint': get_service_url() + '/' + OCM_ENDPOINT,
+             'resourceTypes': {
+                 'name': OCM_RESOURCE_TYPE_LIBRARY,
+                 'shareTypes': OCM_SHARE_TYPES,
+@@ -385,7 +386,7 @@ class OCMSharesPrepareView(APIView):
+                     'sharedSecret': shared_secret,
+                     'permissions': SEAFILE_PERMISSION2OCM_PERMISSION[permission],
+                     'repoId': repo_id,
+-                    'seafileServiceURL': check_url_slash(SERVICE_URL),
++                    'seafileServiceURL': check_url_slash(get_service_url()),
+                 },
+             },
+         }
+diff --git a/seahub/base/context_processors.py b/seahub/base/context_processors.py
+index 5836771..7198916 100644
+--- a/seahub/base/context_processors.py
++++ b/seahub/base/context_processors.py
+@@ -25,7 +25,9 @@ from seahub.settings import SEAFILE_VERSION, SITE_DESCRIPTION, \
+     LOGIN_BG_IMAGE_PATH, THUMBNAIL_DEFAULT_SIZE, \
+     CUSTOM_LOGIN_BG_PATH, ENABLE_SHARE_LINK_REPORT_ABUSE, \
+     PRIVACY_POLICY_LINK, TERMS_OF_SERVICE_LINK, ENABLE_SEADOC, THUMBNAIL_SIZE_FOR_GRID, \
+-    FILE_SERVER_ROOT, ENABLE_WHITEBOARD, ENABLE_SEAFILE_AI
++    ENABLE_WHITEBOARD, ENABLE_SEAFILE_AI
++# [dev] FILE_SERVER_ROOT 不再从这里 import——它是启动期绑定，后台改了不生效。
++# 改走 seahub.utils.get_fileserver_root()，该项由 SERVICE_URL 推导。
+ 
+ from seahub.organizations.models import OrgAdminSettings
+ from seahub.organizations.settings import ORG_ENABLE_ADMIN_CUSTOM_LOGO
+@@ -34,7 +36,7 @@ from seahub.onlyoffice.settings import ENABLE_ONLYOFFICE, \
+ from seahub.wopi.settings import ENABLE_OFFICE_WEB_APP, \
+         OFFICE_WEB_APP_EDIT_FILE_EXTENSION
+ from seahub.constants import DEFAULT_ADMIN
+-from seahub.utils import get_site_name, get_service_url
++from seahub.utils import get_site_name, get_service_url, get_fileserver_root
+ from seahub.avatar.templatetags.avatar_tags import api_avatar_url
+ 
+ 
+@@ -78,7 +80,7 @@ def base(request):
+     repo_id_patt = r".*/([a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})/.*"
+     m = re.match(repo_id_patt, request.get_full_path())
+     search_repo_id = m.group(1) if m is not None else None
+-    file_server_root = FILE_SERVER_ROOT
++    file_server_root = get_fileserver_root()
+     if not file_server_root.endswith('/'):
+         file_server_root += '/'
+ 
+diff --git a/seahub/ocm_via_webdav/ocm_api.py b/seahub/ocm_via_webdav/ocm_api.py
+index b52a9da..4f06fba 100644
+--- a/seahub/ocm_via_webdav/ocm_api.py
++++ b/seahub/ocm_via_webdav/ocm_api.py
+@@ -17,7 +17,8 @@ from rest_framework.response import Response
+ from rest_framework.permissions import IsAuthenticated
+ from rest_framework.authentication import SessionAuthentication
+ 
+-from seahub.settings import SERVICE_URL
++# [dev] SERVICE_URL 已 constance 化，不能在模块级 import（启动期固化、后台改了不生效）
++from seahub.utils import get_service_url
+ from seahub.api2.authentication import TokenAuthentication
+ from seahub.api2.throttling import UserRateThrottle
+ from seahub.api2.utils import api_error
+@@ -130,7 +131,7 @@ class OCMProviderView(APIView):
+             result = {
+                 'enabled': True,
+                 'apiVersion': OCM_API_VERSION,
+-                'endPoint': SERVICE_URL + '/' + OCM_ENDPOINT,
++                'endPoint': get_service_url() + '/' + OCM_ENDPOINT,
+                 'resourceTypes': {
+                     'name': OCM_RESOURCE_TYPE_LIBRARY,
+                     'shareTypes': OCM_SHARE_TYPES,
+@@ -145,7 +146,7 @@ class OCMProviderView(APIView):
+             result = {
+                 'apiVersion': '1.0-proposal1',
+                 'enabled': True,
+-                'endPoint': urljoin(SERVICE_URL, OCM_VIA_WEBDAV_OCM_ENDPOINT),
++                'endPoint': urljoin(get_service_url(), OCM_VIA_WEBDAV_OCM_ENDPOINT),
+                 'resourceTypes': {
+                     'name': 'file',
+                     'protocols': {'webdav': 'TODO'},
+diff --git a/seahub/settings.py b/seahub/settings.py
+index cdb38b4..b333b1e 100644
+--- a/seahub/settings.py
++++ b/seahub/settings.py
+@@ -1236,6 +1236,11 @@ CONSTANCE_CONFIG = {
+     'ENABLE_DINGTALK': (ENABLE_DINGTALK, ''),
+     'DINGTALK_APP_KEY': (DINGTALK_APP_KEY, ''),
+     'DINGTALK_APP_SECRET': (DINGTALK_APP_SECRET, ''),
++
++    # [dev] 站点公开地址。默认值来自 seahub_settings.py / SEAFILE_SERVER_* 环境变量，
++    # 后台「系统管理 → 设置」保存后覆盖。FILE_SERVER_ROOT 不单独注册——由它推导
++    # （见 utils.get_fileserver_root），避免同一个域名要填两处。
++    'SERVICE_URL': (SERVICE_URL, ''),
+ }
+ 
+ # if Seafile admin enable remote user authentication in conf/seahub_settings.py
+diff --git a/seahub/utils/__init__.py b/seahub/utils/__init__.py
+index a524e9e..5ee16f9 100644
+--- a/seahub/utils/__init__.py
++++ b/seahub/utils/__init__.py
+@@ -209,8 +209,17 @@ def get_fileserver_root():
+ 
+     Returns:
+     	Constructed fileserver root.
++
++    [dev] 不再单独配置，由 SERVICE_URL 的 scheme+netloc 推导（+ /seafhttp）。
++
++    上游让 SERVICE_URL 与 FILE_SERVER_ROOT 分开填是冗余，多一处能填错的地方：
++    改了域名只改一处，另一处忘了就成了「页面能开、上传下载坏」的隐蔽故障。
++    推导与上游语义一致——上游 settings.py 里 FILE_SERVER_ROOT 取的就是
++    host_url（不带 SITE_ROOT），而 SERVICE_URL 在 SITE_ROOT 场景下才带路径。
++
++    容器内部访问走 get_inner_fileserver_root()（127.0.0.1:8082），不受影响。
+     """
+-    return seahub.settings.FILE_SERVER_ROOT
++    return get_site_scheme_and_netloc() + '/seafhttp'
+ 
+ def get_inner_fileserver_root():
+     """Construct inner seafile fileserver address and port.
+@@ -941,9 +950,29 @@ def calc_file_path_hash(path, bits=12):
+     return path_hash
+ 
+ def get_service_url():
+-    """Get service url from seaserv.
++    """站点公开地址（SERVICE_URL）。
++
++    [dev] 已 constance 化：管理员在「系统管理 → 设置」页填，免重启生效。
++    默认值来自 seahub_settings.py / 环境变量，后台保存后覆盖；后台清空则回落默认。
++
++    读这个值必须走本函数，不要在模块级 `from seahub.settings import SERVICE_URL`
++    ——那样会在启动期固化，后台改了不生效（context_processors 与 OCM 都踩过）。
++
++    所有派生地址都跟着它走：分享链接、下载链接、邮件里的链接，以及钉钉回调
++    地址（get_site_scheme_and_netloc() 从这里取 scheme+netloc）。
+     """
+-    return seahub.settings.SERVICE_URL
++    try:
++        from constance import config
++        url = config.SERVICE_URL or ''
++    except Exception:
++        # constance 不可用（数据库未就绪 / 表未迁移 / 独立脚本）时静默回落，
++        # 不能让它把启动期或迁移期打断
++        url = ''
++
++    if not url:
++        url = seahub.settings.SERVICE_URL
++
++    return url.rstrip('/')
+ 
+ def get_webdav_url():
+     """Get webdav url.

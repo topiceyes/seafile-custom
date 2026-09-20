@@ -1,7 +1,7 @@
 From 9b44a588daae85549b94618f79674558771483a0 Mon Sep 17 00:00:00 2001
 From: topiceyes <273286342+topiceyes@users.noreply.github.com>
 Date: Wed, 16 Sep 2026 23:12:08 +0800
-Subject: [PATCH 4/8] Return friendly error when DingTalk department member
+Subject: [PATCH 4/9] Return friendly error when DingTalk department member
  list API fails
 
 DingTalk returns errcode/errmsg (e.g. 60011 permission not granted)

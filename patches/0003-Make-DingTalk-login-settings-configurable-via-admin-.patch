@@ -1,7 +1,7 @@
 From 75e7115797273a4186b7cefcfb25f558f15c4671 Mon Sep 17 00:00:00 2001
 From: topiceyes <273286342+topiceyes@users.noreply.github.com>
 Date: Wed, 16 Sep 2026 23:02:47 +0800
-Subject: [PATCH 3/8] Make DingTalk login settings configurable via admin web
+Subject: [PATCH 3/9] Make DingTalk login settings configurable via admin web
  UI
 
 Move ENABLE_DINGTALK / DINGTALK_APP_KEY / DINGTALK_APP_SECRET from

@@ -6,8 +6,9 @@
 #   ./init-prod-env.sh --admin-email me@acme.cn --admin-password 'xxx'
 #
 # 设计原则：**部署时不必知道任何"以后能改"的东西。**
-#   · 域名     → 先用占位值，装完用 ./set-domain.sh 随时换（见该脚本头注）
-#   · 钉钉凭据 → 留空，装完在「系统管理 → 设置」页填，免重启生效（docs/002）
+#   · 域名     → 先用占位值当初始默认，装完在「系统管理 → 设置 → Site URL」填真的，免重启
+#                （补丁 0009 把 SERVICE_URL 挪进了 constance，见 docs/011）
+#   · 钉钉凭据 → 留空，装完在同一页填，免重启生效（docs/002）
 #   · 管理员密码 → 自动生成并打印，登录后自己改
 # 所以这个脚本问都不用问，跑完直接起服务。
 #
@@ -136,10 +137,10 @@ echo "  └───────────────────────
 echo "    （数据库密码等已写进 .env，这里列出只是为了让你留底）"
 echo
 if [ "$DOMAIN" = "$PLACEHOLDER_DOMAIN" ]; then
-  echo "ℹ️  域名用的是占位值 ${DOMAIN}。等真域名定了再跑："
-  echo "        ./set-domain.sh <你的域名>          # 首启之后任何时候都行"
+  echo "ℹ️  域名用的是占位值 ${DOMAIN} —— 它只是个初始默认值，不影响首启。"
+  echo "     装完在「系统管理 → 设置 → Site URL」填真域名，免重启（docs/011）"
 else
-  echo "ℹ️  域名：${DOMAIN}"
+  echo "ℹ️  域名：${DOMAIN}（装完也能在「系统管理 → 设置 → Site URL」随时改）"
 fi
 echo "ℹ️  钉钉凭据留空 —— 装完在「系统管理 → 设置」页填即可，免重启（docs/002）"
 echo

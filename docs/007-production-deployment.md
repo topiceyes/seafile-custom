@@ -169,22 +169,22 @@ tarball 内，重取代码不会覆盖它。
 上面这套流程刻意**不要求部署时就知道域名和钉钉凭据**——这两样都能装完之后再定，而且
 `init-prod-env.sh` 因此可以零提问地一口气跑完。分别说明：
 
-**域名**：默认写占位值 `seafile.local`。它只影响三处，且都可在首启后改：
+**域名**：`.env` 里的 `SEAFILE_DOMAIN` 填的只是**初始默认值**（可以先用占位值 `seafile.local`）。
+`SERVICE_URL` 已 constance 化（补丁 0009），装完在**系统管理 → 设置 → Site → Site URL** 填真域名，
+**保存即生效、不用重启**。分享链接、下载链接、钉钉回调地址全部跟着它走。
 
-| 位置 | 作用 | 改法 |
-|---|---|---|
-| `seahub_settings.py` 的 `SERVICE_URL` | **唯一真正要紧的**：生成分享链接、下载链接、钉钉回调地址都从它派生 | `./set-domain.sh <新域名>` |
-| `seahub_settings.py` 的 `FILE_SERVER_ROOT` | 文件上传下载走它 | 同上 |
-| nginx `server_name` | 反代模式下只有一个 server 块，**装饰性**（它就是默认虚拟主机） | 同上 |
-
-```bash
-./set-domain.sh seafile.acme.cn     # 首启之后任何时候都行，改完 restart 即可
-```
+- `FILE_SERVER_ROOT` **不用单独填**——由 `SERVICE_URL` 推导（上游那两处分开填是冗余，
+  改一处忘另一处的症状是「页面能开、上传下载坏」）
+- nginx `server_name` 仍然是首启渲染的一次性产物，但反代模式下它是**装饰性**的
+  （只有一个 server 块 = 默认虚拟主机），域名不匹配照样能访问
+- 详见 [docs/011](011-service-url-admin-config.md)
 
 > **为什么不能只改 `.env` 重来**：容器里的 `bootstrap.py:generate_local_nginx_conf()` 只在
-> `/shared/nginx/conf/seafile.nginx.conf` **不存在**时才渲染。首启之后这个文件就在了，
-> 后面改环境变量不再有任何效果——改 `.env` 只会在下次「全新数据卷」时生效。
-> `set-domain.sh` 直接改数据卷里的最终文件（先备份成 `.bak-<时间戳>`），绕开这个一次性渲染。
+> `/shared/nginx/conf/seafile.nginx.conf` **不存在**时才渲染，首启之后改环境变量不再有任何效果。
+> 但 `SERVICE_URL` 现在走数据库，不受这个限制——这正是补丁 0009 要解决的问题。
+
+> **改完域名要手工同步的只有一处**：钉钉开发者后台的回调域名。那是钉钉侧的配置，
+> Seafile 只能生成地址、改不了对方后台。
 
 **钉钉凭据**：`.env` 里的 `SEAHUB_DINGTALK_APP_KEY/SECRET` 留空即可。钉钉配置走 constance
 （数据库表），装完在**系统管理 → 设置**页填，**免重启生效**（见 [docs/002](002-dingtalk-admin-config.md)）。
@@ -223,13 +223,9 @@ tarball 内，重取代码不会覆盖它。
 
 ## 5. 上线后动作
 
-0. **如果部署时用的是占位域名**（`seafile.local`），先切真域名，再往下走：
-   ```bash
-   cd /opt/seafile-custom/deploy
-   ./set-domain.sh seafile.acme.cn
-   docker compose restart seafile
-   ```
-   然后试一次**文件上传 + 下载**——这条过了就说明 `SERVICE_URL` 与 `FILE_SERVER_ROOT` 都对了。
+0. **切真域名**：管理员登录 → 系统管理 → 设置 → Site → Site URL 填 `https://你的域名` → 保存。
+   **不用重启**（补丁 0009，见 [docs/011](011-service-url-admin-config.md)）。
+   然后试一次**文件上传 + 下载**——这条过了就说明新地址完全生效了。
 1. **钉钉开发者后台**：回调域名改为 `https://<域名>/dingtalk/callback/`
 2. 管理员登录 → 系统管理 → 设置：核对钉钉开关与密钥（constance 默认值来自渲染的 seahub_settings.py）
 3. 验证清单：
