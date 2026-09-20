@@ -28,9 +28,11 @@ deploy/image/*   ─┘                    ├ git am patches/                  
 - [ ] 域名 DNS A 记录已指向服务器公网 IP（`dig +short <域名>` 确认）
 - [ ] 服务器 80 和 443 端口公网可达（80 是 LE webroot 验证的硬要求）
   - 验证：`curl -I http://<域名>/.well-known/acme-challenge/test` 返回 404/502 都算通，超时就是被墙/被防火墙挡
-- [ ] **GHCR 凭据**：classic PAT（`repo` + `read:packages`）——取部署文件 + 拉私有镜像都用它
-- [ ] **服务器能连 ghcr.io**：`docker login ghcr.io` + `docker compose pull` 实测一次。
-  ⚠️ 开发机能连不代表服务器能连，这是本方案最需要先验的假设；不通则走 [010 §8](010-ci-release-pipeline.md) 的 ACR 备选
+- [ ] **GHCR 凭据**：classic PAT（`repo` + `read:packages`）——取部署文件 + 拉私有镜像都用它。
+  一个 classic PAT 覆盖两件事；CI 推镜像用内置 `GITHUB_TOKEN`，不需要额外 PAT
+- [ ] 服务器网络可达 `ghcr.io` / `api.github.com`：已确认与开发机同网络（开发机实测可达）。
+  ⚠️ 网络通≠拉得下来——**更常见的失败点是 PAT 的 scope**（缺 `read:packages` 会 403，
+  `docker login` 却报成功）。部署时 §4.3 那步自然会验到；真不通走 [010 §8](010-ci-release-pipeline.md) 的 ACR 备选
 - [ ] 服务器磁盘规划：`/data/seafile`（库+文件+备份）与 `/data/seafile-mysql` 所在盘要够大
 - [ ] 钉钉回调域名准备好切到 `https://<域名>/dingtalk/callback/`（上线后改）
 
@@ -135,9 +137,9 @@ docker logs -f seafile         # 等到 seahub 启动完成（能 curl 通登录
 这是私有仓库一行命令能成立的关键；tarball 根目录是 `<owner>-<repo>-<sha>/` 故需
 `--strip-components=1`；`.env` 不在 tarball 内，重取代码不会覆盖它。
 
-> **部署前先验 ghcr 可达性**（见 §2 清单）：`docker login` + `docker compose pull` 不碰在跑的
-> 容器，可以在正式上线前先在服务器上跑一次，两分钟出结果。不通就走 [010 §8](010-ci-release-pipeline.md)
-> 的 ACR 备选。
+> **拉不下来时先怀疑 PAT，而不是网络**：`docker login ghcr.io` 对 scope 不足的 token 会报
+> `Login Succeeded`，真正的 403 要到 `docker pull` 才暴露（我在开发机上用 gh 的 OAuth token
+> 实测过这个现象）。PAT 需 `read:packages`；报 `denied` 则多半是 PAT 过期。
 
 **为什么 init-conf --prod 在首启之后**：全新数据卷首启时，镜像内 `setup-seafile-mysql.py` 用 `open('w')` **无条件重写** `seahub_settings.py`（SECRET_KEY 随机、DB 密码取 `DB_PASSWORD` 环境变量、SERVICE_URL 取 `SEAFILE_SERVER_*`）。预渲染会被覆盖。所以流程是：环境变量喂给 setup 完成基础配置 → 首启后追加二开定制块（幂等，带标记）→ 重启生效。
 
@@ -283,6 +285,11 @@ rm -rf rehearsal-data rehearsal2-* .env.rehearsal .env.rehearsal-restore
 3. 恢复缺 MySQL 授权 → docs/009 §3 步骤 3
 4. `seahub.sh python-env` 是交互式入口不接收参数，非交互用法：`echo '<code>' | docker exec -i seafile .../seahub.sh python-env`（代码需自带 django.setup() prologue）
 5. 登录表单 POST 字段名是 `login`；https 下 CSRF 需要 Referer 头
+6. **镜像冒烟断言写错路径**（CI 首跑才暴露）：断言 `frontend/build/static/js`，实际是
+   `build/frontend/static/js`，且真正被服务的是 collectstatic 产物 `media/assets/frontend/static/js`。
+   根因是同一套断言在 workflow 与本文各存一份 → 已收敛为 `deploy/smoke-test.sh` 单一来源，
+   并改为拿 webpack-stats 的 chunk 清单逐个核对落点（只断言 build 目录存在会漏掉
+   「collectstatic 没跑」这类白屏故障）
 
 **CI 流水线（2026-09-20，源码树复现链路已在本地逐条验过）**：
 
@@ -293,7 +300,9 @@ rm -rf rehearsal-data rehearsal2-* .env.rehearsal .env.rehearsal-restore
 | `--print-tag` | ✅ `12.0.14-dingtalk.8`（补丁数与 tag 数字一致） |
 | `git archive` 文件完整性 | ✅ 3812 个文件，含 `frontend/package-lock.json` |
 | 取上游 tarball（免代理） | ✅ `api.github.com` → `codeload.github.com` 直连 200 |
-| **首次 CI 运行 + 镜像发布** | ⏳ 待回填（见 [010 §9](010-ci-release-pipeline.md) 台账） |
-| **CI amd64 产物 vs 本地 arm64 产物** | ⏳ 待回填（比对方法：`find . -type f \| LC_ALL=C sort \| sha256sum`） |
+| 首次 CI 运行 + 镜像发布 | ✅ 构建 8m27s；tag `12.0.14-dingtalk.8`，digest 记在 [010 §9](010-ci-release-pipeline.md) 台账 |
+| tag 已存在守卫 | ✅ 被真实触发过一次并正确拦截（在昂贵构建之前） |
+| **CI amd64 产物 vs 本地 arm64 产物** | ✅ 三层指纹**完全一致**：overlay `bee2ffbe…`(937)、前端产物 `e1f7eb47…`(269)、media/assets `6dd7b6e9…`(305) —— 连 webpack 产物都跨架构逐字节相同 |
+| 服务器 ghcr 拉取 | ⏳ 上线时验（用户确认与开发机同网络） |
 
 **生产首次上线后回填**：LE 签发耗时、扫码登录、client-SSO、首次备份、服务器 ghcr 拉取实测耗时。
