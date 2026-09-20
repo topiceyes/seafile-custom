@@ -124,9 +124,17 @@ mkdir -p /data/seafile /data/seafile-mysql
 echo "$PAT" | docker login ghcr.io -u <github用户名> --password-stdin
 chmod 600 ~/.docker/config.json
 
-# ---- 4.4 首启 ----
+# ---- 4.4 首启（db-first：先 db+memcached，等 MariaDB 完全就绪再起 seafile）----
 docker compose pull
-docker compose up -d           # 首启：LE 签发 + setup 生成基础配置 + 建管理员
+
+# 一把梭 up -d 在【全新数据卷】上有 MariaDB 竞态（见 §4 失败场景 2）：
+# MariaDB 初始化要建 root 密码 + 跑 init SQL + 自己重启一次，可能超出 setup 的等待窗口。
+# db-first 在彩排里实测稳定，且不比一把梭多花时间。
+docker compose up -d db memcached
+# 等到能真正连上（看到 "ready for connections" 还不够——MariaDB 初始化分两阶段）
+docker exec seafile-mysql mariadb -uroot -p"$SEAFILE_MYSQL_ROOT_PASSWORD" -e "select 1"
+
+docker compose up -d seafile   # 首启：LE 签发 + setup 生成基础配置 + 建管理员
 docker logs -f seafile         # 等到 seahub 启动完成（能 curl 通登录页）
 
 ./init-conf.sh --prod          # ⚠️ 必须在首启完成后跑：追加钉钉/SSO/账号管控 + 开 WebDAV
