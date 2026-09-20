@@ -1,0 +1,70 @@
+# Seafile 12 CE 二开生产部署（自建镜像 + Let's Encrypt 真实域名）
+# 完整流程（首次部署/彩排/回滚/升级）见 docs/007-production-deployment.md。
+# 变量从 .env 读取（模板 .env.prod.example；dev 环境用 seafile-server.yml，两者独立）。
+#
+# 与 dev compose 的关键差异：
+#   - 镜像用自建 tag（二开代码 + 前端 + collectstatic 已烘进去），不挂源码
+#   - 80 端口必须公网可达（Let's Encrypt webroot 验证 + 301 跳转）
+#   - SEAFILE_SERVER_LETSENCRYPT=true 是唯一 https 开关（容器会自动签发+续期证书）
+#   - 管理员初始化变量是 INIT_SEAFILE_ADMIN_*（不是 SEAFILE_ADMIN_*，镜像不认后者）
+#   - 数据卷里不要预置任何 nginx 配置（会压制官方模板渲染，init-conf.sh --prod 有防呆）
+
+services:
+  db:
+    image: mariadb:10.11
+    container_name: seafile-mysql
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=${SEAFILE_MYSQL_ROOT_PASSWORD}
+      - MYSQL_LOG_CONSOLE=true
+      - MARIADB_AUTO_UPGRADE=1
+    volumes:
+      - ${SEAFILE_MYSQL_VOLUME}:/var/lib/mysql
+    networks:
+      - seafile-net
+
+  memcached:
+    image: memcached:1.6.29
+    container_name: seafile-memcached
+    restart: unless-stopped
+    entrypoint: memcached -m 256
+    networks:
+      - seafile-net
+
+  seafile:
+    image: ${SEAFILE_PRO_IMAGE}
+    container_name: seafile
+    restart: unless-stopped
+    ports:
+      # LE webroot 验证 + http→https 跳转，必须公网可达
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ${SEAFILE_VOLUME}:/shared
+      # 离职员工同步 + 每日备份（容器自带 cron 加载 /etc/cron.d/）
+      - ./dingtalk-sync.cron:/etc/cron.d/dingtalk-sync:ro
+      - ./backup.cron:/etc/cron.d/seafile-backup:ro
+      - ./backup.sh:/usr/local/bin/seafile-backup.sh:ro
+    environment:
+      - DB_HOST=${SEAFILE_MYSQL_DB_HOST}
+      - DB_ROOT_PASSWD=${SEAFILE_MYSQL_ROOT_PASSWORD}
+      # 首启 setup 用这两个值创建 seafile 库用户并写进 seahub_settings.py（不传则随机）
+      - DB_USER=${SEAFILE_MYSQL_DB_USER}
+      - DB_PASSWORD=${SEAFILE_MYSQL_DB_PASSWORD}
+      - TIME_ZONE=Asia/Shanghai
+      # 纯域名（不带协议/端口）：证书文件名 + nginx server_name + SERVICE_URL 三处引用
+      - SEAFILE_SERVER_HOSTNAME=${SEAFILE_DOMAIN}
+      # 唯一 https 开关：自动签发 Let's Encrypt 证书并安装续期 cron
+      - SEAFILE_SERVER_LETSENCRYPT=true
+      # 首次启动建管理员（注意：镜像读的是 INIT_ 前缀，SEAFILE_ADMIN_* 无效）
+      - INIT_SEAFILE_ADMIN_EMAIL=${SEAFILE_ADMIN_EMAIL}
+      - INIT_SEAFILE_ADMIN_PASSWORD=${SEAFILE_ADMIN_PASSWORD}
+      - JWT_PRIVATE_KEY=${JWT_PRIVATE_KEY}
+    depends_on:
+      - db
+      - memcached
+    networks:
+      - seafile-net
+
+networks:
+  seafile-net:

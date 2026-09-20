@@ -9,13 +9,16 @@
 ```
 .
 ├── deploy/                 # Docker 部署（本仓库的主体）
-│   ├── seafile-server.yml      # compose 定义
-│   ├── .env.example            # 配置模板（cp 成 .env 后填值）
-│   ├── init-conf.sh            # 把 conf-templates/ 渲染进数据卷
-│   ├── gen-ssl-cert.sh         # 生成自签 TLS 证书
-│   ├── rebuild-frontend.sh     # 前端构建 + collectstatic
-│   ├── sync-dingtalk-users.sh  # 手动触发离职同步
-│   ├── dingtalk-sync.cron      # 容器内定时任务
+│   ├── seafile-server.yml      # dev compose（源码 bind-mount，本地开发）
+│   ├── seafile-prod.yml        # 生产 compose（自建镜像 + Let's Encrypt）
+│   ├── .env.example / .env.prod.example   # dev / 生产配置模板
+│   ├── init-conf.sh            # 把 conf-templates/ 渲染进数据卷（--prod 生产模式）
+│   ├── gen-ssl-cert.sh         # 自签证书（dev IP / 彩排域名）
+│   ├── build-image.sh          # 生产镜像构建（git archive 上下文 + buildx 多架构）
+│   ├── image/                  # Dockerfile + 修好的 nginx 模板
+│   ├── backup.sh / backup.cron # 每日备份（三库 dump + 数据打包）
+│   ├── rebuild-frontend.sh     # dev 前端构建（生产走镜像内构建）
+│   ├── sync-dingtalk-users.sh / dingtalk-sync.cron
 │   ├── conf-templates/         # 配置模板（占位符形式，无密钥）
 │   └── seafile-data/           # ⛔ 运行时数据，不入库
 ├── patches/                # seahub 二开改动（patch 系列）
@@ -47,6 +50,7 @@ Seafile 的二开改动集中在 `seahub`（Django Web 层），共 7 个提交�
 | 0005 | 禁止断开钉钉绑定 | [003](docs/003-lockdown-settings.md) |
 | 0006 | 离职员工自动禁用命令 | [004](docs/004-auto-deactivate-departed-users.md) |
 | 0007 | 钉钉登录 `invalid state` 可诊断 | [001](docs/001-dingtalk-login.md) |
+| 0008 | 密码登录仅限管理员（钉钉 SSO 唯一入口） | [008](docs/008-restrict-password-login.md) |
 
 应用到上游源码（基线 `haiwen/seahub` 分支 `12.0`，commit `0877ad7`）：
 
@@ -58,6 +62,8 @@ git am /path/to/this/repo/patches/*.patch
 
 ## 快速上手
 
+**本地开发**：
+
 ```bash
 cd deploy
 cp .env.example .env          # 填入数据库密码、JWT 密钥等
@@ -65,6 +71,8 @@ cp .env.example .env          # 填入数据库密码、JWT 密钥等
 ./init-conf.sh                # 渲染配置到 seafile-data/
 docker compose up -d
 ```
+
+**生产部署**（自建镜像 → ACR → 服务器，Let's Encrypt 正式证书）：见 [docs/007](docs/007-production-deployment.md)。核心命令 `./build-image.sh <registry>/<ns>`，上线前先跑本地彩排（docs/007 §7）。
 
 启动后访问 <https://127.0.0.1>（自签证书，浏览器需点「继续前往」）。
 

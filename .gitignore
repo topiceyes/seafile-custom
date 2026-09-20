@@ -17,3 +17,8 @@ seahub/
 *.pyc
 __pycache__/
 .claude/settings.local.json
+
+# 本地彩排数据（见 docs/007 彩排章节）
+deploy/rehearsal*/
+deploy/.env.rehearsal*
+deploy/seafile-mc-devbuild*

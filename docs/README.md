@@ -12,6 +12,9 @@
 | 004 | [离职账号自动禁用](004-auto-deactivate-departed-users.md) | 定时比对钉钉通讯录，禁用离职员工账号 | ✅ 已完成（2026-09-17） |
 | 005 | [启用 WebDAV](005-enable-webdav.md) | 开启官方默认关闭的 SeaFDAV 服务（502 修复） | ✅ 已完成（2026-09-17） |
 | 006 | [全站 HTTPS](006-https-setup.md) | 自签证书 + 手写 nginx，客户端 SSO 需要 | ✅ 已完成（2026-09-17） |
+| 007 | [生产部署](007-production-deployment.md) | 自建镜像 + ACR + Let's Encrypt 正式上线 | ✅ 已完成（2026-09-20） |
+| 008 | [密码登录仅限管理员](008-restrict-password-login.md) | 钉钉 SSO 成为普通用户唯一入口 | ✅ 已完成（2026-09-20） |
+| 009 | [备份与恢复](009-backup-restore.md) | 三库 dump + 数据目录打包，每日 cron | ✅ 已完成（2026-09-20） |
 
 ## 工作区结构
 

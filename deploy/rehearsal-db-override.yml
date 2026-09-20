@@ -1,0 +1,9 @@
+# 仅本地彩排（docs/007 §7）：MariaDB 大小写策略覆盖。
+# 为什么：macOS 文件系统大小写不敏感，MariaDB 默认 lower_case_table_names=2 时
+# seafevents 统计表（MonthlyUserTraffic 等 MixedCase 表名）会出现 .frm 保留原大小写、
+# .ibd 被小写的错位 → 表打不开 → mysqldump 中断（彩排实测）。
+# lctn=1 全部小写存储，frm/ibd 一致。仅彩排/本地需要；生产 Linux（ext4，lctn=0）无此问题。
+# ⚠️ lctn 只在首次初始化生效，必须配全新数据卷使用。
+services:
+  db:
+    command: --lower-case-table-names=1
