@@ -1,5 +1,5 @@
-From 6e93410cec7181769ae8fe265b2a123361aa40fe Mon Sep 17 00:00:00 2001
-From: iceyes <iceyes@iceyesdeMac-mini.local>
+From b51a30c609ab1d3caec4c78a1dd9b8ac959b6eee Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
 Date: Thu, 17 Sep 2026 12:09:28 +0800
 Subject: [PATCH 6/8] Add command to deactivate accounts of departed DingTalk
  users

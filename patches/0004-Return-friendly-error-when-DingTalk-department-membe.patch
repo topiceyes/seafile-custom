@@ -1,5 +1,5 @@
-From ddfba6e0bd6e50c0a2c6727322945a44ef193e26 Mon Sep 17 00:00:00 2001
-From: iceyes <iceyes@iceyesdeMac-mini.local>
+From 9b44a588daae85549b94618f79674558771483a0 Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
 Date: Wed, 16 Sep 2026 23:12:08 +0800
 Subject: [PATCH 4/8] Return friendly error when DingTalk department member
  list API fails

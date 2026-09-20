@@ -1,5 +1,5 @@
-From bc6529dbcada182bddf1c10c67bceaa4589d0b59 Mon Sep 17 00:00:00 2001
-From: iceyes <iceyes@iceyesdeMac-mini.local>
+From e7c8e86f19cceb3f5eea005df5981c461cb31c85 Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
 Date: Wed, 16 Sep 2026 22:19:44 +0800
 Subject: [PATCH 2/8] Provide SEAFILE_VERSION for source-mounted deployment
 

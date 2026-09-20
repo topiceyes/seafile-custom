@@ -11,7 +11,7 @@ base_commit     = 0877ad70251d50fcb43e2b15026f086bcfc4f815
 base_branch     = 12.0
 patch_count     = 8
 tree_sha        = a0fe634985f007dfa055502188972a65f5d25489
-seahub_head_sha = e1eb10ce0ff67d01c475c4670e25841714eeb941
+seahub_head_sha = 9f928e5a4d2b4ef2107aaa5962b5802f4682c174
 exported_at     = 2026-09-20
 ```
 

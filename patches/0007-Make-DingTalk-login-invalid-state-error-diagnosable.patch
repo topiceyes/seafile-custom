@@ -1,5 +1,5 @@
-From 5055c635efcc5f53a512927c242db06ecf004cd1 Mon Sep 17 00:00:00 2001
-From: iceyes <iceyes@iceyesdeMac-mini.local>
+From f976220ad946546dce12666cde8784c1dd45db6d Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
 Date: Thu, 17 Sep 2026 14:19:59 +0800
 Subject: [PATCH 7/8] Make DingTalk login 'invalid state' error diagnosable
 
