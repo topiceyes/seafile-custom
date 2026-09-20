@@ -1,7 +1,7 @@
 From e5ad818d124132c72a89710a43c133f9f60c6b12 Mon Sep 17 00:00:00 2001
 From: iceyes <iceyes@iceyesdeMac-mini.local>
 Date: Wed, 16 Sep 2026 23:02:47 +0800
-Subject: [PATCH 3/7] Make DingTalk login settings configurable via admin web
+Subject: [PATCH 3/8] Make DingTalk login settings configurable via admin web
  UI
 
 Move ENABLE_DINGTALK / DINGTALK_APP_KEY / DINGTALK_APP_SECRET from

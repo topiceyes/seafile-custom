@@ -1,7 +1,7 @@
 From ddfba6e0bd6e50c0a2c6727322945a44ef193e26 Mon Sep 17 00:00:00 2001
 From: iceyes <iceyes@iceyesdeMac-mini.local>
 Date: Wed, 16 Sep 2026 23:12:08 +0800
-Subject: [PATCH 4/7] Return friendly error when DingTalk department member
+Subject: [PATCH 4/8] Return friendly error when DingTalk department member
  list API fails
 
 DingTalk returns errcode/errmsg (e.g. 60011 permission not granted)

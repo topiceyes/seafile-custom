@@ -1,0 +1,227 @@
+# 构建二开生产镜像并推送到 ghcr.io。
+#
+# 设计要点：**workflow 里不写构建逻辑**。CI 只负责准备源码树，然后调用
+# deploy/build-image.sh（与开发机同一个脚本）。这样「CI 产物 ≡ 本地产物」
+# 是结构上成立的，而不是靠两边各自维护一套命令保持同步。
+#
+# 源码从哪来：不 fork。CI 在 GitHub 网络内按固定 SHA 浅取上游 haiwen/seahub，
+# 再应用 patches/*.patch —— 见 patches/MANIFEST.md 与 docs/010。
+# （fork 路线被策略关闭：上游是公开仓库，而公开仓库的 fork 无法设为私有。）
+#
+# 平台：只构建 linux/amd64。生产目标是 amd64，runner 也是 amd64，构建/CRA/冒烟
+# 全 native。加 arm64 会让整个前端 stage 走 QEMU（769MB npm ci + 吃内存的 CRA
+# 构建），把十几分钟变成一小时以上。arm64 只服务开发机彩排，而开发机本身就是
+# arm64，用 ./build-image.sh --local 本地产出即可。
+#
+# 发布流程与排障见 docs/010-ci-release-pipeline.md。
+name: build-image
+
+on:
+  # 主发布入口：手动触发（gh workflow run build-image -f force=true）
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '覆盖已存在的 tag（tag 由提交数推导，重复构建会得到同 tag 不同内容）'
+        type: boolean
+        default: false
+
+  # 自动触发：只有会影响镜像内容的路径变更才构建。
+  # 漏了 paths 过滤的话，一次文档提交也会烧掉十几分钟额度 + 产出一个无意义 tag。
+  push:
+    branches: [main]
+    paths:
+      - 'patches/**'
+      - 'deploy/image/**'
+      - 'deploy/build-image.sh'
+      - '.github/workflows/build-image.yml'
+
+# 同一 ref 上不并发构建；且**不取消**进行中的构建——两次构建抢同一个 tag 是最糟的失败模式
+concurrency:
+  group: build-image-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write          # 推 ghcr.io 需要
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/seafile-mc
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # secrets 上下文在 step 级 if 中不可用，只能先把 secret 放进 env 再判断
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 读取基线（patches/MANIFEST.md）
+        id: base
+        run: |
+          set -euo pipefail
+          BASE=$(awk '$1=="base_commit"{print $3; exit}' patches/MANIFEST.md)
+          TREE=$(awk '$1=="tree_sha"{print $3; exit}' patches/MANIFEST.md)
+          [ -n "$BASE" ] && [ -n "$TREE" ] || { echo "::error::patches/MANIFEST.md 缺少 base_commit 或 tree_sha"; exit 1; }
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "tree=$TREE" >> "$GITHUB_OUTPUT"
+          echo "基线 commit: $BASE"
+          echo "目标 tree  : $TREE"
+
+      # 按 SHA 浅取上游。GitHub 声明 allow-reachable-sha1-in-want，故可直接取任意
+      # 可达 commit，不受「分支名会前进」影响。仓库是浅克隆，--depth 1 足够。
+      # 必须落在 $GITHUB_WORKSPACE/seahub：build-image.sh 从 REPO_ROOT 推导这个路径。
+      - name: 取上游 seahub（按固定 SHA）
+        env:
+          BASE: ${{ steps.base.outputs.base }}
+        run: |
+          set -euo pipefail
+          git init -q seahub
+          git -C seahub remote add origin https://github.com/haiwen/seahub.git
+          git -C seahub fetch -q --depth 1 origin "$BASE"
+          git -C seahub checkout -q FETCH_HEAD
+          FETCHED=$(git -C seahub rev-parse HEAD)
+          [ "$FETCHED" = "$BASE" ] || { echo "::error::取到的 commit ($FETCHED) 与基线 ($BASE) 不符"; exit 1; }
+          echo "✅ 基线就位：$FETCHED"
+
+      - name: 应用补丁系列
+        run: |
+          set -euo pipefail
+          git -C seahub -c user.name=ci -c user.email=ci@github.invalid \
+            am "$GITHUB_WORKSPACE"/patches/*.patch
+          echo "已应用 $(git -C seahub rev-list --count "${{ steps.base.outputs.base }}..HEAD") 个提交"
+
+      # 核心不变量：补丁必须逐字节复现二开分支的树。这条断言让「上游漂移」或
+      # 「补丁被改坏」变成构建失败，而不是悄悄发出一个内容不对的镜像。
+      - name: 校验源码树 == MANIFEST 记录的 tree_sha
+        env:
+          EXPECTED: ${{ steps.base.outputs.tree }}
+        run: |
+          set -euo pipefail
+          ACTUAL=$(git -C seahub rev-parse 'HEAD^{tree}')
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::源码树不符：实际 $ACTUAL，期望 $EXPECTED。检查 patches/ 与 MANIFEST.md 是否同步。"
+            exit 1
+          fi
+          echo "✅ 树校验通过：$ACTUAL"
+
+      # build-image.sh --check-tree 是同一套逻辑的第二道（走 git apply --cached 而非 git am），
+      # 顺带验证「补丁本身可独立应用」——CI 里两次校验成本可忽略。
+      - name: 补丁树自检
+        run: ./deploy/build-image.sh --check-tree
+
+      # ---- tag 血缘断言：把「半途而废的版本升级」拦在发布之前 ----
+      - name: tag 一致性断言
+        id: tag
+        run: |
+          set -euo pipefail
+          TAG=$(./deploy/build-image.sh --print-tag)
+          PATCHES=$(ls patches/*.patch | wc -l | tr -d ' ')
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          # ① tag 里的提交数 == 补丁文件数
+          [ "$TAG" = "12.0.14-dingtalk.$PATCHES" ] \
+            || { echo "::error::tag ($TAG) 与补丁数 ($PATCHES) 不符"; exit 1; }
+
+          # ② tag 的版本前缀 == Dockerfile 里 BASE_IMAGE 的版本。
+          #    升级 Seafile 时要同步改 BASE_IMAGE/INSTALLPATH/版本前缀/tag，
+          #    这条能在「只改了一半」时提前拦住，避免发出 12.0.14 与 12.1.x 混搭的镜像。
+          DLVER=$(grep -oE 'seafile-mc:[0-9]+\.[0-9]+\.[0-9]+' deploy/image/Dockerfile | head -1 | cut -d: -f2)
+          [ "$DLVER" = "${TAG%%-dingtalk*}" ] \
+            || { echo "::error::Dockerfile 基础镜像版本 ($DLVER) 与 tag 前缀 (${TAG%%-dingtalk*}) 不符"; exit 1; }
+
+          # ③ 补丁文件名连续无缺口
+          EXPECT=$(seq -f '%04g' 1 "$PATCHES" | tr '\n' ' ')
+          ACTUAL=$(ls patches/*.patch | sed 's|patches/||;s|-.*||' | tr '\n' ' ')
+          [ "$EXPECT" = "$ACTUAL" ] \
+            || { echo "::error::补丁编号不连续：期望 [$EXPECT]，实际 [$ACTUAL]"; exit 1; }
+
+          echo "✅ tag 血缘校验通过：$TAG（补丁 $PATCHES 个，基础镜像 $DLVER）"
+
+      - uses: docker/setup-buildx-action@v3     # type=gha 缓存导出需要 docker-container driver
+
+      # 登录必须在「检查 tag 是否已存在」之前：镜像是私有的，未认证的 inspect
+      # 会因鉴权失败而被误判成「tag 不存在」，守卫就形同虚设。
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 检查 tag 是否已存在
+        if: ${{ github.event.inputs.force != 'true' }}
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if docker buildx imagetools inspect "$IMAGE:$TAG" >/dev/null 2>&1; then
+            echo "::error::$IMAGE:$TAG 已存在。tag 由提交数推导——若你【修改】了既有补丁（而非新增），"
+            echo "::error::会得到同 tag 不同内容，钉了该 tag 的服务器下次 pull 就会静默漂移。"
+            echo "::error::要么新增一个提交（推荐），要么用 force=true 显式覆盖并同步更新服务器。"
+            exit 1
+          fi
+          echo "✅ tag 未被占用：$TAG"
+
+      # Docker Hub 匿名拉取在共享 runner IP 上容易撞限流（toomanyrequests）。
+      # 有凭据就用，没有就跳过——不因此让构建失败。
+      - name: 登 Docker Hub（配置了凭据才跑，规避匿名拉取限流）
+        if: env.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 构建并推送
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # CACHE_ARGS 用 mode=max：npm ci 那层在【被丢弃的 frontend stage】里，
+          # mode=min 缓存不到——而那正是最贵的一步。
+          # 关掉 provenance/sbom：单平台镜像被包成 attestation index 后会在 ghcr UI
+          # 里显示成 unknown/unknown 平台并占额外存储，对单机消费的私有镜像没有收益。
+          PLATFORMS=linux/amd64 \
+          CACHE_ARGS="--cache-from type=gha,scope=seafile-mc --cache-to type=gha,mode=max,scope=seafile-mc" \
+          EXTRA_ARGS="--provenance=false --sbom=false" \
+          ./deploy/build-image.sh ghcr.io/${{ github.repository_owner }}
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      # 验证【真正推上去的那份字节】，而不是本地构建结果（runner 是 amd64，native 执行）
+      - name: 冒烟验证已推送的镜像
+        run: |
+          set -euo pipefail
+          docker pull "$IMAGE:$TAG"
+          docker run --rm --entrypoint sh "$IMAGE:$TAG" -c '
+            set -e
+            grep -q "^SEAFILE_VERSION = \"12.0.14\"" /opt/seafile/seafile-server-12.0.14/seahub/seahub/settings.py
+            test -f /opt/seafile/seafile-server-12.0.14/seahub/frontend/webpack-stats.pro.json
+            ls /opt/seafile/seafile-server-12.0.14/seahub/frontend/build/static/js >/dev/null
+            test $(grep -c X-Forwarded-Proto /templates/seafile.nginx.conf.template) -ge 2
+            command -v mysqldump
+            grep -q PASSWORD_LOGIN_ADMIN_ONLY /opt/seafile/seafile-server-12.0.14/seahub/seahub/settings.py
+            ls /opt/seafile/seafile-server-12.0.14/seahub/media/assets >/dev/null
+            echo SMOKE_OK'
+          echo "✅ 冒烟通过"
+
+      - name: 记录 digest
+        run: |
+          set -euo pipefail
+          DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$TAG")
+          {
+            echo "## 镜像已发布"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 镜像 | \`$IMAGE:$TAG\` |"
+            echo "| digest | \`$DIGEST\` |"
+            echo "| 基线 | \`${{ steps.base.outputs.base }}\` |"
+            echo "| 源码树 | \`${{ steps.base.outputs.tree }}\` |"
+            echo ""
+            echo "服务器更新：改 \`deploy/.env\` 里的 \`SEAFILE_PRO_IMAGE\` → \`docker compose pull && docker compose up -d\`"
+            echo ""
+            echo "要钉死这个版本（防 tag 漂移），把 \`SEAFILE_PRO_IMAGE\` 写成 digest 形式："
+            echo '```'
+            echo "${DIGEST%%@*}@${DIGEST#*@}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "已发布：$DIGEST"

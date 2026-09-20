@@ -1,7 +1,7 @@
 From 6e93410cec7181769ae8fe265b2a123361aa40fe Mon Sep 17 00:00:00 2001
 From: iceyes <iceyes@iceyesdeMac-mini.local>
 Date: Thu, 17 Sep 2026 12:09:28 +0800
-Subject: [PATCH 6/7] Add command to deactivate accounts of departed DingTalk
+Subject: [PATCH 6/8] Add command to deactivate accounts of departed DingTalk
  users
 
 Fetch the unionId set of current corp members from DingTalk contact

@@ -1,7 +1,7 @@
 From bc6529dbcada182bddf1c10c67bceaa4589d0b59 Mon Sep 17 00:00:00 2001
 From: iceyes <iceyes@iceyesdeMac-mini.local>
 Date: Wed, 16 Sep 2026 22:19:44 +0800
-Subject: [PATCH 2/7] Provide SEAFILE_VERSION for source-mounted deployment
+Subject: [PATCH 2/8] Provide SEAFILE_VERSION for source-mounted deployment
 
 The release build injects SEAFILE_VERSION into settings.py at packaging
 time. Provide it explicitly so the source tree works when bind-mounted

@@ -1,7 +1,7 @@
 From 82dfab88179f4b10709aa5ff81e8b555de41d963 Mon Sep 17 00:00:00 2001
 From: iceyes <iceyes@iceyesdeMac-mini.local>
 Date: Wed, 16 Sep 2026 22:18:41 +0800
-Subject: [PATCH 1/7] Enable DingTalk login in community edition
+Subject: [PATCH 1/8] Enable DingTalk login in community edition
 
 Remove the is_pro_version() gate on ENABLE_DINGTALK so the built-in
 DingTalk OAuth login module works on Community Edition deployments.

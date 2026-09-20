@@ -1,7 +1,7 @@
 From 5055c635efcc5f53a512927c242db06ecf004cd1 Mon Sep 17 00:00:00 2001
 From: iceyes <iceyes@iceyesdeMac-mini.local>
 Date: Thu, 17 Sep 2026 14:19:59 +0800
-Subject: [PATCH 7/7] Make DingTalk login 'invalid state' error diagnosable
+Subject: [PATCH 7/8] Make DingTalk login 'invalid state' error diagnosable
 
 The opaque 'Error, please contact administrator.' hid the common cause:
 browsing the site on a host that differs from SERVICE_URL (e.g.

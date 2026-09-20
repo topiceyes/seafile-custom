@@ -1,7 +1,7 @@
 From bdf79b74dd80e028af0d3aa4e40b89535f98b654 Mon Sep 17 00:00:00 2001
 From: iceyes <iceyes@iceyesdeMac-mini.local>
 Date: Wed, 16 Sep 2026 23:53:31 +0800
-Subject: [PATCH 5/7] Disallow DingTalk account disconnection
+Subject: [PATCH 5/8] Disallow DingTalk account disconnection
 
 Enterprise policy: DingTalk identity is the only login method for
 regular users; disconnecting would lock the account out. Block the
