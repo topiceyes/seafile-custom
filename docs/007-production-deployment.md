@@ -9,7 +9,7 @@
 ─────────────────                    ──────                              ──────────────────────────────────
 seahub 二开分支 ──┐
 export-patches.sh │                  Actions:                            docker compose pull
-                  ├→ patches/ ──push→  ├ 取上游 seahub @固定SHA             （ghcr.io 私有镜像）──→ docker compose up -d
+                  ├→ patches/ ──push→  ├ 取上游 seahub @固定SHA             （ghcr.io public 镜像）─→ docker compose up -d
 deploy/image/*   ─┘                    ├ git am patches/                                                  ├ 云代理终止 TLS
                                        ├ 断言 tree sha                                                    └ 明文转发到本机 :80
                                        └ 构建 amd64 → ghcr.io
@@ -26,14 +26,18 @@ TLS 由云上反向代理终止（本项目的实际形态，见 §9）；容器
 
 ## 2. 前置条件（上线检查清单）
 
-- [ ] 域名 DNS A 记录已指向服务器公网 IP（`dig +short <域名>` 确认）
-- [ ] 服务器 80 和 443 端口公网可达（80 是 LE webroot 验证的硬要求）
-  - 验证：`curl -I http://<域名>/.well-known/acme-challenge/test` 返回 404/502 都算通，超时就是被墙/被防火墙挡
-- [ ] **GHCR 凭据**：classic PAT（`repo` + `read:packages`）——取部署文件 + 拉私有镜像都用它。
-  一个 classic PAT 覆盖两件事；CI 推镜像用内置 `GITHUB_TOKEN`，不需要额外 PAT
-- [ ] 服务器网络可达 `ghcr.io` / `api.github.com`：已确认与开发机同网络（开发机实测可达）。
-  ⚠️ 网络通≠拉得下来——**更常见的失败点是 PAT 的 scope**（缺 `read:packages` 会 403，
-  `docker login` 却报成功）。部署时 §4.3 那步自然会验到；真不通走 [010 §8](010-ci-release-pipeline.md) 的 ACR 备选
+- [ ] 域名 DNS 已指向**云反向代理**（不是本机）：`dig +short <域名>` 确认解析到代理的 IP
+  - 反代模式下本机不需要公网 DNS；`SEAFILE_DOMAIN` 填的就是这个域名
+- [ ] **本机 80 端口可被云代理访问到**（反代模式下只需要这一个）
+  - 验证：从云代理那台机器 `curl -I http://<本机IP>/` 有响应即可
+  - 反代模式下**不需要**本机 443 公网可达，也不需要 DNS 指向本机——证书和 DNS 都在云代理侧
+  - （只有在用 `SEAFILE_SERVER_LETSENCRYPT=true` 时才需要 80 公网可达 + DNS 指向本机，
+    因为那是容器自己跑 acme.sh webroot 验证）
+- [x] **不需要任何凭据**：仓库与镜像包都是 public，取部署文件和拉镜像都免登录
+  （曾是 classic PAT，2026-09-20 转 public 后取消）。CI 推镜像用内置 `GITHUB_TOKEN`
+- [ ] 服务器网络可达 `ghcr.io` / `codeload.github.com`：已确认与开发机同网络（开发机实测可达）。
+  免凭据后失败面只剩纯网络：拉不动先 `curl -I https://ghcr.io/v2/` 看通不通；
+  真不通走 [010 §8](010-ci-release-pipeline.md) 的 ACR 备选
 - [ ] 服务器磁盘规划：`/data/seafile`（库+文件+备份）与 `/data/seafile-mysql` 所在盘要够大
 - [ ] 钉钉回调域名准备好切到 `https://<域名>/dingtalk/callback/`（上线后改）
 
@@ -63,7 +67,7 @@ tag 未被占用。**本地构建同样会校验补丁树**，所以开发机上
 ### 3.1 本地构建（备选路径）
 
 `deploy/build-image.sh` 保留完整构建能力，用于本地彩排（§7）。它依赖开发机上存在
-`seahub/` 检出，且推 registry 时需自行 `docker login`：
+`seahub/` 检出；推 registry 时需自行 `docker login`（本地推 ACR 时用，ghcr 已免登录）：
 
 ```bash
 cd deploy
@@ -103,8 +107,8 @@ CI 的 run summary 里也有一份 —— 用于比对 CI 的 amd64 产物与开
 
 ## 4. 服务器部署
 
-服务器在国内网络，到 `github.com` 的 **git 协议不通**，但 `api.github.com` /
-`codeload.github.com` 可直连（已实测），所以用 tarball 取部署文件，不需要配代理。
+服务器在国内网络，到 `github.com` 的 **git 协议不通**，但 `codeload.github.com` 可直连
+（已实测），所以用 tarball 取部署文件，不需要配代理。
 
 **运行时只需要 `seafile-prod.yml` + `.env` 两个文件。** 生产 compose 里**没有任何
 宿主机相对路径**（`backup.sh` 与两个 cron 已烘进镜像），所以
@@ -112,17 +116,16 @@ CI 的 run summary 里也有一份 —— 用于比对 CI 的 amd64 产物与开
 > **放哪个目录都能起。** 这一点是刻意设计的：以前那三个 bind-mount 会让「换个目录
 > 启动」变成**静默故障** —— 挂载落空、容器照常起，但备份和离职同步都不再执行。
 
-唯一还需要仓库文件的地方是**首启之后**跑一次 `deploy/init-conf.sh --prod`（见 4.5），
+唯一还需要仓库文件的地方是**首启之后**跑一次 `deploy/init-conf.sh --prod`（见 4.3 的最后一步），
 所以下面仍然取整个 tarball —— 仓库很小，且这样脚本与文档永远同版本。
 
 ```bash
-# ---- 4.1 取部署文件（免代理）----
-# PAT 需对 topiceyes/seafile-custom 有 Contents:Read，且有 Packages:Read
-PAT=<你的 PAT>
+# ---- 4.1 取部署文件（免代理、免凭据）----
+# 仓库是 public，直接裸 curl；服务器 git 协议到 github.com 不通，但 codeload 可直连
 mkdir -p /opt/seafile-custom && cd /opt/seafile-custom
-curl -fL --max-time 120 -H "Authorization: Bearer $PAT" \
-  https://api.github.com/repos/topiceyes/seafile-custom/tarball/main -o /tmp/deploy.tar.gz
-tar -xzf /tmp/deploy.tar.gz --strip-components=1 -C /opt/seafile-custom
+curl -fL --max-time 120 \
+  https://codeload.github.com/topiceyes/seafile-custom/tar.gz/refs/heads/main \
+  | tar -xz --strip-components=1 -C /opt/seafile-custom
 cd deploy                          # 只是习惯，不再是硬要求
 
 # ---- 4.2 配置 ----
@@ -132,12 +135,8 @@ vi .env    # 填：域名、所有密码/密钥（都重新生成，勿沿用 de
 
 mkdir -p /data/seafile /data/seafile-mysql
 
-# ---- 4.3 登录私有镜像仓库 ----
-echo "$PAT" | docker login ghcr.io -u <github用户名> --password-stdin
-chmod 600 ~/.docker/config.json
-
-# ---- 4.4 首启（db-first：先 db+memcached，等 MariaDB 完全就绪再起 seafile）----
-docker compose pull
+# ---- 4.3 首启（db-first：先 db+memcached，等 MariaDB 完全就绪再起 seafile）----
+docker compose pull                # 镜像包是 public，不需要 docker login
 
 # 一把梭 up -d 在【全新数据卷】上有 MariaDB 竞态（见 §4 失败场景 2）：
 # MariaDB 初始化要建 root 密码 + 跑 init SQL + 自己重启一次，可能超出 setup 的等待窗口。
@@ -154,13 +153,14 @@ docker logs -f seafile         # 等到 seahub 启动完成（能 curl 通登录
                                # （脚本会打印生效用的 restart 命令，执行即可）
 ```
 
-要点：`curl -L` 会把显式 `-H "Authorization: …"` **转发到重定向目标**（`codeload.github.com`），
-这是私有仓库一行命令能成立的关键；tarball 根目录是 `<owner>-<repo>-<sha>/` 故需
-`--strip-components=1`；`.env` 不在 tarball 内，重取代码不会覆盖它。
+要点：tarball 根目录是 `<owner>-<repo>-<sha>/` 故需 `--strip-components=1`；`.env` 不在
+tarball 内，重取代码不会覆盖它。
 
-> **拉不下来时先怀疑 PAT，而不是网络**：`docker login ghcr.io` 对 scope 不足的 token 会报
-> `Login Succeeded`，真正的 403 要到 `docker pull` 才暴露（我在开发机上用 gh 的 OAuth token
-> 实测过这个现象）。PAT 需 `read:packages`；报 `denied` 则多半是 PAT 过期。
+> **（历史记录）转 public 之前，这一步是本项目最容易卡住的地方**：当时仓库与镜像包都是私有，
+> 要用一个 classic PAT（`repo` + `read:packages`）覆盖「取 tarball + 拉镜像」两件事。
+> 最坑的是 **`docker login ghcr.io` 对 scope 不足的 token 会报 `Login Succeeded`**，
+> 真正的 403 要到 `docker pull` 才暴露——用 gh 的 OAuth token 实测过这个现象。
+> 转 public 后这一整类失败面消失，这也是当初决定公开的主要动因。
 
 **为什么 init-conf --prod 在首启之后**：全新数据卷首启时，镜像内 `setup-seafile-mysql.py` 用 `open('w')` **无条件重写** `seahub_settings.py`（SECRET_KEY 随机、DB 密码取 `DB_PASSWORD` 环境变量、SERVICE_URL 取 `SEAFILE_SERVER_*`）。预渲染会被覆盖。所以流程是：环境变量喂给 setup 完成基础配置 → 首启后追加二开定制块（幂等，带标记）→ 重启生效。
 
@@ -284,7 +284,7 @@ rm -rf rehearsal-data rehearsal2-* .env.rehearsal .env.rehearsal-restore
 | 变量 | 说明 |
 |---|---|
 | `SEAFILE_DOMAIN` | 纯域名。证书文件名 + nginx server_name + SERVICE_URL 三处引用 |
-| `SEAFILE_PRO_IMAGE` | 自建镜像（ghcr.io 私有），tag 或 digest，见 [010 §9](010-ci-release-pipeline.md) 台账 |
+| `SEAFILE_PRO_IMAGE` | 自建镜像（ghcr.io，public），tag 或 digest，见 [010 §9](010-ci-release-pipeline.md) 台账 |
 | `SEAFILE_SERVER_LETSENCRYPT=true` | **唯一** https 开关（小写；`SEAFILE_SERVER_PROTOCOL` 只影响 SERVICE_URL） |
 | `INIT_SEAFILE_ADMIN_EMAIL/PASSWORD` | 首启建管理员。**镜像不认 `SEAFILE_ADMIN_*`**（dev 环境踩过的坑：静默建成 me@example.com） |
 | `DB_ROOT_PASSWD` | 首启初始化库 + 容器内 backup.sh 都用它 |
@@ -388,7 +388,7 @@ if os.environ.get('SEAFILE_SERVER_PROTOCOL') == 'https':
 | 内容寻址 tag 免 force | ✅ 改动 `build-image.sh` 后自动得到新 tag `…8.4261dd78`，tag 守卫正常放行（此前同类改动每次都要 force）。再次验于 `…8.e9313643`（改 `deploy/image/**`） |
 | 运维脚本烘进镜像 | ✅ 本机 arm64 与 CI amd64 两份产物都跑通新增断言：三个文件就位、cron 属性为 `644 root`；且三层指纹与上一版**逐字节相同**，证明这次只增文件、未触碰 seahub 与前端 |
 | `git archive` 文件完整性 | ✅ 3812 个文件，含 `frontend/package-lock.json` |
-| 取上游 tarball（免代理） | ✅ `api.github.com` → `codeload.github.com` 直连 200 |
+| 取部署 tarball（免代理免凭据） | ✅ `codeload.github.com` 直连 200（public 后实测：裸 curl 拿到 56 个文件） |
 | 首次 CI 运行 + 镜像发布 | ✅ 构建 8m27s；tag `12.0.14-dingtalk.8`，digest 记在 [010 §9](010-ci-release-pipeline.md) 台账 |
 | tag 已存在守卫 | ✅ 被真实触发过一次并正确拦截（在昂贵构建之前） |
 | **CI amd64 产物 vs 本地 arm64 产物** | ✅ 三层指纹**完全一致**：overlay `bee2ffbe…`(937)、前端产物 `e1f7eb47…`(269)、media/assets `6dd7b6e9…`(305) —— 连 webpack 产物都跨架构逐字节相同 |

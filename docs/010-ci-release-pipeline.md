@@ -12,7 +12,7 @@
 seahub/dev-dingtalk 提交
   └ deploy/export-patches.sh
        └ patches/*.patch + MANIFEST.md
-            └ git push ──────────→  seafile-custom（私有, main）
+            └ git push ──────────→  seafile-custom（public, main）
                                       └ .github/workflows/build-image.yml
                                          ├ 按固定 SHA 浅取上游 haiwen/seahub
                                          ├ git am patches/*.patch
@@ -20,9 +20,8 @@ seahub/dev-dingtalk 提交
                                          ├ deploy/build-image.sh（与开发机同一脚本）
                                          └ push → ghcr.io/topiceyes/seafile-mc:12.0.14-dingtalk.<N>.<hash>
                                                                                   │
-                                             api.github.com tarball ──────────────┤ 免代理取 deploy/
+                                      codeload.github.com tarball ───────────────┤ 免代理免凭据取 deploy/
                                                                                   ↓
-                                                        docker login ghcr.io（PAT）
                                                         docker compose pull && up -d
 ```
 
@@ -39,17 +38,27 @@ EXTRA_ARGS="--provenance=false --sbom=false"
 ## 2. 为什么二开源码不做成 GitHub fork
 
 `seahub/` 是上游 `haiwen/seahub` 的克隆，8 个二开提交此前只存在于开发机上。
-把它放到 GitHub 有两条路，都被否掉了：
+把它放到 GitHub 有三条路：
 
-| 路线 | 否决理由 |
+| 路线 | 结论 |
 |---|---|
-| fork 上游后推分支 | **上游是公开仓库，而公开仓库的 fork 无法设为私有**（GitHub 强制继承父仓库可见性）。走 fork 等于把二开代码公开，与「仓库保持私有」直接冲突 |
-| 新建私有 mirror 仓后推分支 | 等价于先 `git fetch --unshallow` —— 上游仓库 1.4 GB，要经代理拖完整历史。而二开 delta 只有 21 文件 / 约 185 KiB 对象 |
+| fork 上游后推分支 | ⚠️ **这条当初是被否决的，但理由已经失效** —— 见下 |
+| 新建 mirror 仓后推分支 | 否决：等价于先 `git fetch --unshallow`，上游仓库 1.4 GB 要经代理拖完整历史。二开 delta 只有 21 文件 / 约 185 KiB 对象 |
+| **补丁路线**（选用） | CI 在 GitHub 网络内（无墙、无代理成本）按固定 SHA 浅取上游，再应用 `patches/` |
 
-于是选第三条：**补丁路线**。CI 在 GitHub 网络内（无墙、无代理成本）按固定 SHA 浅取
-上游，再应用 `patches/`。这条路线额外带来一个**比 fork 更强的性质**：每次构建都重新
-验证「补丁能逐字节复现二开分支」，所以上游漂移或补丁被改坏会变成**构建失败**，
-而不是悄悄发出一个内容不对的镜像。
+> **2026-09-20 更新：仓库已转为 public，fork 的禁令不再适用。**
+> 当初否决 fork 的唯一理由是「上游是公开仓库，而公开仓库的 fork 无法设为私有
+> （GitHub 强制继承父仓库可见性）」，走 fork 等于公开二开代码，与「仓库保持私有」冲突。
+> 现在仓库本身就是公开的，这个冲突不存在了。
+>
+> **但仍然保留补丁路线**，理由换成它自身的技术优点（下面这条），而不是策略约束：
+>
+> - fork 路线下 CI 直接构建分支，**没有任何东西验证「镜像内容 == 补丁所描述的源码」**
+> - 补丁路线下，每次构建都重新验证「补丁能逐字节复现二开分支」，上游漂移或补丁被改坏
+>   会变成**构建失败**，而不是悄悄发出一个内容不对的镜像
+> - 另外切到 fork 要把上游历史推上去（1.4 GB），一次性成本不低，收益却是负的
+>
+> 换句话说：**禁令解除了，但我们本来也不是因为禁令才选它的。**
 
 代价是 GitHub 上没有可浏览的逐提交历史。补丁文件由 `git format-patch` 生成，保留了
 完整的作者/日期/提交消息，需要时 `git log` 也仍可在开发机上查看。
@@ -145,32 +154,25 @@ cd deploy && ./export-patches.sh
 
 ```bash
 # 0a) 取部署文件。服务器上 git 协议到 github.com 不通，
-#     但 api.github.com / codeload.github.com 可直连（已实测），走 tarball 即可
-PAT=<fine-grained PAT：对 topiceyes/seafile-custom 有 Contents:Read，且有 Packages:Read>
-curl -fL --max-time 120 -H "Authorization: Bearer $PAT" \
-  https://api.github.com/repos/topiceyes/seafile-custom/tarball/main -o /tmp/deploy.tar.gz
-mkdir -p /opt/seafile-custom && tar -xzf /tmp/deploy.tar.gz --strip-components=1 -C /opt/seafile-custom
+#     但 codeload.github.com 可直连（已实测）。仓库是 public，裸 curl 即可
+mkdir -p /opt/seafile-custom
+curl -fL --max-time 120 \
+  https://codeload.github.com/topiceyes/seafile-custom/tar.gz/refs/heads/main \
+  | tar -xz --strip-components=1 -C /opt/seafile-custom
 cd /opt/seafile-custom/deploy        # 习惯而已：生产 compose 已无宿主机相对路径，放哪都行
 cp .env.prod.example .env            # .env 不在 tarball 内，重取代码不会覆盖它
 
-# 0b) 登录私有镜像仓库
-echo "$PAT" | docker login ghcr.io -u <github用户名> --password-stdin
-chmod 600 ~/.docker/config.json
-
-# 0c) 更新
+# 0b) 更新
 vi .env      # SEAFILE_PRO_IMAGE 改成新 tag（或钉 digest）
-docker compose pull && docker compose up -d
+docker compose pull && docker compose up -d     # 镜像包是 public，不需要 docker login
 ```
 
 几个容易踩的点：
 
-- `curl -L` 会把显式 `-H "Authorization: …"` **转发到重定向目标**（`codeload.github.com`），
-  这正是私有仓库一行命令能成立的关键
 - tarball 根目录是 `<owner>-<repo>-<sha>/`，所以要 `--strip-components=1`
 - 要可复现而非跟随 `main`，就把 URL 里的 `main` 换成具体 commit SHA，并记入台账
-- **PAT 范围**：一个 classic PAT 的 `repo` + `read:packages` 即可覆盖「取 tarball + 拉镜像」。
-  CI 推镜像用内置 `GITHUB_TOKEN`，不需要额外 PAT。PAT 会过期，过期表现为 `denied`，
-  容易误判成网络问题——记个日历提醒
+- 这套命令**不需要任何凭据**。曾经需要一个 classic PAT（`repo` + `read:packages`）覆盖
+  「取 tarball + 拉镜像」，2026-09-20 仓库与镜像包转 public 后取消——详见 §2 的说明
 
 ## 7. 排障
 
@@ -181,7 +183,7 @@ docker compose pull && docker compose up -d
 | CI 失败于「tag 已存在」 | 构建输入一字未改，重建是多余的。多半是你的改动没触及 `patches/`、`deploy/image/`、`build-image.sh`（例如只改了文档）。确认后无需重建；只有要刷新上游基础镜像才用 `force=true` |
 | 冒烟验证失败「缺 frontend/build 或 chunk 未落地」 | 前端产物没进镜像，或 `collectstatic` 没把它收进 `media/assets`。断言在 `deploy/smoke-test.sh`；改完断言要 `-f force=true` 重跑才验得到（改该文件不会自动触发构建） |
 | 冒烟验证报 `toomanyrequests` | Docker Hub 对共享 runner IP 的匿名限流。在仓库 secrets 里配 `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`，workflow 会自动登录 |
-| 服务器 `docker pull` 报 `denied` | ① PAT 过期或权限不足（需 `read:packages`）② 没 `docker login ghcr.io` ③ 包权限里没给 `seafile-custom` 仓库访问权（Package settings → Manage Actions access） |
+| 服务器 `docker pull` 报 `denied` | 镜像包是 public 时不该出现。若出现，多半是包的可见性被改回了 private（Package settings → Change visibility），或本地有失效的 `~/.docker/config.json` 缓存旧凭据 → `docker logout ghcr.io` 再试 |
 | 生产机连不上 ghcr.io | 见 §8 的 ACR 备选 |
 
 ## 8. ACR 备选（ghcr 不可达时）
@@ -197,7 +199,7 @@ docker login registry.cn-hangzhou.aliyuncs.com
 生产 `.env` 的 `SEAFILE_PRO_IMAGE` 换成对应 ACR 地址即可，compose 文件不用动。
 
 **关于 ghcr 的额度**：GitHub Packages 免费额度是 500 MB 存储 / 1 GB 月流量，但官方
-文档明确「容器镜像的存储与带宽目前免费」——这是两套口径，私有镜像大概率不受 500 MB 限制。
+文档明确「容器镜像的存储与带宽目前免费」——这是两套口径，容器镜像大概率不受 500 MB 限制。
 不过该政策保留变更权（变更会提前一个月通知），所以保留 ACR 这条后路是有价值的。
 本镜像实测未压缩 0.48–0.8 GB。
 

@@ -103,7 +103,7 @@ docker compose up -d
 ```
 开发机                                GitHub                                生产服务器
 seahub 改代码                          Actions（ubuntu-latest, amd64）        docker compose pull
-  └ deploy/export-patches.sh   ──push──→  按 MANIFEST 的固定 SHA 浅取上游       （ghcr.io 私有镜像）
+  └ deploy/export-patches.sh   ──push──→  按 MANIFEST 的固定 SHA 浅取上游       （ghcr.io public 镜像）
        └ patches/ + MANIFEST.md            → git am patches/*.patch                  │
                                            → 断言 tree sha                          └ 云反向代理终止 TLS
                                            → deploy/build-image.sh（同一份脚本）       明文转发到本机 :80
@@ -118,10 +118,12 @@ gh run watch                            # 3. 看构建（约 12–18 分钟）
 # 4. 生产服务器上：改 .env 里的 SEAFILE_PRO_IMAGE → pull && up -d
 ```
 
-**为什么不做 fork**：上游 `haiwen/seahub` 是公开仓库，而公开仓库的 fork **无法设为私有**
-（GitHub 强制继承可见性），走 fork 等于公开二开代码。补丁路线还额外带来一条更硬的性质：
+**为什么走补丁路线而不是 fork**：决定性的理由是补丁路线带来一条更硬的性质——
 CI 每次构建都重新验证「补丁能逐字节复现二开分支」，上游漂移或补丁改坏会变成**构建失败**，
-而不是悄悄发出一个内容不对的镜像。
+而不是悄悄发出一个内容不对的镜像。fork 路线下 CI 直接构建分支，没有东西做这个验证。
+
+> 转 public 之前还有一条策略性理由（上游是公开仓库、其 fork 无法设为私有），
+> 但 2026-09-20 本仓库已转为 public，那条已不适用。详见 [docs/010 §2](docs/010-ci-release-pipeline.md)。
 
 **tag 规则**：`12.0.14-dingtalk.<补丁数>.<8位哈希>`。哈希段是**构建输入的内容哈希**
 （补丁内容 + `deploy/image/**` + `build-image.sh`），所以改模板或 Dockerfile 也会自动得到新
