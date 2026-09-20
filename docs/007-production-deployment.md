@@ -38,9 +38,32 @@ TLS 由云上反向代理终止（本项目的实际形态，见 §9）；容器
     因为那是容器自己跑 acme.sh webroot 验证）
 - [x] **不需要任何凭据**：仓库与镜像包都是 public，取部署文件和拉镜像都免登录
   （曾是 classic PAT，2026-09-20 转 public 后取消）。CI 推镜像用内置 `GITHUB_TOKEN`
-- [ ] 服务器网络可达 `ghcr.io` / `codeload.github.com`：已确认与开发机同网络（开发机实测可达）。
-  免凭据后失败面只剩纯网络：拉不动先 `curl -I https://ghcr.io/v2/` 看通不通；
-  真不通走 [010 §8](010-ci-release-pipeline.md) 的 ACR 备选
+- [ ] **服务器网络可达三个域名**（免凭据，但都必须是通的）：
+
+  | 域名 | 用途 | 验证 |
+  |---|---|---|
+  | `codeload.github.com` | 取部署 tarball | `curl -so /dev/null -w '%{http_code}\n' --max-time 20 https://codeload.github.com/` → 200 |
+  | `ghcr.io` | 拉自建 seafile 镜像 | `curl -so /dev/null -w '%{http_code}\n' --max-time 20 https://ghcr.io/v2/` → **401 即通**（未认证是预期） |
+  | **`registry-1.docker.io`** | 拉 `mariadb:10.11` 与 `memcached:1.6.29` | `docker pull mariadb:10.11` 能成功 |
+
+  > ⚠️ **Docker Hub 这一条最容易漏。** compose 里三个镜像来自两个仓库：
+  > seafile 走 ghcr.io，**db 和 memcached 走 Docker Hub**。国内服务器常常只有
+  > Docker Hub 不通，报错是 `Get "https://registry-1.docker.io/v2/": context deadline exceeded`。
+  > 这不是「镜像包私有」那类问题（重装 docker login 没用），两条出路：
+  > ① 云厂商的容器镜像加速器（阿里云/腾讯云控制台里有，配 `/etc/docker/daemon.json`
+  > 的 `registry-mirrors`）；② 见下方「离线导入基础镜像」。
+
+  > **离线导入基础镜像**（加速器也搞不定时，一定能成）：在开发机上
+  > `docker save --platform linux/amd64 -o infra.tar mariadb:10.11 memcached:1.6.29`
+  > → 传到服务器 → `docker load < infra.tar`。
+  > **`--platform linux/amd64` 不能省**：开发机（Apple Silicon）本地是 arm64，
+  > 不指定平台导出的包在 amd64 服务器上跑不起来。这两个是基础设施镜像、基本不变，
+  > 搬一次即可，后续更新只涉及 ghcr 上的 seafile 镜像。
+
+- [ ] **不需要任何凭据**：仓库与镜像包都是 public，取部署文件和拉镜像都免登录
+  （曾是 classic PAT，2026-09-20 转 public 后取消）。CI 推镜像用内置 `GITHUB_TOKEN`
+- [ ] 若 `ghcr.io` 也不通：走 [010 §8](010-ci-release-pipeline.md) 的 ACR 备选，
+  或把 seafile 镜像也 `docker save` 搬过去（同一套办法）
 - [ ] 服务器磁盘规划：`/data/seafile`（库+文件+备份）与 `/data/seafile-mysql` 所在盘要够大
 - [ ] 钉钉回调域名准备好切到 `https://<域名>/dingtalk/callback/`（上线后改）
 
