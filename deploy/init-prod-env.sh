@@ -52,7 +52,7 @@ if [ -f "$TARGET" ]; then
   echo "    它含真实密钥（数据库密码、JWT 密钥）。重建会换掉这些值，"
   echo "    而已初始化的数据卷里的数据库密码是【旧值】——换掉后服务连不上数据库。"
   echo
-  echo "    · 想改域名：./set-domain.sh <新域名>      （首启前则直接 vi .env）"
+  echo "    · 想改域名：首启前直接 vi $TARGET；首启后在「系统管理 → 设置 → Site URL」改"
   echo "    · 想改别的：直接 vi $TARGET"
   echo "    · 全新部署但要重来：先删掉数据卷，再删 $TARGET"
   echo
