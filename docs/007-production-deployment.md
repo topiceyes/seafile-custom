@@ -5,44 +5,79 @@
 ## 1. 架构
 
 ```
-开发机（Mac）                          生产服务器（amd64，已装 docker compose）
-─────────────────                     ──────────────────────────────────────
+开发机（Mac）                        GitHub                              生产服务器（amd64，已装 docker compose）
+─────────────────                    ──────                              ──────────────────────────────────────
 seahub 二开分支 ──┐
-patches/0001-0008 │                   docker compose pull   （自建镜像）
-                  ├→ build-image.sh → 推 ACR ──────────────→ docker compose up -d
-deploy/image/*   ─┘   （多阶段构建）                          ├─ LE 自动签发/续期证书
-                                                      80/443 ← 公网（DNS A 记录）
+export-patches.sh │                  Actions:                            docker compose pull
+                  ├→ patches/ ──push→  ├ 取上游 seahub @固定SHA             （ghcr.io 私有镜像）──→ docker compose up -d
+deploy/image/*   ─┘                    ├ git am patches/                                                  ├ LE 自动签发/续期
+                                       ├ 断言 tree sha                                                    └ 80/443 ← 公网
+                                       └ 构建 amd64 → ghcr.io
 ```
 
-与 dev 环境的本质差异：**二开代码不再 bind-mount，全部烘进自建镜像**（seahub Python 包 + 前端构建产物 + collectstatic 静态资源），服务器不需要 node、不需要 seahub 源码、容器重建不丢任何东西。
+镜像由 **GitHub Actions 构建并推送到 ghcr.io**（见 [010](010-ci-release-pipeline.md)），
+生产机只 `docker compose pull`，不需要 node、不需要 seahub 源码、不需要构建工具链。
+
+与 dev 环境的本质差异：**二开代码不再 bind-mount，全部烘进镜像**（seahub Python 包 + 前端构建产物 + collectstatic 静态资源），容器重建不丢任何东西。
+
+> 想让机器自己构建（而非拉现成镜像）也可以：`deploy/build-image.sh` 保留完整能力，
+> 但它依赖本地有 `seahub/` 检出，所以只适用于开发机。
 
 ## 2. 前置条件（上线检查清单）
 
 - [ ] 域名 DNS A 记录已指向服务器公网 IP（`dig +short <域名>` 确认）
 - [ ] 服务器 80 和 443 端口公网可达（80 是 LE webroot 验证的硬要求）
   - 验证：`curl -I http://<域名>/.well-known/acme-challenge/test` 返回 404/502 都算通，超时就是被墙/被防火墙挡
-- [ ] ACR 仓库就绪（如阿里云容器镜像服务，个人版免费）：建命名空间 + 本地仓库（类型选「本地」）
+- [ ] **GHCR 凭据**：classic PAT（`repo` + `read:packages`）——取部署文件 + 拉私有镜像都用它
+- [ ] **服务器能连 ghcr.io**：`docker login ghcr.io` + `docker compose pull` 实测一次。
+  ⚠️ 开发机能连不代表服务器能连，这是本方案最需要先验的假设；不通则走 [010 §8](010-ci-release-pipeline.md) 的 ACR 备选
 - [ ] 服务器磁盘规划：`/data/seafile`（库+文件+备份）与 `/data/seafile-mysql` 所在盘要够大
 - [ ] 钉钉回调域名准备好切到 `https://<域名>/dingtalk/callback/`（上线后改）
 
-## 3. 镜像构建与推送（开发机）
+## 3. 镜像构建（GitHub Actions）
+
+镜像是 CI 自动构建并推送到 ghcr.io 的，**服务器上不需要构建**。完整机制见
+[010 CI 发布流水线](010-ci-release-pipeline.md)，这里只列日常操作。
+
+```bash
+# 日常：在 seahub 分支上改完代码后
+cd deploy && ./export-patches.sh          # 重导补丁 + 刷新 patches/MANIFEST.md
+git add -A && git commit -m "..." && git push     # 推 main 会自动触发构建
+gh run watch                              # 看构建进度（也可在网页 Actions 页看）
+
+# 手工触发 / 覆盖已存在的 tag
+gh workflow run build-image.yml
+gh workflow run build-image.yml -f force=true
+```
+
+构建成功后，run summary 里会给出镜像地址与 digest；把 tag 填进服务器 `.env` 的
+`SEAFILE_PRO_IMAGE` 即可（见 §4）。
+
+**CI 在构建前会跑三道校验**，任何一道不过都会拒绝发布：源码树必须等于
+`patches/MANIFEST.md` 记录的 tree sha、tag 血缘（补丁数/基础镜像版本/编号连续性）、
+tag 未被占用。**本地构建同样会校验补丁树**，所以开发机上不可能构建出与补丁不一致的镜像。
+
+### 3.1 本地构建（备选路径）
+
+`deploy/build-image.sh` 保留完整构建能力，用于本地彩排（§7）。它依赖开发机上存在
+`seahub/` 检出，且推 registry 时需自行 `docker login`：
 
 ```bash
 cd deploy
-docker login <registry>            # ACR 凭据
-./build-image.sh <registry>/<namespace>
-# 例：./build-image.sh registry.cn-hangzhou.aliyuncs.com/myns
+./build-image.sh --local                                  # 本地彩排：仅 arm64、不推送
+./build-image.sh registry.cn-hangzhou.aliyuncs.com/myns    # 推 ACR（ghcr 不可达时的后路）
 ```
 
-- tag 自动取 `12.0.14-dingtalk.<N>`（N = seahub 分支领先基线 0877ad7 的提交数，必然递增）
-- 双架构（amd64 生产 + arm64 彩排机）一次构建推送
-- 防呆：seahub 工作区不干净会拒绝构建（镜像内容 = 提交内容）
+- tag 由 `./build-image.sh --print-tag` 算出：`12.0.14-dingtalk.<N>`（N = seahub 领先基线的提交数）
+- 防呆：seahub 工作区不干净、或补丁树与分支树不一致，都会拒绝构建
+- 推 registry 默认双架构（amd64+arm64）；CI 只构建 amd64（runner 原生，arm64 走 QEMU 会拖到一小时以上）
 
 **网络坑**（开发机在国内网络下实测）：
 - `docker pull node:24-bookworm-slim` 等基础镜像可能因 DNS 污染超时——**重试即可**（间歇性），成功后本地有缓存
 - Dockerfile 不用 `# syntax=` 指令（会去 docker.io 拉前端镜像，同样受 DNS 污染影响）
+- git 经代理推送偶发 HTTP/2 中断（`stream ... was not CANCEL cleanly`）：重试，或改用 SSH
 
-**冒烟验证（推送前后均可）**：
+**冒烟验证**（CI 会自动跑同一套；手工验证镜像时用）：
 
 ```bash
 docker run --rm --entrypoint sh seafile-mc-devbuild:<tag> -c '
@@ -59,16 +94,31 @@ docker run --rm --entrypoint sh seafile-mc-devbuild:<tag> -c '
 
 ## 4. 服务器部署
 
-```bash
-# 服务器上（任意目录）
-git clone https://github.com/topiceyes/seafile-custom.git   # 私有库需凭据
-cd seafile-custom/deploy
+服务器在国内网络，到 `github.com` 的 **git 协议不通**，但 `api.github.com` /
+`codeload.github.com` 可直连（已实测），所以用 tarball 取部署文件，不需要配代理。
 
+```bash
+# ---- 4.1 取部署文件（免代理）----
+# PAT 需对 topiceyes/seafile-custom 有 Contents:Read，且有 Packages:Read
+PAT=<你的 PAT>
+curl -fL --max-time 120 -H "Authorization: Bearer $PAT" \
+  https://api.github.com/repos/topiceyes/seafile-custom/tarball/main -o /tmp/deploy.tar.gz
+mkdir -p /opt/seafile-custom
+tar -xzf /tmp/deploy.tar.gz --strip-components=1 -C /opt/seafile-custom
+cd /opt/seafile-custom/deploy     # 固定目录：compose 的 ./backup.sh 等绑定挂载依赖相对路径
+
+# ---- 4.2 配置 ----
 cp .env.prod.example .env
-vi .env    # 填：域名、ACR 镜像 tag、所有密码/密钥（都重新生成，勿沿用 dev 值）
+vi .env    # 填：域名、所有密码/密钥（都重新生成，勿沿用 dev 值）
+           # SEAFILE_PRO_IMAGE 默认已指向 ghcr.io；想钉死版本就换成 digest 形式
 
 mkdir -p /data/seafile /data/seafile-mysql
 
+# ---- 4.3 登录私有镜像仓库 ----
+echo "$PAT" | docker login ghcr.io -u <github用户名> --password-stdin
+chmod 600 ~/.docker/config.json
+
+# ---- 4.4 首启 ----
 docker compose pull
 docker compose up -d           # 首启：LE 签发 + setup 生成基础配置 + 建管理员
 docker logs -f seafile         # 等到 seahub 启动完成（能 curl 通登录页）
@@ -76,6 +126,14 @@ docker logs -f seafile         # 等到 seahub 启动完成（能 curl 通登录
 ./init-conf.sh --prod          # ⚠️ 必须在首启完成后跑：追加钉钉/SSO/账号管控 + 开 WebDAV
                                # （脚本会打印生效用的 restart 命令，执行即可）
 ```
+
+要点：`curl -L` 会把显式 `-H "Authorization: …"` **转发到重定向目标**（`codeload.github.com`），
+这是私有仓库一行命令能成立的关键；tarball 根目录是 `<owner>-<repo>-<sha>/` 故需
+`--strip-components=1`；`.env` 不在 tarball 内，重取代码不会覆盖它。
+
+> **部署前先验 ghcr 可达性**（见 §2 清单）：`docker login` + `docker compose pull` 不碰在跑的
+> 容器，可以在正式上线前先在服务器上跑一次，两分钟出结果。不通就走 [010 §8](010-ci-release-pipeline.md)
+> 的 ACR 备选。
 
 **为什么 init-conf --prod 在首启之后**：全新数据卷首启时，镜像内 `setup-seafile-mysql.py` 用 `open('w')` **无条件重写** `seahub_settings.py`（SECRET_KEY 随机、DB 密码取 `DB_PASSWORD` 环境变量、SERVICE_URL 取 `SEAFILE_SERVER_*`）。预渲染会被覆盖。所以流程是：环境变量喂给 setup 完成基础配置 → 首启后追加二开定制块（幂等，带标记）→ 重启生效。
 
@@ -114,12 +172,16 @@ docker logs -f seafile         # 等到 seahub 启动完成（能 curl 通登录
 ## 6. 更新与回滚
 
 ```bash
-# 更新（开发机推完新镜像 tag 后）
-vi .env                          # SEAFILE_PRO_IMAGE 改新 tag
+# 更新（CI 构建完、新 tag 出现在 docs/010 §9 台账后）
+vi .env                          # SEAFILE_PRO_IMAGE 改新 tag（或钉新 digest）
 docker compose pull && docker compose up -d
 
 # 回滚 = 改回旧 tag（数据卷不动，LE 证书仍在）
 ```
+
+更新前先记下当前镜像的 digest（`docker inspect --format '{{index .RepoDigests 0}}' <镜像>`），
+回滚时就有确切落点。**首次生产更新后做一次回滚演练**：把 `SEAFILE_PRO_IMAGE` 指回该
+digest → `pull && up -d` → 确认行为回到旧版本，再切回新版。数据卷全程不动。
 
 **升级 Seafile 版本**（如 12.0.14 → 12.1.x）时三处硬编码要同步：
 `deploy/image/Dockerfile` 的 BASE_IMAGE 与 INSTALLPATH、seahub 仓库基线（patches 重放）。官方镜像可能改 bootstrap 行为，升级前**必须重跑本地彩排**。
@@ -188,7 +250,7 @@ rm -rf rehearsal-data rehearsal2-* .env.rehearsal .env.rehearsal-restore
 | 变量 | 说明 |
 |---|---|
 | `SEAFILE_DOMAIN` | 纯域名。证书文件名 + nginx server_name + SERVICE_URL 三处引用 |
-| `SEAFILE_PRO_IMAGE` | 自建镜像 tag |
+| `SEAFILE_PRO_IMAGE` | 自建镜像（ghcr.io 私有），tag 或 digest，见 [010 §9](010-ci-release-pipeline.md) 台账 |
 | `SEAFILE_SERVER_LETSENCRYPT=true` | **唯一** https 开关（小写；`SEAFILE_SERVER_PROTOCOL` 只影响 SERVICE_URL） |
 | `INIT_SEAFILE_ADMIN_EMAIL/PASSWORD` | 首启建管理员。**镜像不认 `SEAFILE_ADMIN_*`**（dev 环境踩过的坑：静默建成 me@example.com） |
 | `DB_ROOT_PASSWD` | 首启初始化库 + 容器内 backup.sh 都用它 |
@@ -218,4 +280,16 @@ rm -rf rehearsal-data rehearsal2-* .env.rehearsal .env.rehearsal-restore
 4. `seahub.sh python-env` 是交互式入口不接收参数，非交互用法：`echo '<code>' | docker exec -i seafile .../seahub.sh python-env`（代码需自带 django.setup() prologue）
 5. 登录表单 POST 字段名是 `login`；https 下 CSRF 需要 Referer 头
 
-**生产首次上线后回填**：LE 签发耗时、扫码登录、client-SSO、首次备份。
+**CI 流水线（2026-09-20，源码树复现链路已在本地逐条验过）**：
+
+| 项 | 实测 |
+|---|---|
+| 补丁串行 `git am` 复现二开分支 | ✅ 在 `git worktree` 的干净 0877ad7 检出上应用 8 个补丁，`HEAD^{tree}` == `a0fe634…` |
+| `build-image.sh --check-tree` 硬校验 | ✅ 通过；人为改动补丁后能正确拒绝 |
+| `--print-tag` | ✅ `12.0.14-dingtalk.8`（补丁数与 tag 数字一致） |
+| `git archive` 文件完整性 | ✅ 3812 个文件，含 `frontend/package-lock.json` |
+| 取上游 tarball（免代理） | ✅ `api.github.com` → `codeload.github.com` 直连 200 |
+| **首次 CI 运行 + 镜像发布** | ⏳ 待回填（见 [010 §9](010-ci-release-pipeline.md) 台账） |
+| **CI amd64 产物 vs 本地 arm64 产物** | ⏳ 待回填（比对方法：`find . -type f \| LC_ALL=C sort \| sha256sum`） |
+
+**生产首次上线后回填**：LE 签发耗时、扫码登录、client-SSO、首次备份、服务器 ghcr 拉取实测耗时。

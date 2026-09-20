@@ -14,14 +14,17 @@
 │   ├── .env.example / .env.prod.example   # dev / 生产配置模板
 │   ├── init-conf.sh            # 把 conf-templates/ 渲染进数据卷（--prod 生产模式）
 │   ├── gen-ssl-cert.sh         # 自签证书（dev IP / 彩排域名）
-│   ├── build-image.sh          # 生产镜像构建（git archive 上下文 + buildx 多架构）
+│   ├── build-image.sh          # 镜像构建（开发机与 CI 共用的唯一构建入口）
+│   ├── export-patches.sh       # 重导补丁 + 刷新 MANIFEST（改完二开代码必跑）
 │   ├── image/                  # Dockerfile + 修好的 nginx 模板
 │   ├── backup.sh / backup.cron # 每日备份（三库 dump + 数据打包）
 │   ├── rebuild-frontend.sh     # dev 前端构建（生产走镜像内构建）
 │   ├── sync-dingtalk-users.sh / dingtalk-sync.cron
+│   ├── rehearsal-db-override.yml  # 本地彩排的 macOS MariaDB 覆盖
 │   ├── conf-templates/         # 配置模板（占位符形式，无密钥）
 │   └── seafile-data/           # ⛔ 运行时数据，不入库
-├── patches/                # seahub 二开改动（patch 系列）
+├── patches/                # seahub 二开改动（patch 系列 + MANIFEST.md 基线清单）
+├── .github/workflows/      # CI：复现源码树 → 构建镜像 → 推 ghcr.io
 └── docs/                   # 知识库
 ```
 
@@ -39,7 +42,7 @@
 
 ## 二开代码在哪
 
-Seafile 的二开改动集中在 `seahub`（Django Web 层），共 7 个提交，以 patch 形式记录在 `patches/`：
+Seafile 的二开改动集中在 `seahub`（Django Web 层），共 8 个提交，以 patch 形式记录在 `patches/`：
 
 | 补丁 | 内容 | 文档 |
 |---|---|---|
@@ -52,13 +55,23 @@ Seafile 的二开改动集中在 `seahub`（Django Web 层），共 7 个提交�
 | 0007 | 钉钉登录 `invalid state` 可诊断 | [001](docs/001-dingtalk-login.md) |
 | 0008 | 密码登录仅限管理员（钉钉 SSO 唯一入口） | [008](docs/008-restrict-password-login.md) |
 
-应用到上游源码（基线 `haiwen/seahub` 分支 `12.0`，commit `0877ad7`）：
+基线是 `haiwen/seahub` 分支 `12.0` 的 commit `0877ad7`（全 SHA 与目标 tree sha 记在
+[`patches/MANIFEST.md`](patches/MANIFEST.md)，**由脚本生成，勿手工编辑**）。应用到上游源码：
 
 ```bash
-git clone -b 12.0 https://github.com/haiwen/seahub.git
-cd seahub && git checkout 0877ad7
+git clone https://github.com/haiwen/seahub.git && cd seahub
+git checkout 0877ad7                      # 固定 commit，不受上游分支前进影响
 git am /path/to/this/repo/patches/*.patch
 ```
+
+改完二开代码后**不要手工导补丁**，跑：
+
+```bash
+cd deploy && ./export-patches.sh   # 重导补丁 → 刷新 MANIFEST → 自检树哈希
+```
+
+它会校验「补丁逐个应用后的源码树」等于「二开分支的源码树」，不过就拒绝结束。构建镜像时
+（本地与 CI 都一样）还会再验一遍，所以发不出与补丁不一致的镜像。
 
 ## 快速上手
 
@@ -72,11 +85,43 @@ cp .env.example .env          # 填入数据库密码、JWT 密钥等
 docker compose up -d
 ```
 
-**生产部署**（自建镜像 → ACR → 服务器，Let's Encrypt 正式证书）：见 [docs/007](docs/007-production-deployment.md)。核心命令 `./build-image.sh <registry>/<ns>`，上线前先跑本地彩排（docs/007 §7）。
+**生产部署**（CI 构建镜像 → ghcr.io → 服务器拉取，Let's Encrypt 正式证书）：见 [docs/007](docs/007-production-deployment.md)。上线前先跑本地彩排（docs/007 §7）。
 
 启动后访问 <https://127.0.0.1>（自签证书，浏览器需点「继续前往」）。
 
 部署二开源码：把 `seahub/seahub` 以 bind-mount 挂进容器，或直接把打好补丁的 `seahub/` 挂进去。细节见 [docs/006](docs/006-https-setup.md) 与 [docs/README](docs/README.md) 的「关键约定」。
+
+## 发布流程（改代码 → 上生产）
+
+镜像不在开发机手工推，由 **GitHub Actions 构建并推到 ghcr.io**；生产机只 `docker compose pull`。
+机制、排障与 ACR 备选见 [docs/010](docs/010-ci-release-pipeline.md)。
+
+```
+开发机                                GitHub                                生产服务器
+seahub 改代码                          Actions（ubuntu-latest, amd64）        docker compose pull
+  └ deploy/export-patches.sh   ──push──→  按 MANIFEST 的固定 SHA 浅取上游       （ghcr.io 私有镜像）
+       └ patches/ + MANIFEST.md            → git am patches/*.patch                  │
+                                           → 断言 tree sha                          └ LE 自动签发/续期
+                                           → deploy/build-image.sh（同一份脚本）       80/443 ← 公网
+                                           → ghcr.io/topiceyes/seafile-mc:<tag>
+```
+
+```bash
+cd deploy && ./export-patches.sh        # 1. 重导补丁 + 刷新 MANIFEST（会自检）
+git add -A && git commit -m "..." && git push main   # 2. 推送触发构建
+gh run watch                            # 3. 看构建（约 12–18 分钟）
+
+# 4. 生产服务器上：改 .env 里的 SEAFILE_PRO_IMAGE → pull && up -d
+```
+
+**为什么不做 fork**：上游 `haiwen/seahub` 是公开仓库，而公开仓库的 fork **无法设为私有**
+（GitHub 强制继承可见性），走 fork 等于公开二开代码。补丁路线还额外带来一条更硬的性质：
+CI 每次构建都重新验证「补丁能逐字节复现二开分支」，上游漂移或补丁改坏会变成**构建失败**，
+而不是悄悄发出一个内容不对的镜像。
+
+**tag 规则**：`12.0.14-dingtalk.<补丁数>`。注意它是从**提交数**推导的，所以*修改*一个既有补丁
+（而非新增提交）会得到同 tag 不同内容 —— CI 有「tag 已存在即失败」守卫，要覆盖需显式
+`force=true`；最严格的做法是生产 `.env` 里钉 digest。每次构建的 digest 记在 docs/010 §9 台账。
 
 ## 分支约定
 

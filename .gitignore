@@ -7,8 +7,9 @@ deploy/seafile-mysql-db/
 deploy/.env
 
 # ============ 上游源码克隆 ============
-# seahub/ 与 seafile/ 各自是独立 git 仓库（上游 haiwen/*）。
-# 二开改动通过 patches/ 记录，或推送到自己的 fork（见 README）。
+# seahub/ 与 seafile/ 各自是独立 git 仓库（上游 haiwen/*），体积大，不入库。
+# 二开改动全部通过 patches/ 发布：CI 按 patches/MANIFEST.md 的固定 SHA 拉上游，
+# 再 git am patches/*.patch（见 docs/010）。
 seafile/
 seahub/
 

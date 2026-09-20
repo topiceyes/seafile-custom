@@ -1,0 +1,194 @@
+# 010 - CI 发布流水线（GitHub Actions → ghcr.io）
+
+> 完成日期：2026-09-20 ｜ 状态：随生产部署上线
+
+## 1. 概览
+
+开发机不再需要手工构建和推镜像。推代码到 GitHub，Actions 自动构建，生产机只 `docker compose pull`。
+
+```
+开发机                               GitHub                                    生产服务器（国内）
+─────                                ──────                                    ────────────────
+seahub/dev-dingtalk 提交
+  └ deploy/export-patches.sh
+       └ patches/*.patch + MANIFEST.md
+            └ git push ──────────→  seafile-custom（私有, main）
+                                      └ .github/workflows/build-image.yml
+                                         ├ 按固定 SHA 浅取上游 haiwen/seahub
+                                         ├ git am patches/*.patch
+                                         ├ 断言源码树 == MANIFEST.tree_sha
+                                         ├ deploy/build-image.sh（与开发机同一脚本）
+                                         └ push → ghcr.io/topiceyes/seafile-mc:12.0.14-dingtalk.N
+                                                                                  │
+                                             api.github.com tarball ──────────────┤ 免代理取 deploy/
+                                                                                  ↓
+                                                        docker login ghcr.io（PAT）
+                                                        docker compose pull && up -d
+```
+
+**一条设计原则**：workflow 里**不写构建逻辑**。CI 只负责准备源码树，然后调用
+`deploy/build-image.sh` —— 与开发机同一个脚本。所以「CI 产物 ≡ 本地产物」是结构上
+成立的，而不是靠两边各自维护一套命令保持同步。CI 里唯一的构建相关代码就是环境变量：
+
+```yaml
+PLATFORMS=linux/amd64
+CACHE_ARGS="--cache-from type=gha,scope=seafile-mc --cache-to type=gha,mode=max,scope=seafile-mc"
+EXTRA_ARGS="--provenance=false --sbom=false"
+```
+
+## 2. 为什么二开源码不做成 GitHub fork
+
+`seahub/` 是上游 `haiwen/seahub` 的克隆，8 个二开提交此前只存在于开发机上。
+把它放到 GitHub 有两条路，都被否掉了：
+
+| 路线 | 否决理由 |
+|---|---|
+| fork 上游后推分支 | **上游是公开仓库，而公开仓库的 fork 无法设为私有**（GitHub 强制继承父仓库可见性）。走 fork 等于把二开代码公开，与「仓库保持私有」直接冲突 |
+| 新建私有 mirror 仓后推分支 | 等价于先 `git fetch --unshallow` —— 上游仓库 1.4 GB，要经代理拖完整历史。而二开 delta 只有 21 文件 / 约 185 KiB 对象 |
+
+于是选第三条：**补丁路线**。CI 在 GitHub 网络内（无墙、无代理成本）按固定 SHA 浅取
+上游，再应用 `patches/`。这条路线额外带来一个**比 fork 更强的性质**：每次构建都重新
+验证「补丁能逐字节复现二开分支」，所以上游漂移或补丁被改坏会变成**构建失败**，
+而不是悄悄发出一个内容不对的镜像。
+
+代价是 GitHub 上没有可浏览的逐提交历史。补丁文件由 `git format-patch` 生成，保留了
+完整的作者/日期/提交消息，需要时 `git log` 也仍可在开发机上查看。
+
+## 3. 触发方式
+
+```bash
+# 手动触发（主入口）
+gh workflow run build-image.yml
+gh workflow run build-image.yml -f force=true    # 覆盖已存在的 tag
+
+# 自动触发：push 到 main 且改动以下路径
+#   patches/**                    → 补丁变了，镜像内容变
+#   deploy/image/**               → Dockerfile / nginx 模板变了
+#   deploy/build-image.sh         → 构建入口变了
+#   .github/workflows/build-image.yml 自身
+```
+
+`paths:` 过滤是必需的：漏了它，一次文档提交也会烧掉十几分钟额度，还会产出一个
+内容与上个版本完全相同的 tag。
+
+同一 ref 上的构建**不并发、也不互相取消**（`cancel-in-progress: false`）——
+两次构建抢同一个 tag 是最糟的失败模式。
+
+## 4. tag 规则与血缘断言
+
+tag 形如 `12.0.14-dingtalk.<N>`，`N` = `git rev-list --count <base_commit>..HEAD`，
+也就是补丁个数（必然递增）。tag 由 `./deploy/build-image.sh --print-tag` 算出，
+**不在 YAML 里重算** —— 那是 CI 与本地最可能发生漂移的地方。
+
+CI 在构建前跑三条断言：
+
+1. tag 里的数字 == `patches/*.patch` 的文件数
+2. tag 的版本前缀 == `deploy/image/Dockerfile` 里 `BASE_IMAGE` 的版本
+   （升级 Seafile 时要同步改 BASE_IMAGE / INSTALLPATH / 版本前缀 / tag 四处，
+   这条能在「只改了一半」时提前拦住，避免发出 12.0.14 与 12.1.x 混搭的镜像）
+3. 补丁文件名 `0001..000N` 连续无缺口
+
+### ⚠️ tag 是可变的
+
+`N` 是**提交数**，所以：**修改**一个既有补丁（而不是新增提交）会得到**同一个 tag、
+不同内容**——钉了该 tag 的服务器下次 `pull` 就会静默漂移。
+
+三道防线，按推荐顺序：
+
+1. **新增提交而不是修改旧补丁**（最省事，tag 自然递增）
+2. CI 的「tag 已存在即失败」守卫（要覆盖需显式 `force=true`）
+3. 生产 `.env` 里**钉 digest**（`ghcr.io/topiceyes/seafile-mc@sha256:...`）——最严格
+
+每次构建的 digest 会写进 GitHub Actions 的 run summary，也在下节的台账里记一份。
+
+## 5. 漂移控制（三层）
+
+### ① `patches/MANIFEST.md`
+基线全 SHA、上游分支、补丁数、目标 tree sha。`build-image.sh` 与 CI **都从这里读基线**，
+所以不存在「脚本里写一个、YAML 里写另一个」的可能。由脚本生成，勿手工编辑。
+
+> 文件名注意：**不能**匹配 `*.patch`，否则会被 `git am patches/*.patch` 的 glob 误吞。
+
+### ② 构建时的硬不变量
+`build-image.sh` 在每次构建前把补丁逐个 `git apply --cached` 到临时 index，比对
+`git write-tree` 与分支 HEAD 的 tree 哈希，不一致直接失败。用 **tree 哈希**而不是
+`git archive` 的 sha256 —— 后者含 tar/pax 头信息，随 git 版本/umask/时间戳变化，
+跨机器不可比。
+
+从「软警告」改成「硬失败」是有意的：这条性质是整套流水线的地基，静默漂移的代价
+（发出一个内容不对的镜像且无人察觉）远高于构建失败的代价。
+
+### ③ `deploy/export-patches.sh`
+在 seahub 分支上改完代码后跑一次：重导补丁 → 刷新 MANIFEST → 调 `build-image.sh --check-tree`
+自检（复用同一份实现，避免两套逻辑分叉），校验不过拒绝结束。
+
+```bash
+cd deploy && ./export-patches.sh
+```
+
+## 6. 服务器侧
+
+```bash
+# 0a) 取部署文件。服务器上 git 协议到 github.com 不通，
+#     但 api.github.com / codeload.github.com 可直连（已实测），走 tarball 即可
+PAT=<fine-grained PAT：对 topiceyes/seafile-custom 有 Contents:Read，且有 Packages:Read>
+curl -fL --max-time 120 -H "Authorization: Bearer $PAT" \
+  https://api.github.com/repos/topiceyes/seafile-custom/tarball/main -o /tmp/deploy.tar.gz
+mkdir -p /opt/seafile-custom && tar -xzf /tmp/deploy.tar.gz --strip-components=1 -C /opt/seafile-custom
+cd /opt/seafile-custom/deploy        # 固定目录：compose 的 ./backup.sh 等绑定挂载依赖相对路径
+cp .env.prod.example .env            # .env 不在 tarball 内，重取代码不会覆盖它
+
+# 0b) 登录私有镜像仓库
+echo "$PAT" | docker login ghcr.io -u <github用户名> --password-stdin
+chmod 600 ~/.docker/config.json
+
+# 0c) 更新
+vi .env      # SEAFILE_PRO_IMAGE 改成新 tag（或钉 digest）
+docker compose pull && docker compose up -d
+```
+
+几个容易踩的点：
+
+- `curl -L` 会把显式 `-H "Authorization: …"` **转发到重定向目标**（`codeload.github.com`），
+  这正是私有仓库一行命令能成立的关键
+- tarball 根目录是 `<owner>-<repo>-<sha>/`，所以要 `--strip-components=1`
+- 要可复现而非跟随 `main`，就把 URL 里的 `main` 换成具体 commit SHA，并记入台账
+- **PAT 范围**：一个 classic PAT 的 `repo` + `read:packages` 即可覆盖「取 tarball + 拉镜像」。
+  CI 推镜像用内置 `GITHUB_TOKEN`，不需要额外 PAT。PAT 会过期，过期表现为 `denied`，
+  容易误判成网络问题——记个日历提醒
+
+## 7. 排障
+
+| 症状 | 原因与处置 |
+|---|---|
+| CI 失败于「校验源码树 == tree_sha」 | 补丁与 `MANIFEST.tree_sha` 不同步。跑 `deploy/export-patches.sh` 重导补丁并提交 |
+| CI 失败于「按 SHA 取上游」 | 基线 SHA 在上游不可达（极少见）。确认 `MANIFEST.base_commit` 拼写，或改用 `--filter=blob:none` 全量 clone |
+| CI 失败于「tag 已存在」 | 你修改了既有补丁而非新增提交。**新增一个提交**（推荐），或 `force=true` 覆盖并同步更新所有钉了该 tag 的服务器 |
+| 冒烟验证报 `toomanyrequests` | Docker Hub 对共享 runner IP 的匿名限流。在仓库 secrets 里配 `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`，workflow 会自动登录 |
+| 服务器 `docker pull` 报 `denied` | ① PAT 过期或权限不足（需 `read:packages`）② 没 `docker login ghcr.io` ③ 包权限里没给 `seafile-custom` 仓库访问权（Package settings → Manage Actions access） |
+| 生产机连不上 ghcr.io | 见 §8 的 ACR 备选 |
+
+## 8. ACR 备选（ghcr 不可达时）
+
+`build-image.sh` 对 registry 无假设，本地推 ACR 的能力一直保留：
+
+```bash
+# 开发机上（arm64 native；要 amd64 需换机器或开仿真）
+docker login registry.cn-hangzhou.aliyuncs.com
+./deploy/build-image.sh registry.cn-hangzhou.aliyuncs.com/<命名空间>
+```
+
+生产 `.env` 的 `SEAFILE_PRO_IMAGE` 换成对应 ACR 地址即可，compose 文件不用动。
+
+**关于 ghcr 的额度**：GitHub Packages 免费额度是 500 MB 存储 / 1 GB 月流量，但官方
+文档明确「容器镜像的存储与带宽目前免费」——这是两套口径，私有镜像大概率不受 500 MB 限制。
+不过该政策保留变更权（变更会提前一个月通知），所以保留 ACR 这条后路是有价值的。
+本镜像实测未压缩 0.48–0.8 GB。
+
+## 9. 发布台账
+
+每次发布后追加一行，便于回滚与审计。
+
+| 日期 | tag | 补丁数 | 源码树 | 镜像 digest | 备注 |
+|---|---|---|---|---|---|
+| （首次 CI 发布后回填） | | | | | |

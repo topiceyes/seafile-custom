@@ -12,20 +12,26 @@
 | 004 | [离职账号自动禁用](004-auto-deactivate-departed-users.md) | 定时比对钉钉通讯录，禁用离职员工账号 | ✅ 已完成（2026-09-17） |
 | 005 | [启用 WebDAV](005-enable-webdav.md) | 开启官方默认关闭的 SeaFDAV 服务（502 修复） | ✅ 已完成（2026-09-17） |
 | 006 | [全站 HTTPS](006-https-setup.md) | 自签证书 + 手写 nginx，客户端 SSO 需要 | ✅ 已完成（2026-09-17） |
-| 007 | [生产部署](007-production-deployment.md) | 自建镜像 + ACR + Let's Encrypt 正式上线 | ✅ 已完成（2026-09-20） |
+| 007 | [生产部署](007-production-deployment.md) | 自建镜像 + Let's Encrypt 正式上线（含本地彩排流程） | ✅ 已完成（2026-09-20） |
 | 008 | [密码登录仅限管理员](008-restrict-password-login.md) | 钉钉 SSO 成为普通用户唯一入口 | ✅ 已完成（2026-09-20） |
 | 009 | [备份与恢复](009-backup-restore.md) | 三库 dump + 数据目录打包，每日 cron | ✅ 已完成（2026-09-20） |
+| 010 | [CI 发布流水线](010-ci-release-pipeline.md) | 推 GitHub → Actions 构建 → ghcr.io → 生产机拉取 | ✅ 已完成（2026-09-20） |
 
 ## 工作区结构
 
 ```
 /Volumes/newdisc/appdev/Seafile/
-├── seafile/     # C 核心源码（master，官方仓库，未改动）
-├── seahub/      # Web 层源码（二开主战场，dev-dingtalk 分支）
-├── deploy/      # Docker 部署（compose 配置 + 持久化数据）
+├── seafile/     # C 核心源码（master，官方仓库，未改动；不入库）
+├── seahub/      # Web 层源码（二开主战场，dev-dingtalk 分支；不入库，以补丁形式发布）
+├── patches/     # 二开补丁系列 + MANIFEST.md（入库，CI 的唯一源码输入）
+├── deploy/      # Docker 部署（compose 配置 + 构建脚本 + 持久化数据）
 ├── docs/        # 本知识库
+├── .github/     # GitHub Actions（构建并推送镜像到 ghcr.io）
 └── .claude/     # Claude Code 会话配置
 ```
+
+> `seahub/` 与 `seafile/` 各是上游 1.4 GB / 数百 MB 的仓库，**不入库**。二开内容以
+> `patches/*.patch` 的形式入库，CI 按固定 SHA 拉上游再应用补丁 —— 见 010 文档。
 
 ## 快速上手
 
