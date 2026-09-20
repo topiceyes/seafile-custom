@@ -6,7 +6,12 @@
 #
 # 源码从哪来：不 fork。CI 在 GitHub 网络内按固定 SHA 浅取上游 haiwen/seahub，
 # 再应用 patches/*.patch —— 见 patches/MANIFEST.md 与 docs/010。
-# （fork 路线被策略关闭：上游是公开仓库，而公开仓库的 fork 无法设为私有。）
+# （fork 路线曾被策略关闭：上游是公开仓库，其 fork 无法设为私有。2026-09-20 本仓库
+# 转 public 后该禁令已失效，但仍保留补丁路线——因为只有这条路线会验证「补丁能逐字节
+# 复现二开分支」，fork 路线下没有任何东西做这个验证。详见 docs/010 §2。）
+#
+# ⚠️ 重写历史后强推**不会**可靠触发本 workflow（paths 过滤在 before 非 after 祖先时
+# 判定不可靠，2026-09-20 实测）。这类推送后手动跑：gh workflow run build-image.yml
 #
 # 平台：只构建 linux/amd64。生产目标是 amd64，runner 也是 amd64，构建/CRA/冒烟
 # 全 native。加 arm64 会让整个前端 stage 走 QEMU（769MB npm ci + 吃内存的 CRA

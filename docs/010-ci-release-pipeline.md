@@ -80,6 +80,12 @@ gh workflow run build-image.yml -f force=true    # 覆盖已存在的 tag
 `paths:` 过滤是必需的：漏了它，一次文档提交也会烧掉十几分钟额度，还会产出一个
 内容与上个版本完全相同的 tag。
 
+> ⚠️ **强推（重写历史）后 `push` 触发不可靠。** 2026-09-20 把提交作者改成 noreply
+> 邮箱时重写了全部历史并强推，**远端一个 run 都没生成**——`paths` 过滤在「before
+> 不是 after 的祖先」这种情形下判定不可靠。改动确实落到了 `patches/**`，但没触发。
+> **重写历史后一律手动触发**：`gh workflow run build-image.yml`。
+> 顺带一提，重写历史会让 tag 变（补丁内容进了哈希），所以本来就得走一次构建。
+
 同一 ref 上的构建**不并发、也不互相取消**（`cancel-in-progress: false`）——
 两次构建抢同一个 tag 是最糟的失败模式。
 
