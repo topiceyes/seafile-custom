@@ -370,6 +370,8 @@ if os.environ.get('SEAFILE_SERVER_PROTOCOL') == 'https':
 | `build-image.sh --check-tree` 硬校验 | ✅ 通过；人为改动补丁后能正确拒绝 |
 | `--print-tag` | ✅ 补丁数与 tag 数字一致（当时格式还是 `12.0.14-dingtalk.8`，现已加哈希段） |
 | tag 内容寻址 | ✅ 连续两次相同；改 nginx 模板或补丁内容都会得到新 tag；还原后回到原值 |
+| 反代模式 nginx 修复 | ✅ 在 CI 构建并推送的 amd64 镜像上验证：两种模式都渲染且 `nginx -t` 通过，反代模式 `X-Forwarded-Proto` 取值正确 |
+| 内容寻址 tag 免 force | ✅ 改动 `build-image.sh` 后自动得到新 tag `…8.4261dd78`，tag 守卫正常放行（此前同类改动每次都要 force） |
 | `git archive` 文件完整性 | ✅ 3812 个文件，含 `frontend/package-lock.json` |
 | 取上游 tarball（免代理） | ✅ `api.github.com` → `codeload.github.com` 直连 200 |
 | 首次 CI 运行 + 镜像发布 | ✅ 构建 8m27s；tag `12.0.14-dingtalk.8`，digest 记在 [010 §9](010-ci-release-pipeline.md) 台账 |
