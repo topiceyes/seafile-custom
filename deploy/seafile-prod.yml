@@ -7,7 +7,7 @@
 #     不挂源码、也不挂任何宿主机文件 —— 所以本文件放哪个目录都能起
 #   - SEAFILE_SERVER_LETSENCRYPT 是唯一的 https 开关（容器不读别的变量判断协议）
 #   - 管理员初始化变量是 INIT_SEAFILE_ADMIN_*（不是 SEAFILE_ADMIN_*，镜像不认后者）
-#   - 数据卷里不要预置任何 nginx 配置（会压制官方模板渲染，init-conf.sh --prod 有防呆）
+#   - 数据卷里不要预置任何 nginx 配置（会压制官方模板渲染）
 
 services:
   db:
@@ -88,6 +88,12 @@ services:
       - INIT_SEAFILE_ADMIN_EMAIL=${SEAFILE_ADMIN_EMAIL}
       - INIT_SEAFILE_ADMIN_PASSWORD=${SEAFILE_ADMIN_PASSWORD}
       - JWT_PRIVATE_KEY=${JWT_PRIVATE_KEY}
+      # 可选：钉钉凭据。容器内的 custom_bootstrap.py 读它们，只有非空才写进
+      # seahub_settings.py。一般【留空】——钉钉配置已 constance 化，装完在
+      # 「系统管理 → 设置」页填更合适（见 docs/002）。写这里的意义只是让首启
+      # 就有个非空默认值。注意 SEAHUB_ 前缀，别写成 DINGTALK_。
+      - SEAHUB_DINGTALK_APP_KEY=${SEAHUB_DINGTALK_APP_KEY:-}
+      - SEAHUB_DINGTALK_APP_SECRET=${SEAHUB_DINGTALK_APP_SECRET:-}
     depends_on:
       # service_healthy：等 db 的 healthcheck 通过（= 首启初始化真的走完了）再起 seafile
       db:

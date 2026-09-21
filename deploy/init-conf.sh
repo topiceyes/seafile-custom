@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
-# 配置管理：dev 预渲染 / prod 首启后定制追加。
+# 配置管理：**仅 dev**。生产不再需要这个脚本（见下面 --prod 的说明）。
 #
 #   ./init-conf.sh           dev 模式：把 conf-templates/ 渲染进数据卷（仅渲染尚不存在的文件）
 #   ./init-conf.sh --force   dev 模式：覆盖已存在的文件（会丢手工改动）
-#   ./init-conf.sh --prod    prod 模式：【一条命令做完】等首启 → 追加定制 → 重启 → 自检
+#   ./init-conf.sh --prod    已废弃，只会报错退出
 #
-# prod 模式可以直接跟在 `docker compose up -d` 后面跑，不需要先确认首启完成——
-# 脚本自己会等（默认 300s，PROD_WAIT=<秒> 可改）。
+# ## 为什么 dev 要预渲染、prod 不能
 #
-#   SEAFILE_CONTAINER=<名>  容器名（默认 seafile）
-#   --no-restart           只改文件不重启（用于手工控制生效时机）
+# 全新数据卷首启时，镜像内 setup-seafile-mysql.py 会用 open(seahub_settings.py, 'w')
+# **无条件重写**全套配置（SECRET_KEY 随机生成、DB 密码取 DB_PASSWORD 环境变量、
+# SERVICE_URL 取 SEAFILE_SERVER_* 环境变量）——生产上预渲染会被整体覆盖，所以这条路
+# 走不通。而 dev 的数据卷早就初始化过了，setup 不会再跑，预渲染是安全的。
 #
-# ⚠️ 为什么 prod 不能预渲染：全新数据卷首启时，镜像内 setup-seafile-mysql.py 会用
-#    open(seahub_settings.py, 'w') 无条件重写全套配置（SECRET_KEY 随机生成、DB 密码取
-#    DB_PASSWORD 环境变量、SERVICE_URL 取 SEAFILE_SERVER_* 环境变量）。预渲染的文件
-#    会被整体覆盖。所以生产流程是：先用 compose 环境变量完成首启，再跑本脚本追加定制项。
+# 生产的那份「追加定制」原先也在这里（--prod）：先等首启完成，再追加，再重启两个服务。
+# **2026-09-21 起整个搬进镜像**，由 deploy/image/custom_bootstrap.py 在容器启动时
+# 自动完成 —— 时机是 setup 写完配置之后、seafile/seahub 起来之前，所以**不需要重启**，
+# 而且每次启动都校验一遍（幂等）。手工步骤的真正问题不是麻烦，是忘了不会报错：
+# SSO / 账号管控 / WebDAV 会静默失效，而页面照常打开。
 #
 # 数据卷位置读 .env 的 SEAFILE_VOLUME（缺省 ./seafile-data）。
 # env 文件默认 .env；本地彩排用 ENV_FILE=.env.rehearsal 覆盖（dev 的 .env 不受影响）。
@@ -33,7 +35,7 @@ for arg in "$@"; do
     --prod)       PROD=1 ;;
     --no-restart) NORESTART=1 ;;
     # 注意 ${arg} 的花括号：写成 $arg 再跟中文括号，bash 会把括号并进变量名
-    *) echo "未知参数：${arg}（支持 --force / --prod / --no-restart）" >&2; exit 1 ;;
+    *) echo "未知参数：${arg}（支持 --force；--prod 已废弃）" >&2; exit 1 ;;
   esac
 done
 
@@ -43,11 +45,10 @@ if [[ ! -f "$ENV_FILE" ]]; then
 fi
 
 python3 - "$FORCE" "$PROD" "$NORESTART" "$ENV_FILE" <<'PY'
-import os, re, shutil, subprocess, sys, time
+import re, sys
 from pathlib import Path
 
 force, prod = sys.argv[1] == '1', sys.argv[2] == '1'
-no_restart = sys.argv[3] == '1'
 env_file = sys.argv[4]
 root = Path('.')
 
@@ -65,123 +66,26 @@ for line in (root / env_file).read_text().splitlines():
 shared = env.get('SEAFILE_VOLUME') or 'seafile-data'
 
 if prod:
-    # ---- prod：等首启完成 → 追加定制 → 重启 → 自检 ----
-    conf = root / shared / 'seafile' / 'conf'
-    sspath = conf / 'seahub_settings.py'
-    container = os.environ.get('SEAFILE_CONTAINER', 'seafile')
-    wait = int(os.environ.get('PROD_WAIT', '300'))
-
-    if shutil.which('docker') is None:
-        sys.exit('错误：找不到 docker 命令。prod 模式要用它确认首启状态、重启服务。')
-
-    def docker(*args):
-        return subprocess.run(('docker',) + args, capture_output=True, text=True)
-
-    # 容器健全性：先给一个明确的错误，别让用户对着「等待 xxx 未就绪」猜。
-    r = docker('inspect', '--format', '{{.State.Running}}', container)
-    if r.returncode != 0:
-        sys.exit(f'错误：找不到容器 {container}。先启动它：\n'
-                 f'       docker compose up -d\n'
-                 f'       （容器名不是 {container} 时用 SEAFILE_CONTAINER=<名> 指定）')
-    if r.stdout.strip() != 'true':
-        sys.exit(f'错误：容器 {container} 存在但没在运行。看日志：docker logs --tail 100 {container}')
-
-    def wait_for(pred, what, timeout):
-        print(f'    等待{what}（最多 {timeout}s）', flush=True)
-        t0, last = time.time(), 0.0
-        while True:
-            if pred():
-                print(f'    ✅ {what}已就绪（用时 {int(time.time() - t0)}s）')
-                return
-            el = time.time() - t0
-            if el > timeout:
-                sys.exit(f'    ❌ 等待 {timeout}s 后{what}仍未就绪。排查：\n'
-                         f'         docker logs --tail 100 {container}\n'
-                         f'       机器慢就加大超时重跑：PROD_WAIT=900 ./init-conf.sh --prod')
-            if el - last >= 15:
-                print(f'         ... 已等待 {int(el)}s')
-                last = el
-            time.sleep(3)
-
-    def seahub_up():
-        # gunicorn 默认绑 127.0.0.1:8000（gunicorn.conf.py）。任何 HTTP 状态码都算「在服务」，
-        # 只有 000 是「连不上」——所以 302/404 也算通过。
-        r = docker('exec', container, 'curl', '-sS', '-o', '/dev/null', '-w', '%{http_code}',
-                   '--max-time', '5', 'http://127.0.0.1:8000/')
-        code = r.stdout.strip()
-        return code.isdigit() and code != '000'
-
-    print('==> 等待首次启动完成')
-    wait_for(lambda: sspath.exists(), '首启配置生成', wait)
-    # 等到 seahub 真正应答再改配置。否则可能撞上 start.py 正在起 seahub，
-    # 两边同时操作 seahub 进程（重启用的是 stop+start）。
-    wait_for(seahub_up, 'seahub 服务起来', wait)
-
-    # ---- 1) WebDAV：镜像默认 enabled = false ----
-    print('\n==> 应用二开定制')
-    changed = False
-    seafdav = conf / 'seafdav.conf'
-    if seafdav.exists() and not re.search(r'^enabled\s*=\s*true', seafdav.read_text(), re.M):
-        seafdav.write_text(re.sub(r'^enabled = .*$', 'enabled = true',
-                                  seafdav.read_text(), flags=re.M))
-        print('    修改           seafdav.conf  enabled = true')
-        changed = True
-
-    # ---- 2) seahub 自定义配置块（幂等：标记存在则跳过）----
-    MARKER = '# ---- 二开定制（init-conf.sh --prod 追加，勿手改本块）----'
-    current = sspath.read_text()
-    if MARKER in current:
-        print('    跳过（已追加过）seahub_settings.py 定制块')
-    else:
-        # 只有 .env 里预置了才写钉钉凭据。默认不写：钉钉凭据已 constance 化
-        # （docs/002），后台「系统管理 → 设置」填即可，写空串只会让人以为要在这儿配。
-        dt_key = env.get('SEAHUB_DINGTALK_APP_KEY', '').strip()
-        dt_secret = env.get('SEAHUB_DINGTALK_APP_SECRET', '').strip()
-        dt_lines = ''
-        if dt_key or dt_secret:
-            dt_lines = ("DINGTALK_APP_KEY = '%s'\nDINGTALK_APP_SECRET = '%s'\n"
-                        % (dt_key, dt_secret))
-        block = f"""
-
-{MARKER}
-# 下面三项必须在【模块导入期】就确定，所以只能写文件 —— 改这里要重启 seahub。
-# 判断依据是各调用点的绑定方式，不是「重不重要」：
-#   CLIENT_SSO_VIA_LOCAL_BROWSER → urls.py / api2/urls.py / views/sso.py 导入期读它来注册路由
-#   ENABLE_DINGTALK              → 它决定 constance 里该键的默认值（settings.py:1236）
-#   ENABLE_DELETE_ACCOUNT        → profile/views.py 模块级 from seahub.settings import
-# 其余站点相关配置（SERVICE_URL、钉钉凭据与开关）都已是 constance：管理员在
-# 后台「系统管理 → 设置」页填，存库、免重启生效。所以本块只写这一次，之后不用再动。
-CLIENT_SSO_VIA_LOCAL_BROWSER = True
-ENABLE_DINGTALK = True
-ENABLE_DELETE_ACCOUNT = False           # 禁止用户自助注销（docs/003）
-# PASSWORD_LOGIN_ADMIN_ONLY = True     # 补丁 0008 默认即 True；紧急放开时取消注释改 False
-{dt_lines}"""
-        sspath.write_text(current.rstrip() + '\n' + block)
-        print('    追加           seahub_settings.py 定制块（SSO / 钉钉默认开关 / 账号管控）')
-        changed = True
-
-    # ---- 3) 生效 ----
-    if not changed:
-        print('\n==> 没有改动，无需重启。')
-        sys.exit(0)
-
-    if no_restart:
-        print('\n==> 已指定 --no-restart，未重启。手动生效：')
-        print(f'    docker exec {container} /opt/seafile/seafile-server-latest/seafile.sh restart  # seafdav')
-        print(f'    docker exec {container} /opt/seafile/seafile-server-latest/seahub.sh restart   # seahub')
-        sys.exit(0)
-
-    print('\n==> 重启服务使其生效')
-    for script in ('seafile.sh', 'seahub.sh'):
-        r = docker('exec', container, f'/opt/seafile/seafile-server-latest/{script}', 'restart')
-        if r.returncode != 0:
-            sys.exit(f'    ❌ {script} restart 失败（exit {r.returncode}）：\n'
-                     f'{(r.stderr or r.stdout).strip()[-800:]}')
-        print(f'    ✅ {script} restart')
-
-    wait_for(seahub_up, 'seahub 重新起来', wait)
-
-    print('\n完成。接下来在浏览器里做首次站点配置（域名、钉钉凭据），见 docs/011。')
+    # --prod 已废弃（2026-09-21）。不是「改名」，是这件事整个搬进镜像了：
+    # 追加配置的时机现在是 start.py 在 setup 写完配置之后、seafile/seahub 起来之前
+    # 调用 custom_bootstrap.py —— 见 deploy/image/custom_bootstrap.py。
+    # 所以 `docker compose up -d` 之后不需要再跑任何东西。
+    #
+    # 保留这个分支只为了给旧流程一个明确的说法：静默变成 no-op 的话，用旧镜像的人
+    # 会以为配置已经追加好了，而实际上没有（SSO/账号管控/WebDAV 静默失效）。
+    sys.exit(
+        '错误：--prod 已废弃，不再需要。\n'
+        '\n'
+        '  二开定制的追加已搬进镜像：容器启动时由 custom_bootstrap.py 自动完成\n'
+        '  （在 setup 写完配置之后、seafile/seahub 起来之前），所以\n'
+        '\n'
+        '      docker compose up -d\n'
+        '\n'
+        '  之后不需要再跑任何东西。幂等，每次启动都会校验一遍。\n'
+        '\n'
+        '  看到这条说明你用的还是旧镜像。换成含此改动的镜像即可（tag 见 docs/010 §9）。\n'
+        '  若确实要手工追加（例如临时绕过），用旧版脚本：git show <旧提交>:deploy/init-conf.sh'
+    )
 else:
     # ---- dev：预渲染（数据卷已初始化，setup 不会再跑）----
     def render(text):

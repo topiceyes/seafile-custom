@@ -183,9 +183,11 @@ CI 的 run summary 里也有一份 —— 用于比对 CI 的 amd64 产物与开
 > **放哪个目录都能起。** 这一点是刻意设计的：以前那三个 bind-mount 会让「换个目录
 > 启动」变成**静默故障** —— 挂载落空、容器照常起，但备份和离职同步都不再执行。
 
-唯一还需要仓库文件的地方是**首启之后**跑一次 `deploy/init-conf.sh --prod`（见 4.4）——
-它一条命令做完「等首启 → 追加定制 → 重启 → 自检」。所以下面仍然取整个 tarball：
-仓库很小，且这样脚本与文档永远同版本。
+严格说只有 `seafile-prod.yml` 是**运行时**必需，`.env` 由 `init-prod-env.sh` 生成 —— 所以
+取整个 tarball 只是为了省事（一条 curl 拿全，脚本与文档永远同版本），仓库本身很小。
+
+> 早先这里还有一步「首启之后手工跑 `init-conf.sh --prod` 追加二开定制」。**2026-09-21 起
+> 那一步已在镜像内自动完成**，部署不再需要它——见 §4.2.2。
 
 ```bash
 # ---- 4.1 取部署文件（免代理、免凭据）----
@@ -208,20 +210,22 @@ cd deploy                          # 只是习惯，不再是硬要求
 
 mkdir -p /data/seafile /data/seafile-mysql
 
-# ---- 4.3 起服务（一条命令）----
+# ---- 4.3 起服务（就这一条命令，没有下一步）----
 docker compose pull                # 镜像包是 public，不需要 docker login
 docker compose up -d               # db + memcached + seafile 一起起，按依赖顺序
 # 这一条命令自己会等：compose 里 db 带 healthcheck，seafile 是
 #   depends_on: {db: {condition: service_healthy}, memcached: {condition: service_started}}
 # 所以不需要「先起 db、等一会儿、再起 seafile」那样分段启动。
-# 首启：setup 生成基础配置 + 建管理员（LETSENCRYPT=true 时还会签发证书；本项目是反代模式，不签）
-
-# ---- 4.4 追加二开定制（一条命令）----
-./init-conf.sh --prod
-# 内部按序做：等首启配置生成 → 等 seahub 真的应答 → 追加 SSO/钉钉开关/账号管控 + 开 WebDAV
-#            → 重启 seafile/seahub → 再次自检。幂等，重复跑无副作用。
-# 可以直接跟在 up -d 后面跑，不用先确认首启完成（默认等 300s，PROD_WAIT=<秒> 可调）。
+#
+# 容器内首启顺序（全部自动，不需要人工介入）：
+#   渲染 nginx 配置 → 等 MariaDB → setup 生成基础配置 + 建管理员
+#   → 追加二开定制（SSO/钉钉默认开关/账号管控 + 开 WebDAV）← custom_bootstrap.py
+#   → 起 seafile/seahub/seafdav
+# （LETSENCRYPT=true 时中间还会签发证书；本项目是反代模式，不签）
 ```
+
+**装完就完了。** 二开定制的追加已在镜像内完成（见 §4.2.2），生产上**没有**"再跑一个脚本"
+这一步；仓库里的 `init-conf.sh` 现在只剩 dev 用途，`--prod` 会直接报错退出。
 
 要点：tarball 根目录是 `<owner>-<repo>-<sha>/` 故需 `--strip-components=1`；`.env` 不在
 tarball 内，重取代码不会覆盖它。
@@ -260,13 +264,56 @@ tarball 内，重取代码不会覆盖它。
 > 真正的 403 要到 `docker pull` 才暴露——用 gh 的 OAuth token 实测过这个现象。
 > 转 public 后这一整类失败面消失，这也是当初决定公开的主要动因。
 
-**为什么 init-conf --prod 在首启之后**：全新数据卷首启时，镜像内 `setup-seafile-mysql.py` 用 `open('w')` **无条件重写** `seahub_settings.py`（SECRET_KEY 随机、DB 密码取 `DB_PASSWORD` 环境变量、SERVICE_URL 取 `SEAFILE_SERVER_*`）。预渲染会被覆盖。所以流程是：环境变量喂给 setup 完成基础配置 → 首启后追加二开定制块（幂等，带标记）→ 重启生效。
+### 4.2.2 二开定制是怎么自动生效的
 
-> **「等首启」是脚本的活，不是你的活。** `init-conf.sh --prod` 自己会等两件事：`seahub_settings.py`
-> 出现（= setup 跑完）、以及 gunicorn 在 `127.0.0.1:8000` 上真的应答（= 首启完全走完）。
-> 等到第二件是有原因的：`start.py` 是后台起服务的，若在它还忙着起 seahub 时就去改配置、
-> 重启，两边会同时操作同一批进程。所以直接 `docker compose up -d && ./init-conf.sh --prod`
-> 连着跑就行，不必盯着日志判断时机。
+定制项（SSO / 钉钉默认开关 / 账号管控 + 开 WebDAV）的追加**已在镜像内完成，部署时没有这一步**。
+
+**为什么不能预渲染进镜像。** 全新数据卷首启时，镜像内 `setup-seafile-mysql.py` 用 `open('w')`
+**无条件重写** `seahub_settings.py`（SECRET_KEY 随机、DB 密码取 `DB_PASSWORD` 环境变量、
+SERVICE_URL 取 `SEAFILE_SERVER_*`）和 `seafdav.conf`。镜像里预置的内容会被整体覆盖，
+这条路走不通。
+
+**所以只能在"setup 写完、服务起来"之间那个窗口里追加。** 这个窗口是 `start.py` 里的两行之间：
+
+```
+start.py: main()
+  ├─ init_letsencrypt()            （仅 LETSENCRYPT=true）
+  ├─ generate_local_nginx_conf()
+  ├─ wait_for_mysql()
+  ├─ init_seafile_server()         ← setup 在这里写 seahub_settings.py / seafdav.conf
+  ├─ init_custom_settings()        ← ★ 二开定制在这里追加（镜像插入的那一行）
+  ├─ seafile.sh start              ← WebDAV 由这个起
+  └─ seahub.sh start               ← seahub_settings.py 由这个读
+```
+
+时机只有这一种选法：**早了**会被 setup 的 `open('w')` 覆盖；**晚了** seahub 已经起来，
+而 `seahub_settings.py` 是**导入期**读的，改了必须重启。就这个窗口，改完**直接生效、不需要重启**。
+
+实现在 `deploy/image/custom_bootstrap.py`，由 Dockerfile 第 8 项 COPY 进镜像、并往 `start.py`
+插一行调用（**构建期有断言**，见 `smoke-test.sh` 第 6 项：不只检查接线，还在假配置目录上
+真跑一遍验行为和幂等）。
+
+**幂等**：靠配置块里的标记判断，已追加过就跳过。每次容器启动都校验一遍，所以配置文件被
+覆盖 / 丢掉 / 数据卷重建，下次启动会自动补回来。
+
+> **这一条为什么值得从"手工脚本"改成"烘进镜像"。** 原先它是部署时人手工跑的
+> `init-conf.sh --prod`（等首启 → 追加 → 重启两个服务）。手工步骤的问题不是麻烦，是
+> **忘了不会报错**：SSO、账号管控、WebDAV 全部静默失效，而页面照常打开。这和本项目
+> 一路上在消灭的其它静默失败（换目录挂载落空、`from seahub.settings import` 静默过期）
+> 是同一个模式。
+
+**代价**：动了一个上游文件 `start.py`（插一行调用）。这是升级 Seafile 时的漂移点之一，
+Dockerfile 头部列了完整清单。鉴于本项目已冻结在 12.0.14（不再跟随上游），这个代价可以接受；
+即便如此，断言仍然保留——它防的不再是上游漂移，而是**我自己的编辑静默失效**。
+
+> **（被否决的替代方案）** 不改 `start.py`，改为让二开代码从环境变量 / constance 读这三项。
+> 否决理由：`CLIENT_SSO_VIA_LOCAL_BROWSER` 在 `urls.py` 导入期决定路由注册、
+> `ENABLE_DELETE_ACCOUNT` 在 `profile/views.py` 模块级绑定——这两处本来就必须在**模块导入期**
+> 拿到值，改成运行时读只是把"写文件"换成"改二开代码去读别处"，并没有消灭那个约束，
+> 反而把配置来源从一处变成两处。
+
+**为什么这三项非得写文件、不能像 `SERVICE_URL` 那样走 constance**：判据是**调用点的绑定方式**，
+不是「重不重要」。清单（改一处要对照一处）：
 
 **为什么这三项非得写文件、不能像 `SERVICE_URL` 那样走 constance**：判据是**调用点的绑定方式**，
 不是「重不重要」。清单（改一处要对照一处）：
@@ -285,8 +332,9 @@ tarball 内，重取代码不会覆盖它。
    本项目是反代模式，这一步整个跳过（证书在云代理上）
 2. `generate_local_nginx_conf()`：渲染 nginx server 块（我们修过的模板，含 X-Forwarded-Proto）。
    监听 443+证书 还是只有 80，由第 1 步结果决定
-3. setup 初始化 MariaDB 三库（`DB_USER`/`DB_PASSWORD` 环境变量决定 seafile 库用户）+ 建 `INIT_SEAFILE_ADMIN_EMAIL` 管理员 + 生成基础 seahub_settings.py
-4. 起 seafile/seahub/seafdav
+3. setup 初始化 MariaDB 三库（`DB_USER`/`DB_PASSWORD` 环境变量决定 seafile 库用户）+ 建 `INIT_SEAFILE_ADMIN_EMAIL` 管理员 + 生成基础 seahub_settings.py 与 seafdav.conf
+4. `custom_bootstrap.py` 追加二开定制（SSO / 钉钉默认开关 / 账号管控）+ 开 WebDAV（见 §4.2.2）
+5. 起 seafile/seahub/seafdav
 
 ### ⚠️ 首启常见失败与处置
 
@@ -381,8 +429,10 @@ export COMPOSE_PROJECT_NAME=seafile-rehearsal
 docker compose --env-file .env.rehearsal up -d
 docker logs seafile 2>&1 | grep -E "letsencrypt|Skip"   # 期望 Skip letsencrypt verification
 
-# 5) 追加二开定制：脚本自己等首启 + 重启 + 自检（ENV_FILE 指向彩排 env，不影响 dev 的 .env）
-ENV_FILE=.env.rehearsal ./init-conf.sh --prod
+# 5) 没有第 5 步了。二开定制的追加已由镜像内的 custom_bootstrap.py 在 up -d 过程中
+#    自动完成（§4.2.2）。直接验结果即可：
+grep -A2 '二开定制' rehearsal-data/seafile/conf/seahub_settings.py
+grep '^enabled' rehearsal-data/seafile/conf/seafdav.conf    # 期望 enabled = true
 ```
 
 彩排验证清单（docs/008/009 的功能都在这里验）：
@@ -505,7 +555,9 @@ if os.environ.get('SEAFILE_SERVER_PROTOCOL') == 'https':
 | MariaDB healthcheck 真的可用 | ✅ 干净卷上 `healthcheck.sh --connect --innodb_initialized`：`starting → healthy` 用时 9s（正确等过了两阶段初始化，没有把第一阶段的临时服务器误判成就绪） |
 | 两个 healthcheck 参数缺一不可 | ✅ `--connect` 单独用会在初始化期间就返回成功；必须配 `--innodb_initialized` |
 | `docker compose up -d` 一条命令 | ✅ 由 `condition: service_healthy` 保证顺序；**「先起 db、等 30s、再起 seafile」那段人工步骤删除** |
-| `init-conf.sh --prod` 一条命令 | ✅ 空跑/写入/幂等三种路径都验过：等待逻辑、写入结果、`ast.parse` 确认追加后仍是合法 python、容器内 `seafile.sh`+`seahub.sh` restart 及重启后自检（实测重启后 gunicorn 与 nginx 均恢复 302） |
+| `init-conf.sh --prod` 一条命令 | ✅（**该步骤已于 2026-09-21 整个删除**，见下条）空跑/写入/幂等三种路径都验过：等待逻辑、写入结果、`ast.parse` 确认追加后仍是合法 python、容器内 `seafile.sh`+`seahub.sh` restart 及重启后自检（实测重启后 gunicorn 与 nginx 均恢复 302） |
+| 二开定制改为镜像内自动追加（`--prod` 删除） | ✅ `custom_bootstrap.py` 的五条路径全验：写入、幂等（第二遍不重复追加）、已存旧标记时不追加第二块、钉钉凭据走环境变量、`seahub_settings.py` 缺失时明确报错退出。`start.py` 的 `sed` 在 GNU sed 4.9 下实测正确（**用 BSD sed 测会假失败**——`-i` 在 BSD 上吃参数，别在 macOS 上验这条） |
+| `smoke-test.sh` 覆盖该钩子 | ✅ 新增第 6 项：断言接线顺序（`init_custom_settings()` 必须紧跟 `init_seafile_server()`）+ **在假配置目录上真跑一遍**验写入与幂等。**这不是可选项**——Dockerfile 的 `sed` 一旦失效，必须是构建失败 |
 | 脚本报错路径 | ✅ 容器不存在 / 容器没在跑 / 环境文件缺失，三种都给明确提示而非堆栈 |
 
 > 顺带查出一个**潜伏 bug**：`init-conf.sh`、`init-prod-env.sh`、`smoke-test.sh` 里共 5 处
@@ -514,11 +566,18 @@ if os.environ.get('SEAFILE_SERVER_PROTOCOL') == 'https':
 > 平时不执行，一旦触发就是「报错时报不出错」。已全部改为 `${VAR}`。
 > （复现：`bash -c 'set -u; V=abc; echo "x/$V，y"'`）
 
-> **还能再少一步，但需要重新出镜像**：`init-conf.sh --prod` 之所以存在，是因为
-> 首启 `setup-seafile-mysql.py` 会 `open('w')` 覆盖 `seahub_settings.py`。若在镜像的
-> `start.py` 里（`init_seafile_server()` 之后、起 seahub 之前）挂一个幂等的追加钩子，
-> 定制块就随首启自动落地，这一步可整个删掉。代价是**动一个上游脚本**（升级漂移面 +1），
-> 且要重出镜像与离线包。**当前未做**——等下一次有别的理由出镜像时一并带上更划算。
+> **那一步已经删掉了（2026-09-21）。** 上面那条「还能再少一步」的笔记当时判为「暂缓，
+> 等下次有别的理由出镜像时一并带上」——**这个判断是错的**。用户随后直接问「为什么我二开
+> 的内容还要单独搞？难道不是应该融合到里面吗？」——对。对交付物而言这就是个缺陷：
+> 一个 1.0 版本不该在 `docker compose up -d` 之外还有个人工步骤。
+>
+> 于是做了：镜像的 `start.py` 在 `init_seafile_server()` 之后挂幂等的
+> `custom_bootstrap.py`（见 §4.2.2），`init-conf.sh --prod` 整个删除、只留一个会报错的
+> 空壳（防旧镜像用户以为跑过了）。代价是动一个上游脚本——但用户已明确**此后不跟随上游**，
+> 这个代价基本消失；断言仍保留，防的是我自己的编辑静默失效。
+>
+> 教训记在案：**「等下一次有别的理由再一起做」在交付物缺陷面前不成立**——缺陷的代价是
+> 用户自己撞上，而不是在某个合适的时机被顺手修掉。
 
 > **（历史记录）曾经有个 `deploy/set-domain.sh`**，用来在首启之后直接改数据卷里的
 > `seahub_settings.py` 与 nginx conf——因为当时域名只在首启写一次、之后改环境变量无效。

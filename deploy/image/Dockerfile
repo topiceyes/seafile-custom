@@ -10,6 +10,13 @@
 #   6. 安装 mariadb-client（官方镜像无 mysqldump，容器内 backup.sh 需要）
 #   7. 运维脚本与 cron（backup.sh + 备份/离职同步两个 cron）烘进镜像，
 #      不再由 compose 从宿主机挂载 —— 生产部署因此不需要固定目录
+#   8. 二开定制的追加（SSO/钉钉默认开关/账号管控 + WebDAV）由镜像内的
+#      custom_bootstrap.py 在启动时自动完成，不再需要首启后手工跑 init-conf.sh
+#
+# ⚠️ 被本 Dockerfile 动过的上游文件（升级 Seafile 时要逐个看）：
+#   · /scripts/start.py                  ← 第 8 项插入了一行调用（构建期有断言）
+#   · /templates/seafile.nginx.conf.template ← 第 5 项整体替换
+#   · seahub_settings.py 的 SEAFILE_VERSION ← 第 4 项 sed（构建期有断言）
 #
 # 注意：路径写死 12.0.14（镜像内无 seafile-server-latest 软链，运行时才建）。
 # 升级 Seafile 版本 = 同步改 BASE_IMAGE、INSTALLPATH 和 seahub 基线（见 docs/007）。
@@ -51,6 +58,31 @@ COPY image/dingtalk-sync.cron /etc/cron.d/dingtalk-sync
 RUN chmod 0755 /usr/local/bin/seafile-backup.sh \
  && chmod 0644 /etc/cron.d/seafile-backup /etc/cron.d/dingtalk-sync \
  && chown root:root /etc/cron.d/seafile-backup /etc/cron.d/dingtalk-sync
+
+# 8) 二开定制烘进镜像 —— 消灭「首启之后再手工追加一次配置」那一步。
+#
+#    原先这步是人手工跑 `init-conf.sh --prod`：等首启完成 → 追加配置 → 重启两个服务。
+#    手工步骤的问题不是麻烦，是**忘了不会报错**：SSO、账号管控、WebDAV 会静默失效，
+#    而页面照常打开。现在它在镜像里，每次启动都跑一遍（幂等）。
+#
+#    插入点是 start.py 里 init_seafile_server() 之后、seafile.sh/seahub.sh 之前。
+#    这个窗口是唯一正确的：早了会被 setup 的 open('w') 覆盖，晚了 seahub 已起来、
+#    而 seahub_settings.py 是导入期读的，改了要重启。所以在这里改完**直接生效**。
+#    （不想动上游脚本的替代方案与代价，见 docs/007 §4.2.2。）
+COPY image/custom_bootstrap.py /scripts/custom_bootstrap.py
+
+RUN set -eux; \
+    grep -q '^from bootstrap import ' /scripts/start.py; \
+    grep -q '^    init_seafile_server()$' /scripts/start.py; \
+    sed -i \
+      -e 's|^from bootstrap import |from custom_bootstrap import init_custom_settings\nfrom bootstrap import |' \
+      -e 's|^    init_seafile_server()$|    init_seafile_server()\n    init_custom_settings()|' \
+      /scripts/start.py; \
+    grep -q '^from custom_bootstrap import init_custom_settings$' /scripts/start.py; \
+    grep -q '^    init_custom_settings()$' /scripts/start.py; \
+    chmod 0755 /scripts/custom_bootstrap.py; \
+    python3 -c 'import ast; ast.parse(open("/scripts/start.py").read())'; \
+    python3 -c 'import ast; ast.parse(open("/scripts/custom_bootstrap.py").read())'
 
 # 2) 前端构建产物
 COPY --from=frontend /frontend/build ${INSTALLPATH}/seahub/frontend/build

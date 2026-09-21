@@ -115,7 +115,51 @@ render_template('/templates/seafile.nginx.conf.template',
 done
 rm -f /etc/nginx/sites-enabled/seafile.nginx.conf
 
-# ---- 6) 指纹：供跨架构（CI 的 amd64 vs 开发机 arm64）比对 ----
+# ---- 6) 二开定制钩子：接进 start.py + 真跑一遍 ----
+#
+# 这一步以前是人手工 `init-conf.sh --prod`：等首启 → 追加 → 重启。手工的问题不是
+# 麻烦，是忘了不报错——SSO / 账号管控 / WebDAV 静默失效，页面照常打开。现在它在
+# 镜像里，所以【必须】断言它真的接进去了：Dockerfile 的 sed 一旦失效，构建应当失败。
+#
+# 光检查文件存在不够——所以下面在一个假配置目录上真跑一遍，验实际行为。
+test -f /scripts/custom_bootstrap.py || fail "缺 /scripts/custom_bootstrap.py"
+test -x /scripts/custom_bootstrap.py || fail "/scripts/custom_bootstrap.py 不可执行"
+grep -q '^from custom_bootstrap import init_custom_settings$' /scripts/start.py \
+  || fail "start.py 缺 custom_bootstrap 的 import（Dockerfile 的 sed 没生效？）"
+# 调用点必须在 init_seafile_server() 之后、seafile.sh 启动之前——顺序错了就白搭：
+# 早了会被 setup 的 open('w') 覆盖，晚了 seahub 已经起来、settings.py 改不生效。
+awk '/^    init_seafile_server\(\)$/ {s=NR} /^    init_custom_settings\(\)$/ {c=NR} END {exit !(s && c && c == s+1)}' \
+  /scripts/start.py \
+  || fail "start.py 里 init_custom_settings() 没有紧跟 init_seafile_server()（顺序不对）"
+
+# 在真路径上放一份假的 setup 产物，跑钩子，验它写对了、且第二遍幂等
+mkdir -p /opt/seafile/conf
+printf 'SECRET_KEY = "smoke"\n' > /opt/seafile/conf/seahub_settings.py
+printf '\n[WEBDAV]\nenabled = false\nport = 8080\n' > /opt/seafile/conf/seafdav.conf
+
+python3 /scripts/custom_bootstrap.py >/dev/null || fail "custom_bootstrap.py 跑失败"
+
+python3 - <<'PY' || fail "钩子写入的配置不正确"
+import ast, sys
+src = open('/opt/seafile/conf/seahub_settings.py').read()
+ns = {}
+exec(compile(src, 'seahub_settings.py', 'exec'), ns)
+assert ns['CLIENT_SSO_VIA_LOCAL_BROWSER'] is True, 'CLIENT_SSO_VIA_LOCAL_BROWSER 不是 True'
+assert ns['ENABLE_DINGTALK'] is True, 'ENABLE_DINGTALK 不是 True'
+assert ns['ENABLE_DELETE_ACCOUNT'] is False, 'ENABLE_DELETE_ACCOUNT 不是 False'
+assert 'enabled = true' in open('/opt/seafile/conf/seafdav.conf').read(), 'WebDAV 没开'
+PY
+
+# 幂等：第二遍不能再追加一个块（否则每次重启配置都会变长）
+python3 /scripts/custom_bootstrap.py >/dev/null || fail "custom_bootstrap.py 第二遍跑失败"
+n=$(grep -c 'CLIENT_SSO_VIA_LOCAL_BROWSER = True' /opt/seafile/conf/seahub_settings.py)
+[ "$n" = "1" ] || fail "钩子不幂等：CLIENT_SSO_VIA_LOCAL_BROWSER 出现 $n 次（应为 1）"
+ok "二开定制钩子已接入 start.py，行为与幂等性均验证通过"
+
+# 清掉假配置目录：/opt/seafile/conf 若残留在镜像层，首启 setup 会有意外行为
+rm -rf /opt/seafile/conf
+
+# ---- 7) 指纹：供跨架构（CI 的 amd64 vs 开发机 arm64）比对 ----
 echo "--- 指纹 ---"
 printf 'overlay_seahub_pkg  n=%-6s %s\n' \
   "$(find "$S/seahub" -type f -not -path '*/__pycache__/*' | wc -l | tr -d ' ')" \
