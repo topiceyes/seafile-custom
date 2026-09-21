@@ -66,7 +66,7 @@ TLS 由云上反向代理终止（本项目的实际形态，见 §9）；容器
 
   > **离线导入**（服务器确实连不上 ghcr 时的保底，一定能成）：在开发机上
   > ```bash
-  > cd deploy && ./make-offline-bundle.sh 12.0.14-dingtalk.9.4edcb25d
+  > cd deploy && ./make-offline-bundle.sh 12.0.14-dingtalk.9.e3c4174f   # 示例 tag，以 docs/010 §9 台账为准
   > # → /tmp/seafile-offline-<tag>.tar.gz（三个镜像，约 690MB）
   > ```
   > ```bash
