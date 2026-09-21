@@ -83,7 +83,9 @@ TLS 由云上反向代理终止（本项目的实际形态，见 §9）；容器
   >   `docker save` 写出 `"RepoTags": null`，`docker load` 之后是个**无标签的悬空镜像**。
   >   症状很隐蔽——load 不报错、`docker images` 里也看得到（repo 显示 `<none>`），
   >   但 compose 按 `repo@sha256:…` 找不到它，于是又去联网拉、又失败。
-  >   所以**离线路径下 `.env` 里的 `SEAFILE_PRO_IMAGE` 要用 tag 形式**，不能用 digest 形式。
+  >   而 compose 里那行默认值钉的是 **digest** 形式（见 §6），所以**离线路径必须在
+  >   `.env` 里用 tag 形式覆盖它**——`SEAFILE_PRO_IMAGE='ghcr.io/topiceyes/seafile-mc:<tag>'`，
+  >   不能照抄 compose 的 digest。这一条正是「紧急覆盖口子」的正当用途之一（§6）。
   > - **基础镜像必须是 manifest list，不能是单平台 manifest**（2026-09-21 踩到）：
   >   单平台 manifest 在 arm64 上 `docker save --platform linux/amd64` 直接失败；
   >   **不带 `--platform` 更糟**——产出 8KB 空包且退出码为 0，一路静默到服务器。
@@ -124,8 +126,10 @@ gh workflow run build-image.yml
 gh workflow run build-image.yml -f force=true
 ```
 
-构建成功后，run summary 里会给出镜像地址与 digest；把 tag 填进服务器 `.env` 的
-`SEAFILE_PRO_IMAGE` 即可（见 §4）。
+构建成功后，run summary 里会给出镜像地址与 digest，并附上接下来该做什么。**发布动作
+发生在仓库里、不在服务器上**：把那个 digest 写进 `deploy/seafile-prod.yml` 的 seafile
+`image:` 行（即 `${SEAFILE_PRO_IMAGE:-…}` 的默认值），提交；服务器重取 `deploy/` 后
+`pull && up -d` 即可知道有新版本。理由与流程见 §6。
 
 **CI 在构建前会跑三道校验**，任何一道不过都会拒绝发布：源码树必须等于
 `patches/MANIFEST.md` 记录的 tree sha、tag 血缘（补丁数/基础镜像版本/编号连续性）、
@@ -467,17 +471,52 @@ docker exec seafile grep -iE "Forbidden|csrf" /shared/seafile/logs/seahub.log | 
 
 ## 6. 更新与回滚
 
-```bash
-# 更新（CI 构建完、新 tag 出现在 docs/010 §9 台账后）
-vi .env                          # SEAFILE_PRO_IMAGE 改新 tag（或钉新 digest）
-docker compose pull && docker compose up -d
+**版本钉在入库的 `deploy/seafile-prod.yml` 里，不在 `.env`。**
 
-# 回滚 = 改回旧 tag（数据卷不动，LE 证书仍在）
+```yaml
+image: ${SEAFILE_PRO_IMAGE:-ghcr.io/topiceyes/seafile-mc@sha256:e54f6234…}
 ```
 
+于是「发布」= 改仓库，服务器只需要重取部署文件：
+
+| 步 | 在哪做 | 做什么 |
+|---|---|---|
+| 1 | 仓库 | CI 构建完，把 run summary 给出的 digest 写进上面那一行，提交推送 |
+| 2 | 服务器 | 重取 `deploy/`（就是 §4.1 那条 curl，见下） |
+| 3 | 服务器 | `docker compose pull && docker compose up -d` |
+
+```bash
+# 服务器上的第 2、3 步
+cd /opt/seafile-custom
+curl -fL --max-time 120 \
+  https://codeload.github.com/topiceyes/seafile-custom/tar.gz/refs/heads/main \
+  | tar -xz --strip-components=1 -C /opt/seafile-custom
+cd deploy && docker compose pull && docker compose up -d
+```
+
+> ⚠️ **第 2 步不能省。** `docker compose pull` 只是忠实执行**磁盘上那份 compose 文件**：
+> 文件里的版本还是旧的，pull 就照样报 `Pulled`、`up -d` 照样报 `Recreated`，
+> 起来的是**旧镜像 —— 全程没有任何一处报错**。2026-09-21 的发布事故就是这个形状。
+
+> **为什么版本不放 `.env`（曾经的写法）。** `.env` 含密钥、必须 gitignore，于是
+> 「CI 构建出了新镜像」到「这台服务器知道有新版」之间**没有任何自动通道**，只能靠人记得
+> 去改一行本地文件，而漏改是**静默**的。挪进入库的 compose 之后，「取到新的 `deploy/`」
+> 本身就等于「知道有新版」：漏掉第 2 步会立刻表现为「pull 完镜像没变」，
+> 而不是跑着旧镜像还以为更新成功了。
+
+**回滚**＝取**旧 commit** 的 tarball（把上面 URL 里的 `refs/heads/main` 换成那个 commit
+SHA；每次发布的 digest 与对应版本记在 [010 §9](010-ci-release-pipeline.md) 台账里），
+再 `pull && up -d`。数据卷不动。
+
+**紧急覆盖口子**（`.env` 里的 `SEAFILE_PRO_IMAGE`）：**只在「要立刻回滚、又不想动仓库」时
+用**——在 `.env` 里写一行 `SEAFILE_PRO_IMAGE='ghcr.io/topiceyes/seafile-mc@sha256:<旧 digest>'`，
+它会盖掉 compose 的默认值。**它属于例外，不是常规路径**：一旦这么写，仓库和服务器就各说
+各话，正是上面要消灭的那种状态，事后记得删掉。离线导入也必须走这个口子，且要用 **tag**
+形式——理由见 §2 那三个坑。
+
 更新前先记下当前镜像的 digest（`docker inspect --format '{{index .RepoDigests 0}}' <镜像>`），
-回滚时就有确切落点。**首次生产更新后做一次回滚演练**：把 `SEAFILE_PRO_IMAGE` 指回该
-digest → `pull && up -d` → 确认行为回到旧版本，再切回新版。数据卷全程不动。
+回滚时就有确切落点。**首次生产更新后做一次回滚演练**：按上面的方式切回旧 digest →
+确认行为回到旧版本，再切回新版。数据卷全程不动。
 
 **升级 Seafile 版本**（如 12.0.14 → 12.1.x）时三处硬编码要同步：
 `deploy/image/Dockerfile` 的 BASE_IMAGE 与 INSTALLPATH、seahub 仓库基线（patches 重放）。官方镜像可能改 bootstrap 行为，升级前**必须重跑本地彩排**。
@@ -557,7 +596,7 @@ rm -rf rehearsal-data rehearsal2-* .env.rehearsal .env.rehearsal-restore
 | 变量 | 说明 |
 |---|---|
 | `SEAFILE_DOMAIN` | 纯域名。证书文件名 + nginx server_name + SERVICE_URL 三处引用 |
-| `SEAFILE_PRO_IMAGE` | 自建镜像（ghcr.io，public），tag 或 digest，见 [010 §9](010-ci-release-pipeline.md) 台账 |
+| `SEAFILE_PRO_IMAGE` | **不在 `.env` 里**——默认值（digest 形式）钉在入库的 `seafile-prod.yml`，见 §6。只有紧急回滚/离线导入才在 `.env` 里覆盖它 |
 | `SEAFILE_SERVER_LETSENCRYPT=true` | **唯一** https 开关（小写；`SEAFILE_SERVER_PROTOCOL` 只影响 SERVICE_URL） |
 | `INIT_SEAFILE_ADMIN_EMAIL/PASSWORD` | 首启建管理员。**镜像不认 `SEAFILE_ADMIN_*`**（dev 环境踩过的坑：静默建成 me@example.com） |
 | `DB_ROOT_PASSWD` | 首启初始化库 + 容器内 backup.sh 都用它 |

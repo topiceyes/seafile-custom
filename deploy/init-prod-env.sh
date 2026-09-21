@@ -20,6 +20,7 @@ cd "$(dirname "$0")"
 
 TEMPLATE=.env.prod.example
 TARGET=.env
+COMPOSE=seafile-prod.yml
 
 # 占位域名：故意用 .local（不可能是真实域名），提醒你还没配真域名
 PLACEHOLDER_DOMAIN=seafile.local
@@ -45,6 +46,21 @@ no_quote() { case "$2" in *"'"*) die "$1 不能含单引号（会破坏 .env 解
 
 [ -f "$TEMPLATE" ] || die "找不到 ${TEMPLATE}（应在 deploy/ 下）"
 command -v openssl >/dev/null || die "缺 openssl（用来生成密钥）；Debian/Ubuntu: apt install openssl"
+
+# ---- 迁移提醒：.env 里不该再有镜像版本 ----
+#
+# 镜像版本已挪进【入库的】compose 文件（见 docs/007 §6）。.env 里若还留着这一行，
+# 它会【覆盖】compose 的默认值 —— 那正是要消灭的「改了没生效」：仓库里换了版本，
+# 服务器却按 .env 里的旧值跑，而且不报错。
+#
+# 这里是警告、不是拒绝：.env 含真实密钥，本脚本对已存在的文件一向不动手。
+# 放在覆盖保护【之前】——否则永远走不到（下一段对已存在的 .env 直接 die）。
+if [ -f "$TARGET" ] && grep -q "^SEAFILE_PRO_IMAGE=" "$TARGET"; then
+  echo "⚠️  ${TARGET} 里还有 SEAFILE_PRO_IMAGE —— 它会盖掉 ${COMPOSE} 里钉的版本。"
+  echo "    镜像版本已挪进 ${COMPOSE}。迁移：注释掉 ${TARGET} 里那一行，"
+  echo "    之后升级只要重取 deploy/ + docker compose pull && docker compose up -d。"
+  echo
+fi
 
 # ---- 覆盖保护：.env 里有真实密钥，绝不静默重建 ----
 if [ -f "$TARGET" ]; then
@@ -115,8 +131,8 @@ grep -q "^SEAFILE_SERVER_LETSENCRYPT='false'" "$TARGET" \
   || die "SEAFILE_SERVER_LETSENCRYPT 不是 false —— 反代模式下容器必须只监听 80"
 grep -q "^SEAFILE_SERVER_PROTOCOL='https'" "$TARGET" \
   || die "SEAFILE_SERVER_PROTOCOL 不是 https —— 会导致 SERVICE_URL 生成 http 链接"
-grep -q "^SEAFILE_PRO_IMAGE='ghcr.io/" "$TARGET" \
-  || die "SEAFILE_PRO_IMAGE 不是 ghcr.io 镜像"
+grep -qE '^[[:space:]]+image: \$\{SEAFILE_PRO_IMAGE:-ghcr\.io/topiceyes/seafile-mc@sha256:[0-9a-f]{64}\}' "$COMPOSE" \
+  || die "${COMPOSE} 的 seafile 镜像没有钉死 digest 的默认值（\${SEAFILE_PRO_IMAGE:-ghcr.io/…@sha256:…}）——取部署文件后这一行丢了？"
 if grep -qE "^[A-Z_]+='(change-me|seafile\.example\.com|admin@example\.com)'" "$TARGET"; then
   die "还有占位符未替换：$(grep -oE "^[A-Z_]+='(change-me|seafile\.example\.com|admin@example\.com)'" "$TARGET" | tr '\n' ' ')"
 fi

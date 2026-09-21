@@ -50,7 +50,17 @@ services:
       - seafile-net
 
   seafile:
-    image: ${SEAFILE_PRO_IMAGE}
+    # 镜像版本钉在这里（入库），**不要**放进 .env：.env 含密钥、必须 gitignore，
+    # 版本写在那儿的话，「CI 构建出新镜像」到「服务器知道有新版本」之间就没有任何
+    # 自动通道，只能靠人改——而且忘了改是**静默**的（pull 照样报 Pulled、up 照样
+    # 报 Recreated，跑的还是旧镜像）。曾经就是这么设计的，2026-09-21 踩到。
+    #
+    # 升级：取新的 deploy/（带来新的这一行）→ docker compose pull && up -d，
+    # 流程见 docs/007 §6。回滚同理，取旧 commit 的 tarball。
+    #
+    # ${VAR:-默认} 保留覆盖口子：真要紧急回滚又不想动仓库，在 .env 里写一行
+    # SEAFILE_PRO_IMAGE 即可覆盖——但它属于例外，不是常规路径。
+    image: ${SEAFILE_PRO_IMAGE:-ghcr.io/topiceyes/seafile-mc@sha256:e54f6234fc9755f086706643970b84ab08b63f7602a342ca7c98faac9f89ac85}
     container_name: seafile
     restart: unless-stopped
     ports:

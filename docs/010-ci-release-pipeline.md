@@ -132,13 +132,23 @@ CI 在构建前跑三条断言：
 - 改任何构建输入 → 自动得到新 tag，**不需要 force**
 - tag 已存在 → 说明输入一字未改，重建是多余的，守卫拦下是对的
 
+> ⚠️ 哈希覆盖的是「`find` 看到的文件」，所以必须**显式排除本机副产物**。
+> `deploy/image/__pycache__/*.pyc` 会被 git 忽略、却不被 `find` 忽略：在跑过
+> `custom_bootstrap.py` 的开发机上算出的 tag，与干净 checkout 的 CI 算出的**不同**，
+> 而 Dockerfile 是逐文件 COPY、pycache 从不进镜像——即**同内容、不同 tag**，
+> 且本地那个 tag 在 registry 里根本不存在。2026-09-21 踩到，已在
+> `build_inputs_hash()` 里 `! -name '*.pyc' ! -path '*/__pycache__/*'` 排除。
+
 `force=true` 因此只剩下一个正当用途：**重建以拉取上游更新过的基础镜像**
 （`seafileltd/seafile-mc:12.0.14` 是按 tag 引用的，上游若重推同一 tag，
 本仓库的输入没变而镜像内容可能变 —— 那是 tag 哈希覆盖不到的部分）。
 
-即便如此，生产 `.env` 里**钉 digest 仍是默认做法**（模板已是 digest 形式）：
-它是唯一不依赖任何命名约定的保障。每次构建的 digest 会写进 GitHub Actions 的
-run summary，也在下节的台账里记一份。
+即便如此，生产上**钉 digest 仍是默认做法**：它是唯一不依赖任何命名约定的保障。
+每次构建的 digest 会写进 GitHub Actions 的 run summary，也在下节的台账里记一份。
+
+**digest 钉在 `deploy/seafile-prod.yml` 的 `image:` 行（入库），不在服务器 `.env` 里**
+—— 这样「CI 发布了新镜像」到「服务器知道有新版」之间才有自动通道：取到新的 `deploy/`
+就等于知道有新版。理由与升级/回滚流程见 [docs/007 §6](007-production-deployment.md)。
 
 ## 5. 漂移控制（三层）
 
@@ -178,13 +188,17 @@ cd /opt/seafile-custom/deploy        # 习惯而已：生产 compose 已无宿�
 cp .env.prod.example .env            # .env 不在 tarball 内，重取代码不会覆盖它
 
 # 0b) 更新
-vi .env      # SEAFILE_PRO_IMAGE 改成新 tag（或钉 digest）
+#     版本钉在【入库的】deploy/seafile-prod.yml 里（image: 那行的 ${SEAFILE_PRO_IMAGE:-…}
+#     默认值），所以更新 = 重新取一次部署文件 + pull。服务器上【不需要改任何文件】。
 docker compose pull && docker compose up -d     # 镜像包是 public，不需要 docker login
 ```
 
 几个容易踩的点：
 
 - tarball 根目录是 `<owner>-<repo>-<sha>/`，所以要 `--strip-components=1`
+- **更新时「重新取部署文件」这一步不能省。** `docker compose pull` 只执行**磁盘上那份
+  compose 文件**；文件里的版本没变，它就报 `Pulled` 然后什么都不做，`up -d` 报
+  `Recreated`，跑的还是旧镜像——全程不报错。2026-09-21 就是栽在这里，见 007 §6
 - 要可复现而非跟随 `main`，就把 URL 里的 `main` 换成具体 commit SHA，并记入台账
 - 这套命令**不需要任何凭据**。曾经需要一个 classic PAT（`repo` + `read:packages`）覆盖
   「取 tarball + 拉镜像」，2026-09-20 仓库与镜像包转 public 后取消——详见 §2 的说明
@@ -289,7 +303,9 @@ docker login registry.cn-hangzhou.aliyuncs.com
 ./deploy/build-image.sh registry.cn-hangzhou.aliyuncs.com/<命名空间>
 ```
 
-生产 `.env` 的 `SEAFILE_PRO_IMAGE` 换成对应 ACR 地址即可，compose 文件不用动。
+切到 ACR 时，把 `deploy/seafile-prod.yml` 里 seafile 的 `image:` 换成 ACR 地址
+（连同下面那条基础设施镜像的注意事项）——版本既然已经入库，换仓库也就是改这一处、
+再走一遍「重取 deploy/ + pull」。
 
 > ⚠️ 走 ACR 时**别忘了基础设施镜像**：`seafile-prod.yml` 里的 `mariadb`/`memcached`
 > 现在写死指向 `ghcr.io/topiceyes/…`（§8.1）。若 ghcr 整个不可达，这两行也要换成
@@ -307,7 +323,7 @@ docker login registry.cn-hangzhou.aliyuncs.com
 
 | 日期 | tag | 补丁数 | 源码树 | 镜像 digest | 备注 |
 |---|---|---|---|---|---|
-| 2026-09-21 | `12.0.14-dingtalk.9.1464e1b4` | 9 | `446fe9ea…c38e393f` | `sha256:e54f6234…9f89ac85` | **当前生产用**（`.env.prod.example` 钉的就是它）。**修反代模式登录 403**：补 `SECURE_PROXY_SSL_HEADER`（Django 不认 `X-Forwarded-Proto`）+ `custom_bootstrap` 幂等改逐项核对（[docs/007 §9](007-production-deployment.md)）。run 35584259460，5m50s |
+| 2026-09-21 | `12.0.14-dingtalk.9.1464e1b4` | 9 | `446fe9ea…c38e393f` | `sha256:e54f6234…9f89ac85` | **当前生产用**（`deploy/seafile-prod.yml` 的 `image:` 钉的就是它）。**修反代模式登录 403**：补 `SECURE_PROXY_SSL_HEADER`（Django 不认 `X-Forwarded-Proto`）+ `custom_bootstrap` 幂等改逐项核对（[docs/007 §9](007-production-deployment.md)）。run 35584259460，5m50s |
 | 2026-09-21 | `12.0.14-dingtalk.9.e3c4174f` | 9 | `446fe9ea…c38e393f` | `sha256:5cf3abfd…0f2fb9d7` | 启动链路加固：seahub 启动失败重试 + 保活循环跟着死（[docs/007 §4.2.3](007-production-deployment.md)）。run 35574442997，6m27s |
 | 2026-09-21 | `12.0.14-dingtalk.9.b7a741d8` | 9 | `446fe9ea…c38e393f` | `sha256:aa906c16…467b6e0a4` | 二开定制搬进镜像：`init-conf.sh --prod` 整个删除，部署不再有「再跑一个脚本」这一步。run 35573252750，5m38s |
 | 2026-09-20 | `12.0.14-dingtalk.9.4edcb25d` | 9 | `446fe9ea…c38e393f` | `sha256:624c439c…4469e0cb9` | 补丁 0009：站点地址 `SERVICE_URL` 挪到管理后台、免重启生效（[docs/011](011-service-url-admin-config.md)）。首次自动触发成功（run 35503681853，5m53s） |
@@ -319,10 +335,10 @@ docker login registry.cn-hangzhou.aliyuncs.com
 > **本表 `seafile-mc` 的 digest 是单平台 OCI image manifest**（`buildx --provenance=false
 > --sbom=false` + 单平台的结果），**不是**索引——与下面基础设施镜像的口径不同。2026-09-21
 > 实测确认：`docker pull ghcr.io/topiceyes/seafile-mc@sha256:5cf3abfd…` 能正常拉全（层下载
-> 完整、回显 digest 一致），即 `.env.prod.example` 钉 digest 的用法成立。
+> 完整、回显 digest 一致），即 `seafile-prod.yml` 里钉 digest 的用法成立。
 >
 > ⚠️ 但**离线导入路径不能用 digest 形式**（`docker save` 出来 `RepoTags: null`，`load` 后
-> 是无标签悬空镜像），必须用 tag 形式——见 `.env.prod.example` 的说明。
+> 是无标签悬空镜像），必须用 tag 形式覆盖它——见 [docs/007 §2/§6](007-production-deployment.md)。
 
 **基础设施镜像**（`mirror-infra-images.yml`，run 35566304802，2026-09-21）——
 digest 是**索引**的 digest（含全部平台）：
