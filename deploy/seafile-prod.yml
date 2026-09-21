@@ -20,6 +20,19 @@ services:
       - MARIADB_AUTO_UPGRADE=1
     volumes:
       - ${SEAFILE_MYSQL_VOLUME}:/var/lib/mysql
+    healthcheck:
+      # 没有这个，`docker compose up -d` 会让 seafile 与 db 同时起，
+      # 首启时 seafile 的 setup 可能撞上 MariaDB 还没初始化完，于是必须
+      # 「先手动起 db、等一会儿、再起 seafile」——那段人工步骤是被这一点逼出来的。
+      #
+      # 两项必须一起用：--connect 只证明能连上，--innodb_initialized 才证明
+      # 首启的两阶段初始化（先仅 unix socket 跑初始化，再带网络重启）已经走完。
+      # 只看端口是否开放会把「临时服务器」误判成就绪。
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 30        # 5×30=150s 上限，够覆盖慢盘上的首启初始化
+      start_period: 30s  # 这段时间内的失败不计入 retries
     networks:
       - seafile-net
 
@@ -71,8 +84,12 @@ services:
       - INIT_SEAFILE_ADMIN_PASSWORD=${SEAFILE_ADMIN_PASSWORD}
       - JWT_PRIVATE_KEY=${JWT_PRIVATE_KEY}
     depends_on:
-      - db
-      - memcached
+      # service_healthy：等 db 的 healthcheck 通过（= 首启初始化真的走完了）再起 seafile
+      db:
+        condition: service_healthy
+      # memcached 起来即可用，没有需要等待的初始化
+      memcached:
+        condition: service_started
     networks:
       - seafile-net
 

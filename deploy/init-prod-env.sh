@@ -52,7 +52,7 @@ if [ -f "$TARGET" ]; then
   echo "    它含真实密钥（数据库密码、JWT 密钥）。重建会换掉这些值，"
   echo "    而已初始化的数据卷里的数据库密码是【旧值】——换掉后服务连不上数据库。"
   echo
-  echo "    · 想改域名：首启前直接 vi $TARGET；首启后在「系统管理 → 设置 → Site URL」改"
+  echo "    · 想改域名：首启前直接 vi ${TARGET}；首启后在「系统管理 → 设置 → Site URL」改"
   echo "    · 想改别的：直接 vi $TARGET"
   echo "    · 全新部署但要重来：先删掉数据卷，再删 $TARGET"
   echo
@@ -147,7 +147,5 @@ echo
 echo "下一步（照抄）："
 echo "  mkdir -p /data/seafile /data/seafile-mysql"
 echo "  docker compose pull"
-echo "  docker compose up -d db memcached"
-echo "  docker exec seafile-mysql mariadb -uroot -p'${MYSQL_ROOT_PW}' -e 'select 1'   # 返回 1 再继续"
-echo "  docker compose up -d seafile"
-echo "  ./init-conf.sh --prod          # 首启完成后跑，只做一次"
+echo "  docker compose up -d           # 一条命令起全部；db 的 healthcheck 会自动排好顺序"
+echo "  ./init-conf.sh --prod          # 一条命令：等首启 → 追加定制 → 重启 → 自检"

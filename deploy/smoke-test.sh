@@ -98,10 +98,10 @@ from utils import render_template
 render_template('/templates/seafile.nginx.conf.template',
                 '/etc/nginx/sites-enabled/seafile.nginx.conf',
                 {'https': $mode, 'domain': '$D', 'is_tmp': False})
-" || fail "nginx 模板渲染失败（https=$mode）"
+" || fail "nginx 模板渲染失败（https=${mode}）"
   nginx -t >/dev/null 2>&1 \
-    || { nginx -t; fail "nginx 配置语法非法（https=$mode）"; }
-  ok "nginx 模板渲染且语法合法（https=$mode）"
+    || { nginx -t; fail "nginx 配置语法非法（https=${mode}）"; }
+  ok "nginx 模板渲染且语法合法（https=${mode}）"
 
   # 反代模式下必须不能直接透传 $scheme（那恒为 http，Django 会以为请求是明文）。
   # 这条断言有牙齿：模板一旦回退成 proxy_set_header X-Forwarded-Proto $scheme 就会红。

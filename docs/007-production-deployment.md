@@ -159,8 +159,9 @@ CI 的 run summary 里也有一份 —— 用于比对 CI 的 amd64 产物与开
 > **放哪个目录都能起。** 这一点是刻意设计的：以前那三个 bind-mount 会让「换个目录
 > 启动」变成**静默故障** —— 挂载落空、容器照常起，但备份和离职同步都不再执行。
 
-唯一还需要仓库文件的地方是**首启之后**跑一次 `deploy/init-conf.sh --prod`（见 4.3 的最后一步），
-所以下面仍然取整个 tarball —— 仓库很小，且这样脚本与文档永远同版本。
+唯一还需要仓库文件的地方是**首启之后**跑一次 `deploy/init-conf.sh --prod`（见 4.4）——
+它一条命令做完「等首启 → 追加定制 → 重启 → 自检」。所以下面仍然取整个 tarball：
+仓库很小，且这样脚本与文档永远同版本。
 
 ```bash
 # ---- 4.1 取部署文件（免代理、免凭据）----
@@ -183,22 +184,19 @@ cd deploy                          # 只是习惯，不再是硬要求
 
 mkdir -p /data/seafile /data/seafile-mysql
 
-# ---- 4.3 首启（db-first：先 db+memcached，等 MariaDB 完全就绪再起 seafile）----
+# ---- 4.3 起服务（一条命令）----
 docker compose pull                # 镜像包是 public，不需要 docker login
+docker compose up -d               # db + memcached + seafile 一起起，按依赖顺序
+# 这一条命令自己会等：compose 里 db 带 healthcheck，seafile 是
+#   depends_on: {db: {condition: service_healthy}, memcached: {condition: service_started}}
+# 所以不需要「先起 db、等一会儿、再起 seafile」那样分段启动。
+# 首启：setup 生成基础配置 + 建管理员（LETSENCRYPT=true 时还会签发证书；本项目是反代模式，不签）
 
-# 一把梭 up -d 在【全新数据卷】上有 MariaDB 竞态（见 §4 失败场景 2）：
-# MariaDB 初始化要建 root 密码 + 跑 init SQL + 自己重启一次，可能超出 setup 的等待窗口。
-# db-first 在彩排里实测稳定，且不比一把梭多花时间。
-docker compose up -d db memcached
-# 等到能真正连上（看到 "ready for connections" 还不够——MariaDB 初始化分两阶段）
-docker exec seafile-mysql mariadb -uroot -p"$SEAFILE_MYSQL_ROOT_PASSWORD" -e "select 1"
-
-docker compose up -d seafile   # 首启：setup 生成基础配置 + 建管理员
-                               # （LETSENCRYPT=true 时这里还会签发证书；本项目是反代模式，不签）
-docker logs -f seafile         # 等到 seahub 启动完成（能 curl 通登录页）
-
-./init-conf.sh --prod          # ⚠️ 必须在首启完成后跑：追加钉钉/SSO/账号管控 + 开 WebDAV
-                               # （脚本会打印生效用的 restart 命令，执行即可）
+# ---- 4.4 追加二开定制（一条命令）----
+./init-conf.sh --prod
+# 内部按序做：等首启配置生成 → 等 seahub 真的应答 → 追加 SSO/钉钉开关/账号管控 + 开 WebDAV
+#            → 重启 seafile/seahub → 再次自检。幂等，重复跑无副作用。
+# 可以直接跟在 up -d 后面跑，不用先确认首启完成（默认等 300s，PROD_WAIT=<秒> 可调）。
 ```
 
 要点：tarball 根目录是 `<owner>-<repo>-<sha>/` 故需 `--strip-components=1`；`.env` 不在
@@ -240,6 +238,23 @@ tarball 内，重取代码不会覆盖它。
 
 **为什么 init-conf --prod 在首启之后**：全新数据卷首启时，镜像内 `setup-seafile-mysql.py` 用 `open('w')` **无条件重写** `seahub_settings.py`（SECRET_KEY 随机、DB 密码取 `DB_PASSWORD` 环境变量、SERVICE_URL 取 `SEAFILE_SERVER_*`）。预渲染会被覆盖。所以流程是：环境变量喂给 setup 完成基础配置 → 首启后追加二开定制块（幂等，带标记）→ 重启生效。
 
+> **「等首启」是脚本的活，不是你的活。** `init-conf.sh --prod` 自己会等两件事：`seahub_settings.py`
+> 出现（= setup 跑完）、以及 gunicorn 在 `127.0.0.1:8000` 上真的应答（= 首启完全走完）。
+> 等到第二件是有原因的：`start.py` 是后台起服务的，若在它还忙着起 seahub 时就去改配置、
+> 重启，两边会同时操作同一批进程。所以直接 `docker compose up -d && ./init-conf.sh --prod`
+> 连着跑就行，不必盯着日志判断时机。
+
+**为什么这三项非得写文件、不能像 `SERVICE_URL` 那样走 constance**：判据是**调用点的绑定方式**，
+不是「重不重要」。清单（改一处要对照一处）：
+
+| 设置 | 调用点 | 绑定时机 |
+|---|---|---|
+| `CLIENT_SSO_VIA_LOCAL_BROWSER` | `urls.py` / `api2/urls.py` / `views/sso.py` | 模块导入期读它注册路由 → 后台改了 URL 也不会注册 |
+| `ENABLE_DINGTALK` | `settings.py:1236` | 它决定 constance 里该键的**默认值**（真正生效的开关仍是 constance） |
+| `ENABLE_DELETE_ACCOUNT` | `profile/views.py:27` | 模块级 `from seahub.settings import` → 启动期固化 |
+
+（`DINGTALK_APP_KEY/SECRET` 不在这个清单里：它们已是纯 constance，`.env` 留空、装完在后台填。）
+
 **首启时容器内发生的事**（顺序，两处按 §9 的模式分叉）：
 1. `init_letsencrypt()`：**仅 `LETSENCRYPT=true` 时执行** —— 先起临时 http 配置 → acme.sh
    webroot 验证 → 证书落 `/shared/ssl/<域名>.crt|key` → 装每日续期 cron。
@@ -257,7 +272,19 @@ tarball 内，重取代码不会覆盖它。
 - `/shared/ssl/letsencrypt.log`（容器内路径）
 - 注意 LE 频控：同域名每周最多 5 次失败签发，反复重试前先解决根因
 
-**2. MariaDB 首次初始化竞态**：全新数据卷时 MariaDB 初始化（建 root 密码 + init SQL + 重启一次）可能超过 setup 的等待窗口，setup 以 `exit 255` 退出。处置：等 30 秒让 MariaDB 完全就绪（`docker logs seafile-mysql` 出现 `ready for connections` 且不再滚动），然后 `docker restart seafile` 重跑。setup 是幂等的（没建完 seafile-data 前重跑无副作用）。
+**2. MariaDB 首次初始化竞态 —— 已由 compose 结构性消除。** 全新数据卷时 MariaDB 初始化
+分两阶段（先只用 unix socket 建 root 密码 + 跑 init SQL，再带网络重启一次）。早期 compose
+没写 `healthcheck`，`depends_on` 也不带条件，于是 seafile 会和 db 同时起，setup 撞上还没
+就绪的 MariaDB 以 `exit 255` 退出 —— 当时的处置是「人工先起 db、等 30 秒、再起 seafile」。
+
+现在 `db` 带 `healthcheck: healthcheck.sh --connect --innodb_initialized`
+（两项缺一不可：`--connect` 只证明能连上，`--innodb_initialized` 才证明两阶段都走完；
+只看端口开放会把第一阶段那个临时服务器误判成就绪），`seafile` 用
+`condition: service_healthy` 等它。**手工分段启动那段流程因此不再需要。**
+
+若在非 compose 场景（例如手写 `docker run`）重现此错，处置仍是：等
+`docker logs seafile-mysql` 出现 `ready for connections` 且不再滚动，然后
+`docker restart seafile` 重跑。setup 是幂等的（没建完 seafile-data 前重跑无副作用）。
 
 **3. `seafile-data already exists`**：镜像构建期残留的 `/opt/seafile/seafile-data` 空目录会让 setup 的 auto 模式直接拒绝。我们的 Dockerfile 已修复（collectstatic 的临时目录随层清理）；若自定义镜像时重现此错，检查镜像里 `/opt/seafile/` 下是否只有 `seafile-server-12.0.14`。
 
@@ -323,20 +350,15 @@ vi .env.rehearsal     # ⚠️ SEAFILE_SERVER_LETSENCRYPT='true' —— 彩排�
 # 3) 域名自签证书（>30 天才会跳过 LE 签发）
 SEAFILE_VOLUME=./rehearsal-data ./gen-ssl-cert.sh <域名>
 
-# 4) 首启：db-first 顺序（先 db+memcached，等 MariaDB 双阶段初始化完成，再起 seafile）。
-#    一把梭 up -d 全家桶有 MariaDB 竞态（§4 失败场景 2），db-first 已实测稳定。
+# 4) 首启：一条命令。db 的 healthcheck + seafile 的 service_healthy 依赖会自己排好序
+#    （§4 失败场景 2 的 MariaDB 竞态已由此消除，不再需要手工分段启动）。
 #    注意：--env-file 必须显式带（compose 默认只读 .env，那是 dev 的配置）
 export COMPOSE_PROJECT_NAME=seafile-rehearsal
-docker compose --env-file .env.rehearsal up -d db memcached
-# 等 docker logs seafile-mysql 出现 "ready for connections" 且不再滚动 Initializing
-docker exec seafile-mysql mariadb -uroot -p<root密码> -e "select 1"   # 能连上才算真就绪
-docker compose --env-file .env.rehearsal up -d seafile
+docker compose --env-file .env.rehearsal up -d
 docker logs seafile 2>&1 | grep -E "letsencrypt|Skip"   # 期望 Skip letsencrypt verification
 
-# 5) 首启完成后追加二开定制（ENV_FILE 指向彩排 env，不影响 dev 的 .env）
+# 5) 追加二开定制：脚本自己等首启 + 重启 + 自检（ENV_FILE 指向彩排 env，不影响 dev 的 .env）
 ENV_FILE=.env.rehearsal ./init-conf.sh --prod
-docker exec seafile /opt/seafile/seafile-server-latest/seafile.sh restart
-docker exec seafile /opt/seafile/seafile-server-latest/seahub.sh restart
 ```
 
 彩排验证清单（docs/008/009 的功能都在这里验）：
@@ -433,7 +455,7 @@ if os.environ.get('SEAFILE_SERVER_PROTOCOL') == 'https':
 | 项 | 实测 |
 |---|---|
 | 首启链路（LE 跳过 → setup → seahub） | ✅ "Skip letsencrypt verification"；登录页 200 |
-| 首启耗时 | db-first 顺序下 seafile 容器 ~2.5 分钟到登录页 200 |
+| 首启耗时 | seafile 容器 ~2.5 分钟到登录页 200（当时用的是手工 db-first 顺序；现已由 compose 依赖条件取代） |
 | nginx conf | ✅ 模板渲染产物，X-Forwarded-Proto ×2，server_name 正确 |
 | http→https | ✅ 301 → https |
 | 管理员 | ✅ `INIT_SEAFILE_ADMIN_EMAIL` 账号（is_staff=1），非 me@example.com |
@@ -450,6 +472,30 @@ if os.environ.get('SEAFILE_SERVER_PROTOCOL') == 'https':
 | `init-prod-env.sh` 零提问 | ✅ 无参数直接跑通，密钥全自动生成；自检「反代两开关未被改动」通过 |
 | 域名改到管理后台 | 见 [docs/011](011-service-url-admin-config.md) §6 的完整验证矩阵（含跨进程即时生效与 HTTP 端到端） |
 
+**安装步骤精简（2026-09-21）——把「装的人该做的」和「脚本该做的」分开：**
+
+用户反馈「安装分了那么多步」。复核后其中两步确实是我的问题，不是 Seafile 的固有复杂度：
+
+| 项 | 实测 |
+|---|---|
+| MariaDB healthcheck 真的可用 | ✅ 干净卷上 `healthcheck.sh --connect --innodb_initialized`：`starting → healthy` 用时 9s（正确等过了两阶段初始化，没有把第一阶段的临时服务器误判成就绪） |
+| 两个 healthcheck 参数缺一不可 | ✅ `--connect` 单独用会在初始化期间就返回成功；必须配 `--innodb_initialized` |
+| `docker compose up -d` 一条命令 | ✅ 由 `condition: service_healthy` 保证顺序；**「先起 db、等 30s、再起 seafile」那段人工步骤删除** |
+| `init-conf.sh --prod` 一条命令 | ✅ 空跑/写入/幂等三种路径都验过：等待逻辑、写入结果、`ast.parse` 确认追加后仍是合法 python、容器内 `seafile.sh`+`seahub.sh` restart 及重启后自检（实测重启后 gunicorn 与 nginx 均恢复 302） |
+| 脚本报错路径 | ✅ 容器不存在 / 容器没在跑 / 环境文件缺失，三种都给明确提示而非堆栈 |
+
+> 顺带查出一个**潜伏 bug**：`init-conf.sh`、`init-prod-env.sh`、`smoke-test.sh` 里共 5 处
+> `$VAR` 后面直接跟中文标点（如 `$ENV_FILE，`）。bash 会把多字节字符并进变量名，
+> 于是 `set -u` 下报 `ENV_FILE?: unbound variable` —— 而且**全都在错误提示分支里**，
+> 平时不执行，一旦触发就是「报错时报不出错」。已全部改为 `${VAR}`。
+> （复现：`bash -c 'set -u; V=abc; echo "x/$V，y"'`）
+
+> **还能再少一步，但需要重新出镜像**：`init-conf.sh --prod` 之所以存在，是因为
+> 首启 `setup-seafile-mysql.py` 会 `open('w')` 覆盖 `seahub_settings.py`。若在镜像的
+> `start.py` 里（`init_seafile_server()` 之后、起 seahub 之前）挂一个幂等的追加钩子，
+> 定制块就随首启自动落地，这一步可整个删掉。代价是**动一个上游脚本**（升级漂移面 +1），
+> 且要重出镜像与离线包。**当前未做**——等下一次有别的理由出镜像时一并带上更划算。
+
 > **（历史记录）曾经有个 `deploy/set-domain.sh`**，用来在首启之后直接改数据卷里的
 > `seahub_settings.py` 与 nginx conf——因为当时域名只在首启写一次、之后改环境变量无效。
 > 补丁 0009 把 `SERVICE_URL` 挪进 constance 之后，**该脚本已删除**：改域名现在是管理
@@ -461,7 +507,8 @@ if os.environ.get('SEAFILE_SERVER_PROTOCOL') == 'https':
 > 两个 bug 都是 fixture 测出来的、不是推演出来的。
 
 **彩排踩坑记录**（都已固化到流程/文件）：
-1. MariaDB 竞态 → db-first 启动顺序（§7 步骤 4）
+1. MariaDB 竞态 → **已结构性消除**：db 加 healthcheck、seafile 用 `condition: service_healthy`
+   等它（§4 失败场景 2）。当时的人工 db-first 顺序已废弃，`up -d` 一条命令即可
 2. macOS lctn=2 统计表损坏 → rehearsal-db-override.yml（§7 步骤 2）
 3. 恢复缺 MySQL 授权 → docs/009 §3 步骤 3
 4. `seahub.sh python-env` 是交互式入口不接收参数，非交互用法：`echo '<code>' | docker exec -i seafile .../seahub.sh python-env`（代码需自带 django.setup() prologue）
