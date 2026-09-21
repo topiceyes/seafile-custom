@@ -166,6 +166,10 @@ exec(compile(src, 'seahub_settings.py', 'exec'), ns)
 assert ns['CLIENT_SSO_VIA_LOCAL_BROWSER'] is True, 'CLIENT_SSO_VIA_LOCAL_BROWSER 不是 True'
 assert ns['ENABLE_DINGTALK'] is True, 'ENABLE_DINGTALK 不是 True'
 assert ns['ENABLE_DELETE_ACCOUNT'] is False, 'ENABLE_DELETE_ACCOUNT 不是 False'
+# 反代模式下不设它，Django 不认 X-Forwarded-Proto → request.is_secure() 恒为假 →
+# CSRF 的 good_origin 算成 http://域名 → 登录 403（2026-09-21 生产实测）。
+assert ns['SECURE_PROXY_SSL_HEADER'] == ('HTTP_X_FORWARDED_PROTO', 'https'), \
+    'SECURE_PROXY_SSL_HEADER 缺失或取值不对（反代模式下会导致登录 403）'
 assert 'enabled = true' in open('/opt/seafile/conf/seafdav.conf').read(), 'WebDAV 没开'
 PY
 
@@ -173,7 +177,31 @@ PY
 python3 /scripts/custom_bootstrap.py >/dev/null || fail "custom_bootstrap.py 第二遍跑失败"
 n=$(grep -c 'CLIENT_SSO_VIA_LOCAL_BROWSER = True' /opt/seafile/conf/seahub_settings.py)
 [ "$n" = "1" ] || fail "钩子不幂等：CLIENT_SSO_VIA_LOCAL_BROWSER 出现 $n 次（应为 1）"
-ok "二开定制钩子已接入 start.py，行为与幂等性均验证通过"
+
+# ---- 升级路径：已部署机器上新增一项设置 ----
+#
+# 这一条是 2026-09-21 生产登录 403 的成因：老镜像写过的 seahub_settings.py 里
+# 标记块**早就在了**，而当时的幂等判断是整块级的（「看见标记就跳过」），于是新加的
+# SECURE_PROXY_SSL_HEADER **永远写不进去**。机制能自愈「块被删掉」，自愈不了
+# 「块里少一行」。现在改成逐项核对，这条断言把那个盲区钉死。
+cat > /opt/seafile/conf/seahub_settings.py <<'EOF'
+SECRET_KEY = "smoke"
+# ---- 二开定制（镜像烘焙，勿手改本块）----
+CLIENT_SSO_VIA_LOCAL_BROWSER = True
+ENABLE_DINGTALK = True
+ENABLE_DELETE_ACCOUNT = False
+EOF
+python3 /scripts/custom_bootstrap.py >/dev/null || fail "升级路径下 custom_bootstrap.py 跑失败"
+python3 - <<'PY' || fail "升级路径没补上新增设置（整块级幂等的盲区又回来了？）"
+src = open('/opt/seafile/conf/seahub_settings.py').read()
+ns = {}
+exec(compile(src, 'seahub_settings.py', 'exec'), ns)
+assert ns['SECURE_PROXY_SSL_HEADER'] == ('HTTP_X_FORWARDED_PROTO', 'https'), \
+    'SECURE_PROXY_SSL_HEADER 没被补上——反代模式下这台机器会登录 403'
+for k in ('CLIENT_SSO_VIA_LOCAL_BROWSER', 'ENABLE_DINGTALK', 'ENABLE_DELETE_ACCOUNT'):
+    assert src.count(k + ' = ') == 1, '%s 出现多次：逐项核对退化成了整块追加' % k
+PY
+ok "二开定制钩子已接入 start.py；行为、幂等性、升级路径均验证通过"
 
 # 清掉假配置目录：/opt/seafile/conf 若残留在镜像层，首启 setup 会有意外行为
 rm -rf /opt/seafile/conf

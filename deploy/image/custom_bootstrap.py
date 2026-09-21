@@ -27,12 +27,26 @@ WebDAV 全部静默失效，页面照常打开。现在它在镜像里，每次�
   ENABLE_DINGTALK              → settings.py:1236 用它决定 constance 该键的默认值
   ENABLE_DELETE_ACCOUNT        → profile/views.py 模块级 from seahub.settings import
 
+`SECURE_PROXY_SSL_HEADER` 的归处不同——它不是被导入期读，而是**属于部署形态**。
+上游从没设过它（全镜像只有 Django 自己的默认值 `None`），而反代模式下容器只听 80、
+`$scheme` 恒为 http，于是 Django 不认 nginx 传来的 X-Forwarded-Proto，
+`request.is_secure()` 恒为假 → CSRF 中间件把 good_origin 算成 `http://域名`，
+与浏览器发的 `Origin: https://域名` 不匹配 → **登录直接 403**。
+这类设置没有「后台」可放，只能落在配置文件里。
+
 其余站点相关配置（SERVICE_URL、钉钉凭据与开关）都已是 constance，管理员在
 后台「系统管理 → 设置」页填，存库、免重启生效，不归这里管。
 
 ## 幂等
 
-按 MARKER 判断，已追加过就跳过。每次启动都跑，所以配置被覆盖/丢掉会自动补回来。
+**逐项核对，缺哪行补哪行**——不是「整块在就跳过」。每次启动都跑，所以配置被
+覆盖 / 丢掉 / 只丢其中一项，下次启动都会补回来。
+
+> 早先是整块级的（看见标记就跳过）。2026-09-21 踩到了它的盲区：给**已部署**的
+> 机器新增一项设置时，标记块早就在了，于是新设置**永远写不进去**——这个机制能
+> 自愈「块被删掉」，却自愈不了「块里少一行」。加 `SECURE_PROXY_SSL_HEADER`
+> 时发现的（反代模式下不设它登录直接 403，见下）。改成逐项之后没有这个盲区。
+
 出错时**让启动失败**，不吞异常——定制的缺失是安全问题（比如自助注销被放开），
 带病跑起来比停下来更糟。
 """
@@ -46,11 +60,25 @@ import time
 # create_data_links.sh 把它软链到 /shared/seafile/conf）；软链没建起来时退回真实路径。
 CONF_CANDIDATES = ('/opt/seafile/conf', '/shared/seafile/conf')
 
-# 新标记 + 旧标记（早先 init-conf.sh --prod 写的）。两者都认，避免升级时追加出
-# 第二个内容相同的块。
-MARKERS = (
-    '# ---- 二开定制（镜像烘焙，勿手改本块）----',
-    '# ---- 二开定制（init-conf.sh --prod 追加，勿手改本块）----',
+# 写进块首的标记。它只影响追加出来的注释文本；**「要不要写」由下面的逐项核对决定**，
+# 不再看这个标记 —— 曾经的整块级判断在「给已部署机器新增一项设置」时会失效。
+MARKER = '# ---- 二开定制（镜像烘焙，勿手改本块）----'
+
+# 必须存在于 seahub_settings.py 的设置项：(键名, 赋值行)。
+# 键名用于逐项核对（正则 ^键名\s*=），赋值行是缺失时补写的内容。
+MANAGED_SETTINGS = (
+    ('CLIENT_SSO_VIA_LOCAL_BROWSER',
+     'CLIENT_SSO_VIA_LOCAL_BROWSER = True'),
+    ('ENABLE_DINGTALK',
+     'ENABLE_DINGTALK = True'),
+    ('ENABLE_DELETE_ACCOUNT',
+     'ENABLE_DELETE_ACCOUNT = False           # 禁止用户自助注销（docs/003）'),
+    # 反代模式（TLS 在云代理终止、容器只听 80）下 $scheme 恒为 http，而 Django 只在
+    # 本项非 None 时才认 X-Forwarded-Proto。不设它 → request.is_secure() 恒为假 →
+    # CSRF 的 good_origin 算成 http://域名 → 登录 403（2026-09-21 生产实测）。
+    # nginx 侧由 $seafile_fwd_proto 保证该头在两种模式下都正确，见 docs/007 §9。
+    ('SECURE_PROXY_SSL_HEADER',
+     'SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")'),
 )
 
 LOG_PREFIX = '[custom-bootstrap]'
@@ -68,35 +96,48 @@ def conf_dir():
              '检查 /shared 是否挂上了。' % (LOG_PREFIX, ' / '.join(CONF_CANDIDATES)))
 
 
-def settings_block():
-    """返回要追加进 seahub_settings.py 的文本块。"""
-    # 钉钉凭据只在环境变量里预置了才写。默认不写：它已 constance 化，后台
-    # 「系统管理 → 设置」填即可，写空串只会让人以为要在这儿配（docs/002）。
-    dt_key = os.environ.get('SEAHUB_DINGTALK_APP_KEY', '').strip()
-    dt_secret = os.environ.get('SEAHUB_DINGTALK_APP_SECRET', '').strip()
-    dt_lines = ''
-    if dt_key or dt_secret:
-        dt_lines = ("DINGTALK_APP_KEY = '%s'\nDINGTALK_APP_SECRET = '%s'\n"
-                    % (dt_key, dt_secret))
+def dingtalk_settings():
+    """钉钉凭据的 (键名, 赋值行)；环境变量没预置就返回空。
 
+    默认不写：它已 constance 化，后台「系统管理 → 设置」填即可，写空串只会让人
+    以为要在这儿配（docs/002）。
+    """
+    key = os.environ.get('SEAHUB_DINGTALK_APP_KEY', '').strip()
+    secret = os.environ.get('SEAHUB_DINGTALK_APP_SECRET', '').strip()
+    if not (key or secret):
+        return ()
+    return (
+        ('DINGTALK_APP_KEY', "DINGTALK_APP_KEY = '%s'" % key),
+        ('DINGTALK_APP_SECRET', "DINGTALK_APP_SECRET = '%s'" % secret),
+    )
+
+
+def has_setting(src, key):
+    """src 里是否已有 `key = ...` 的赋值。要求行首 —— 注释掉的（# key =）不算。"""
+    return re.search(r'^%s\s*=' % re.escape(key), src, re.M) is not None
+
+
+def settings_block(lines):
+    """返回要追加进 seahub_settings.py 的文本块；lines 是本次缺失项的赋值行。"""
     return """
 
 %s
-# 下面三项必须在【模块导入期】就确定，所以只能写文件 —— 改这里要重启 seahub。
-# 判断依据是各调用点的绑定方式，不是「重不重要」：
+# 下面几项必须在【模块导入期】就确定（或属于部署形态），所以只能写文件 ——
+# 改这里要重启 seahub。判断依据是各调用点的绑定方式，不是「重不重要」：
 #   CLIENT_SSO_VIA_LOCAL_BROWSER → urls.py / api2/urls.py / views/sso.py 导入期读它来注册路由
 #   ENABLE_DINGTALK              → 它决定 constance 里该键的默认值（settings.py:1236）
 #   ENABLE_DELETE_ACCOUNT        → profile/views.py 模块级 from seahub.settings import
+#   SECURE_PROXY_SSL_HEADER      → Django 据此认 X-Forwarded-Proto；
+#                                  反代模式下不设它 request.is_secure() 恒为假，登录 403
 # 其余站点相关配置（SERVICE_URL、钉钉凭据与开关）都已是 constance：管理员在
-# 后台「系统管理 → 设置」页填，存库、免重启生效。所以本块只写这一次，之后不用再动。
+# 后台「系统管理 → 设置」页填，存库、免重启生效，不归这里管。
 #
-# 本块由镜像内的 custom_bootstrap.py 在每次容器启动时校验，缺了会自动补回来；
+# 本块由镜像内的 custom_bootstrap.py 在每次容器启动时【逐项】校验，缺哪行补哪行；
 # 不要手改（改了会在下次重启时被识别为「已存在」而保留，但语义上不应依赖这个）。
-CLIENT_SSO_VIA_LOCAL_BROWSER = True
-ENABLE_DINGTALK = True
-ENABLE_DELETE_ACCOUNT = False           # 禁止用户自助注销（docs/003）
+
+%s
 # PASSWORD_LOGIN_ADMIN_ONLY = True     # 补丁 0008 默认即 True；紧急放开时取消注释改 False
-%s""" % (MARKERS[0], dt_lines)
+""" % (MARKER, '\n'.join(lines))
 
 
 def apply_settings(confdir):
@@ -108,13 +149,16 @@ def apply_settings(confdir):
     with open(path, 'r', encoding='utf-8') as fp:
         current = fp.read()
 
-    if any(m in current for m in MARKERS):
-        log('seahub_settings.py 定制块已存在，跳过')
+    wanted = tuple(MANAGED_SETTINGS) + dingtalk_settings()
+    missing = [(key, line) for key, line in wanted if not has_setting(current, key)]
+    if not missing:
+        log('seahub_settings.py 定制项齐全（%d 项），跳过' % len(wanted))
         return
 
     with open(path, 'w', encoding='utf-8') as fp:
-        fp.write(current.rstrip() + '\n' + settings_block())
-    log('已追加 seahub_settings.py 定制块（SSO / 钉钉默认开关 / 账号管控）')
+        fp.write(current.rstrip() + '\n' + settings_block([line for _, line in missing]))
+    log('已补齐 seahub_settings.py 定制项 %d 项：%s'
+        % (len(missing), '、'.join(key for key, _ in missing)))
 
 
 def apply_webdav(confdir):

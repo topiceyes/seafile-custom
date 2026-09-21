@@ -293,8 +293,14 @@ start.py: main()
 插一行调用（**构建期有断言**，见 `smoke-test.sh` 第 6 项：不只检查接线，还在假配置目录上
 真跑一遍验行为和幂等）。
 
-**幂等**：靠配置块里的标记判断，已追加过就跳过。每次容器启动都校验一遍，所以配置文件被
-覆盖 / 丢掉 / 数据卷重建，下次启动会自动补回来。
+**幂等**：**逐项核对，缺哪行补哪行**（不是「整块在就跳过」）。每次容器启动都校验一遍，
+所以配置文件被覆盖 / 丢掉 / 只丢其中一项 / 数据卷重建，下次启动都会自动补回来。
+
+> 早先是整块级的（看见标记就跳过）。2026-09-21 撞到了它的盲区：给**已部署**的机器
+> **新增**一项设置时，标记块早就在了，于是新设置**永远写不进去**——这个机制能自愈
+> 「块被删掉」，却自愈不了「块里少一行」。反代模式那个登录 403 之所以没被自动修好，
+> 就是撞在这里（见 §9）。改成逐项之后没有这个盲区，`smoke-test.sh` 第 6 项专门钉住了
+> 升级路径。
 
 > **这一条为什么值得从"手工脚本"改成"烘进镜像"。** 原先它是部署时人手工跑的
 > `init-conf.sh --prod`（等首启 → 追加 → 重启两个服务）。手工步骤的问题不是麻烦，是
@@ -313,7 +319,7 @@ start.py: main()
 > 拿到值，改成运行时读只是把"写文件"换成"改二开代码去读别处"，并没有消灭那个约束，
 > 反而把配置来源从一处变成两处。
 
-**为什么这三项非得写文件、不能像 `SERVICE_URL` 那样走 constance**：判据是**调用点的绑定方式**，
+**为什么这几项非得写文件、不能像 `SERVICE_URL` 那样走 constance**：判据是**调用点的绑定方式**，
 不是「重不重要」。清单（改一处要对照一处）：
 
 | 设置 | 调用点 | 绑定时机 |
@@ -321,6 +327,9 @@ start.py: main()
 | `CLIENT_SSO_VIA_LOCAL_BROWSER` | `urls.py` / `api2/urls.py` / `views/sso.py` | 模块导入期读它注册路由 → 后台改了 URL 也不会注册 |
 | `ENABLE_DINGTALK` | `settings.py:1236` | 它决定 constance 里该键的**默认值**（真正生效的开关仍是 constance） |
 | `ENABLE_DELETE_ACCOUNT` | `profile/views.py:27` | 模块级 `from seahub.settings import` → 启动期固化 |
+| `SECURE_PROXY_SSL_HEADER` | Django 的 `HttpRequest.scheme` | **不属于调用点绑定**，属于部署形态——上游从没设过它，只能落在配置文件里。见 §9 |
+
+清单的准确定义在 `custom_bootstrap.py` 的 `MANAGED_SETTINGS`（键名 + 赋值行），加新项改那里。
 
 （`DINGTALK_APP_KEY/SECRET` 不在这个清单里：它们已是纯 constance，`.env` 留空、装完在后台填。）
 
@@ -421,6 +430,23 @@ MySQL 等不到、seahub 起不来、LE 签发失败）都会留下一个「`doc
 `docker restart seafile` 重跑。setup 是幂等的（没建完 seafile-data 前重跑无副作用）。
 
 **3. `seafile-data already exists`**：镜像构建期残留的 `/opt/seafile/seafile-data` 空目录会让 setup 的 auto 模式直接拒绝。我们的 Dockerfile 已修复（collectstatic 的临时目录随层清理）；若自定义镜像时重现此错，检查镜像里 `/opt/seafile/` 下是否只有 `seafile-server-12.0.14`。
+
+**4. 登录 403 `CSRF verification failed`**（**页面能打开、一提交表单就 403**，很像 cookie 问题）：
+反代模式下 `SECURE_PROXY_SSL_HEADER` 没写进 `seahub_settings.py`。Django 因此不认
+`X-Forwarded-Proto`，`request.is_secure()` 恒为假，CSRF 的 `good_origin` 算成
+`http://域名`，与浏览器的 `Origin: https://域名` 对不上。
+
+先确认原因（页面上因 `DEBUG=False` 不显示细节，日志里有）：
+
+```bash
+docker exec seafile grep -iE "Forbidden|csrf" /shared/seafile/logs/seahub.log | tail -5
+```
+
+- `Origin checking failed - https://… does not match any trusted origins` → 就是这条，按 §9 处置
+- `CSRF cookie not set` → 另一回事：代理没把 cookie 转发进来
+
+根因与完整推演见 §9。**不要手工往容器里 `echo` 配置**——那台机器下次重建就丢了，
+按 §9 的机制走镜像。
 
 ## 5. 上线后动作
 
@@ -563,16 +589,43 @@ if os.environ.get('SEAFILE_SERVER_PROTOCOL') == 'https':
 打开（因为浏览器确实在 https 上），但 `SERVICE_URL` 会写成 `http://域名`，于是文件上传
 下载、分享链接、钉钉回调地址全部指向 http —— 在只放行 https 的代理后面就是坏的。
 
-### X-Forwarded-Proto（模板已处理）
+### X-Forwarded-Proto 与 `SECURE_PROXY_SSL_HEADER` —— **两半都要有**
 
-容器 nginx 只监听 80 时 `$scheme` 恒为 `http`，直接透传给 Django 会让
-`request.is_secure()` 为假 → CSRF 校验、Secure cookie、重定向出零散问题。
-模板现在在 server 块顶部定义一次 `$seafile_fwd_proto`：
+这一条本文件曾经写错过，代价是生产登录直接 403，所以完整记一遍。
+
+容器 nginx 只监听 80 时 `$scheme` 恒为 `http`。要让 Django 知道「浏览器那一侧其实是
+https」，需要**两个条件同时成立**：
+
+| # | 在哪 | 做什么 | 少了它会怎样 |
+|---|---|---|---|
+| 1 | 容器 nginx（模板） | 把真实协议放进 `X-Forwarded-Proto` 传下去 | Django 无从得知 |
+| 2 | Django（`seahub_settings.py`） | 设 `SECURE_PROXY_SSL_HEADER`，**它才会去读那个头** | **登录 403** |
+
+第 1 条：模板在 server 块顶部定义一次 `$seafile_fwd_proto`
 
 - `https=true` → `$scheme`（容器内终止，就是真实协议）
 - `https=false` → 取上游代理传来的 `$http_x_forwarded_proto`，**缺失时假定 https**
 
-`deploy/smoke-test.sh` 会把两种模式都渲染一遍并跑 `nginx -t`，模板语法坏会在 CI 就拦住。
+第 2 条由镜像内的 `custom_bootstrap.py` 写入（§4.2.2）。上游从没设过它——`settings.py`、
+`bootstrap.py`、`setup-seafile-mysql.py` 逐个查过，全镜像只有 Django 自己的默认值 `None`。
+
+> **⚠️ 只做第 1 条是不够的。** 本文件早先写过「透传 `X-Forwarded-Proto` 就能让
+> `request.is_secure()` 为真」——**这句推论是错的**。Django 只在
+> `SECURE_PROXY_SSL_HEADER` 非 `None` 时才去看那个头（`django/http/request.py:255`）。
+> 少了第 2 条，`request.is_secure()` 恒为假，CSRF 中间件于是把 `good_origin` 算成
+> `http://域名`（`django/middleware/csrf.py` 的 `_origin_verified`），与浏览器发的
+> `Origin: https://域名` 不匹配 → **表单一提交就 403，而页面照常打开**。
+> 2026-09-21 生产实测撞到；`12.0.14-dingtalk.9.e3c4174f` 起修复。
+
+> **为什么彩排没拦住它。** §7 的彩排为了让自签证书生效，**故意把
+> `SEAFILE_SERVER_LETSENCRYPT` 设回 `true`**（容器自己终止 TLS）。那个模式下
+> `$scheme` 就是 https，`is_secure()` 天然为真——**反代模式（`https=false`）的登录
+> 路径从来没被跑过**。这是彩排与生产之间唯一没被覆盖的差异，而 bug 恰好藏在那里。
+> 教训：彩排的「唯一差异」如果不止证书一项，那份清单就得写全。
+
+`deploy/smoke-test.sh` 两侧都守：第 5 项把两种模式各渲染一遍跑 `nginx -t`（拦第 1 条
+写坏），第 6 项断言 `SECURE_PROXY_SSL_HEADER` 确实写进了配置、且**老部署升级时会补齐**
+（拦第 2 条丢失）。
 
 ### 代理侧必须注意
 
@@ -624,6 +677,20 @@ if os.environ.get('SEAFILE_SERVER_PROTOCOL') == 'https':
 | 保活补丁真的会让容器退出 | ✅ 行为实测（不只是 grep）：假 `start.py` 起来 2 秒后自杀 → `enterpoint.sh` 在下个检查点打印 `start.py exited unexpectedly...` 并 `exit 1`。**注意测法**：裸 `--entrypoint bash` 里没有 nginx，会先卡死在第 13–22 行的等 nginx 循环（表现为 `timeout` 杀掉、退出码 124，看着像补丁没生效），必须用一个假的 `ps` 让该循环放行 |
 | 重试真的会被触发 | ✅ `utils.call()` 默认 `subprocess.check_call`（`utils.py:53`），失败抛 `CalledProcessError`，`start_service_retry` 捕获后重试。前提成立，重试不是装饰性的 |
 | 第 6 项断言仍成立（补丁改动后重跑） | ✅ 在基础镜像上打完补丁、拷入 `custom_bootstrap.py`，抽出 `smoke-test.sh` 第 6 节单独跑（断言仍只有这一份来源，不是复制件）→ 全绿 |
+
+**反代模式登录 403 的修复（2026-09-21，tag `e3c4174f` 之后）——已验证的部分：**
+
+| 项 | 实测 |
+|---|---|
+| 根因定位（读源码，非推断） | ✅ Django 4.2.21；`SECURE_PROXY_SSL_HEADER` 在 `settings.py`/`bootstrap.py`/`setup-seafile-mysql.py` 三处**都没设**，全镜像只有 `global_settings.py` 的默认值 `None`；`request.py:255` 证明只在它非 `None` 时才读 `X-Forwarded-Proto`；`csrf.py` 的 `_origin_verified` 证明 `is_secure()` 为假时 `good_origin` 取 `http://` |
+| 彩排为何漏掉 | ✅ §7 明确要求彩排把 `SEAFILE_SERVER_LETSENCRYPT` **设回 `true`**（容器自己终止 TLS），`$scheme`=https → `is_secure()` 天然为真。**反代模式的登录路径从未被跑过** |
+| `custom_bootstrap.py` 四条路径 | ✅ 全新文件（补 4 项）、二次运行（文件逐字节不变）、**老部署只缺新项（只补 1 行、不追加第二块）**、钉钉凭据经环境变量。三种产物都 `exec` 过——**是合法 Python**，配置写坏会让 seahub 整个起不来 |
+| 冒烟断言有牙齿 | ✅ 把逻辑退回整块级（模拟旧实现）后跑第 6 节 → **报错退出 1**，信息是「SECURE_PROXY_SSL_HEADER 没被补上」。断言不是装饰性的 |
+| 第 6 节在 `sh`（dash）下可跑 | ✅ CI 用镜像的 `/smoke.sh`（shebang `#!/bin/sh`）执行，本机用 `sh` 复现 → 全绿。新增的 heredoc 语法 POSIX 兼容 |
+
+> ⚠️ **尚未验证**：修复后**浏览器登录真的通了**。上面验的是「配置被正确写入」与
+> 「Django 的判定逻辑确如分析」，端到端那一步要等新镜像部署到反代模式的环境里、
+> 用真实浏览器走一次登录才算数。未验证就不写成已验证。
 | 脚本报错路径 | ✅ 容器不存在 / 容器没在跑 / 环境文件缺失，三种都给明确提示而非堆栈 |
 
 > 顺带查出一个**潜伏 bug**：`init-conf.sh`、`init-prod-env.sh`、`smoke-test.sh` 里共 5 处
