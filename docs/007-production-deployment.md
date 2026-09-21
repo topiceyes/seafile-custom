@@ -55,6 +55,26 @@ TLS 由云上反向代理终止（本项目的实际形态，见 §9）；容器
   done
   ```
 
+  > ⚠️ **新装入口还要多一条，走的是另一个域名。** §4.1 的安装命令取的是
+  > `https://github.com/<owner>/<repo>/releases/latest/download/<文件>`——它先是
+  > **`github.com`**（要能解析并 302），再重定向到 **`release-assets.githubusercontent.com`**
+  > 取真正的内容。这两个**都不在上面那两行里**，`codeload.github.com` 通不代表它们通
+  > （2026-09-21 开发机上就是：`codeload` 通、`github.com` 直连超时，只能走代理）。
+  > **服务器上装之前先验一遍**，一条命令：
+  > ```bash
+  > B=https://github.com/topiceyes/seafile-custom/releases/latest/download
+  > curl -fLso /dev/null -w '%{http_code} %{size_download}B  %{url_effective}\n' \
+  >   --max-time 60 "$B/seafile-prod.yml"     # 期望 200，且 url_effective 落在 githubusercontent 上
+  > ```
+  > 不通的兜底（不依赖 `github.com`，走 §2 验过的 `codeload`）：
+  > ```bash
+  > curl -fL --max-time 120 \
+  >   https://codeload.github.com/topiceyes/seafile-custom/tar.gz/refs/tags/<最新 tag> \
+  >   | tar -xz --strip-components=1 -C /opt/seafile-custom
+  > ```
+  > 那条路取到的是**整棵源码树**（含 `deploy/` 三个文件），是一棵钉死的树。
+  > **升级路径完全不受影响**——升级一个文件都不取（§6）。
+
   > **`registry-1.docker.io` 曾经是必需的第三个域名，2026-09-21 起不再需要。**
   > 早先 compose 里 `mariadb` 与 `memcached` 直接引 Docker Hub，而国内网络常只有
   > 这一条不通（`Get "https://registry-1.docker.io/v2/": context deadline exceeded`
@@ -828,7 +848,9 @@ https」，需要**两个条件同时成立**：
 | **固定安装 URL** | ✅ 三个资产 `curl -fL …/releases/latest/download/<名>` 全部 200，且与仓库逐字节一致（`cmp` 通过）。`latest` 标记指向该 Release，非 draft、非 prerelease |
 | **通道搬运 + Release 全链路** | ✅ 2026-09-21 首跑（run 35590588040）：`imagetools create` 搬通道 → digest 断言通过 → Release 建出。**红在最后一步**：资产 `.env.prod.example` 被 GitHub 改写成 `default.env.prod.example`，固定 URL 取不到。已把模板改名 `env.prod.example` |
 | **守卫的补做路径** | ✅ 2026-09-21 修完重跑（run 35590876529）：守卫判出「发布不完整（Release 资产齐全=false）」→ 只补做搬运与发布，**40 秒、无重建**，并删掉那个陈旧资产 |
-| **空转不动通道** | ✅ 2026-09-21（run 35591567465）：只改文档的 push 撞上「tag 已存在且发布完整」→ 守卫判 `mode=none`，通道未动、无发布动作，运行结论为**成功**（不是失败——空转报红会天天给管理员发误报邮件） |
+| **新装入口（干净目录）** | ✅ 2026-09-21 复验：从固定 URL 取三个文件 → `./init-prod-env.sh --domain … --admin-email …` 生成密钥齐全的 `.env`（且**不含** `SEAFILE_PRO_IMAGE`）→ `docker compose config` 三行镜像全部解析。仅未真起容器（那一步在服务器上） |
+| ⚠️ **开发机直连 `github.com` 会超时** | 2026-09-21 实测：`codeload.github.com` 可直连，但 `github.com`（release 资产入口）直连 000/超时，走 `HTTPS_PROXY=127.0.0.1:8118` 才通。**服务器上必须单独验**，见 §2 那条⚠️——这是安装入口唯一的未验证假设 |
+| **空转不动通道** | ⚠️ **当时是假绿**，见下一行。2026-09-21（run 35592557433）：修好后复验——只改文档的 push 撞上「tag 已存在且发布完整」→ 守卫判 `mode=none`，**构建与冒烟都 skipped**、通道未动，运行结论为**成功**（不是失败——空转报红会天天给管理员发误报邮件） |
 | ⚠️ **同一 tag 被重建覆盖（本设计出的唯一一次事故）** | ❌→✅ 2026-09-21：守卫当时用两个布尔输出 `skip`/`skip_build`，判「发布完整」时只写了 `skip=true`，而构建步骤只看 `skip_build`（空串 ≠ `'true'`）→ **构建照跑**，用新字节覆盖了不可变 tag `ed2042da`。全程全绿、通道未动、零告警；只有比对 registry 才发现 tag 的 digest 与 Release 记录对不上。**已改成单三态输出 `mode`**（两个布尔天然能互相矛盾，三态不会），并在补做路径的 Release 正文加 ℹ️ 提示。两次构建的三层指纹逐字节相同，故内容无差异、只需把通道与记录收敛到新 digest |
 
 **生产首次上线后回填**：LE 签发耗时、扫码登录、client-SSO、首次备份、服务器 ghcr 拉取实测耗时。
