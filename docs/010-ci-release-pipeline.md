@@ -315,6 +315,14 @@ docker login registry.cn-hangzhou.aliyuncs.com
 | 2026-09-20 | `12.0.14-dingtalk.8.4261dd78` | 8 | `a0fe6349…a65f5d25489` | `sha256:c3b12c34…d01952d2` | 含反代模式 nginx 修复；tag 规则改内容寻址后的首次发布（run 35496784127） |
 | 2026-09-20 | `12.0.14-dingtalk.8` | 8 | `a0fe6349…a65f5d25489` | `sha256:add45ed6…23665527` | 首次 CI 发布（run 35495223406），构建 8m27s。**已被覆盖且格式过时，勿用** |
 
+> **本表 `seafile-mc` 的 digest 是单平台 OCI image manifest**（`buildx --provenance=false
+> --sbom=false` + 单平台的结果），**不是**索引——与下面基础设施镜像的口径不同。2026-09-21
+> 实测确认：`docker pull ghcr.io/topiceyes/seafile-mc@sha256:5cf3abfd…` 能正常拉全（层下载
+> 完整、回显 digest 一致），即 `.env.prod.example` 钉 digest 的用法成立。
+>
+> ⚠️ 但**离线导入路径不能用 digest 形式**（`docker save` 出来 `RepoTags: null`，`load` 后
+> 是无标签悬空镜像），必须用 tag 形式——见 `.env.prod.example` 的说明。
+
 **基础设施镜像**（`mirror-infra-images.yml`，run 35566304802，2026-09-21）——
 digest 是**索引**的 digest（含全部平台）：
 
