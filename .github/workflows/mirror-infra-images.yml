@@ -2,18 +2,38 @@
 #
 # ## 为什么需要这个
 #
-# 生产 compose 有三个镜像，分别来自【两个】仓库：
+# 生产 compose 有三个镜像，早先来自【两个】仓库：
 #   seafile   → ghcr.io/topiceyes/seafile-mc   （本项目 CI 构建）
 #   mariadb   → docker.io/library/mariadb      （Docker Hub）
 #   memcached → docker.io/library/memcached    （Docker Hub）
 #
 # 2026-09-21 实测（国内网络、不带代理）：ghcr.io 匿名拉取完整可用，
 # registry-1.docker.io 直接超时。所以生产服务器上 `docker compose pull` 必然
-# 卡在 MariaDB/memcached 上——报错会指向 Docker Hub，而不是我们自己的镜像，
+# 卡在 MariaDB/memcached 上——而且**报错会指向 Docker Hub，不是我们自己的镜像**，
 # 很容易误判成「ghcr 挂了」。
 #
-# 镜像过来之后三个镜像同源，服务器侧就只剩一个能连通的目标，
-# 既不需要 docker login，也不需要每次更新都手工搬 693MB 离线包。
+# 镜像过来之后三个镜像同源，服务器侧只剩一个要连通的目标。
+#
+# ## ⚠️ 必须产出 manifest list（索引），不能是单平台 manifest
+#
+# 这不是风格问题，是踩出来的：
+#
+#   用 `docker pull --platform linux/amd64` + `docker tag` + `docker push` 镜像，
+#   推上去的是**单平台 manifest**（mediaType `.../manifest.v2+json`）。在 arm64
+#   开发机上 `docker save --platform linux/amd64` 打离线包时，会报
+#   `no suitable export target found: ... does not provide the specified platform`；
+#   而**不带 --platform 更糟**——它产出一个 8KB 的空包且不报错，一路静默到服务器
+#   才发现。对照组：seafile-mc 镜像（OCI manifest）带 --platform 正常，572MB。
+#
+#   索引用 --platform 选平台是标准路径，与 Docker Hub 自己的 tag 行为一致，所有
+#   工具（含 docker save）都正常。所以这里用 `docker buildx imagetools create`
+#   做 registry→registry 复制，它产出索引。
+#
+#   下面的断言就是为这条假设设的：**假设写死在代码里而不验证，就是下一次静默漂移**。
+#
+# 代价：imagetools 复制的是**整个多架构索引**（含 arm64），比只留 amd64 大约多占
+# 一倍存储。换来的是不用解析平台 digest、行为与 Docker Hub 原 tag 完全一致。
+# GitHub 官方口径是容器镜像的存储与带宽免费，这点开销可以接受。
 #
 # ## 为什么不从开发机直接推
 #
@@ -47,11 +67,6 @@ permissions:
   contents: read
   packages: write          # 推 ghcr.io 需要
 
-env:
-  # 只镜像 amd64：生产是 amd64，runner 也是 amd64，全程 native。
-  # 不带多架构——那会把镜像索引顶起来，而没有任何消费方需要 arm64。
-  PLATFORM: linux/amd64
-
 jobs:
   mirror:
     runs-on: ubuntu-latest
@@ -83,8 +98,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # imagetools 需要 buildx driver；镜像地址若来自 docker.io 则要能解析多架构索引
+      - uses: docker/setup-buildx-action@v3
+
       - name: 镜像 ${{ matrix.image }}
-        id: m
         env:
           SRC: ${{ matrix.image }}
           OWNER: ${{ github.repository_owner }}
@@ -98,36 +115,46 @@ jobs:
           DST="ghcr.io/${OWNER}/${REPO}:${TAG}"
 
           echo "==> $SRC  →  $DST"
-          docker pull --platform "$PLATFORM" "$SRC"
+          # registry→registry 复制，不落本地。产出 manifest list（见文件头注）。
+          docker buildx imagetools create -t "$DST" "$SRC"
 
-          # 把源 digest 记下来：这是「镜像内容确实一致」的唯一凭据。
-          # 注意这是【index digest】（tag 指向的多架构清单），推上去的会是
-          # 单平台清单，digest 必然不同——所以只作记录，不作比对。
-          SRC_DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' "$SRC" | cut -d@ -f2)
+          # ---- 断言：必须是索引，且含 amd64 ----
+          MEDIA=$(docker buildx imagetools inspect "$DST" --format '{{.Manifest.MediaType}}')
+          echo "MediaType: $MEDIA"
+          case "$MEDIA" in
+            *manifest.list*|*image.index*)
+              echo "✅ 是 manifest list" ;;
+            *)
+              echo "::error::$DST 的 mediaType 是 $MEDIA，不是 manifest list。"
+              echo "::error::单平台 manifest 会让 arm64 上 docker save --platform linux/amd64 失败，"
+              echo "::error::不带 --platform 时更会产出 8KB 空包且不报错。见本文件头注。"
+              exit 1 ;;
+          esac
 
-          docker tag "$SRC" "$DST"
-          docker push "$DST"
+          if ! docker buildx imagetools inspect "$DST" | grep -q 'linux/amd64'; then
+            echo "::error::$DST 的索引里没有 linux/amd64"
+            exit 1
+          fi
+          echo "✅ 索引含 linux/amd64"
 
           DST_DIGEST=$(docker buildx imagetools inspect "$DST" --format '{{.Manifest.Digest}}')
-          ARCH=$(docker inspect --format '{{.Architecture}}/{{.Os}}' "$DST")
-
-          {
-            echo "| \`$DST\` | \`$ARCH\` | \`$DST_DIGEST\` | \`$SRC_DIGEST\` |"
-          } >> /tmp/mirror-rows.md
+          SRC_DIGEST=$(docker buildx imagetools inspect "$SRC" --format '{{.Manifest.Digest}}')
 
           {
             echo "dst_digest=$DST_DIGEST"
             echo "dst=$DST"
           } >> "$GITHUB_OUTPUT"
 
+          # 供汇总步骤收集
+          echo "| \`$DST\` | \`$DST_DIGEST\` | \`$SRC_DIGEST\` |" >> /tmp/mirror-rows.md
+
           echo "✅ $DST"
-          echo "   架构   : $ARCH"
-          echo "   目标   : $DST_DIGEST"
-          echo "   源     : $SRC_DIGEST"
+          echo "   目标 digest: $DST_DIGEST"
+          echo "   源   digest: $SRC_DIGEST"
 
       # 尽力而为：新包默认可能是 private，而匿名拉不到就等于这次镜像白做。
       # 这个 PATCH 对【用户所有】的包不保证被 GITHUB_TOKEN 接受，所以
-      # continue-on-error——成不成都由下一步的汇总给出人工兜底路径。
+      # continue-on-error——成不成都由汇总步骤给出人工兜底路径。
       - name: 尝试把包设为 public（尽力而为）
         continue-on-error: true
         env:
@@ -153,8 +180,8 @@ jobs:
           {
             echo "## 基础设施镜像已镜像到 ghcr.io"
             echo ""
-            echo "| 目标 | 架构 | 目标 digest | 上游 digest |"
-            echo "|---|---|---|---|"
+            echo "| 目标 | 目标 digest | 上游 digest |"
+            echo "|---|---|---|"
             [ -f /tmp/mirror-rows.md ] && cat /tmp/mirror-rows.md
             echo ""
             echo "服务器侧至此三个镜像全部来自 ghcr.io，无需 Docker Hub、无需 docker login。"
@@ -167,7 +194,7 @@ jobs:
             echo "- https://github.com/users/${{ github.repository_owner }}/packages/container/mariadb/settings"
             echo "- https://github.com/users/${{ github.repository_owner }}/packages/container/memcached/settings"
             echo ""
-            echo "验证（不带任何凭据能拉到 manifest 才算真的 public）："
+            echo "验证（不带任何凭据能拉到才算真的 public）："
             echo '```'
             echo "docker pull --platform linux/amd64 ghcr.io/${{ github.repository_owner }}/mariadb:10.11"
             echo '```'
