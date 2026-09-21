@@ -30,14 +30,24 @@ on:
         type: boolean
         default: false
 
-  # 自动触发：只有会影响镜像内容的路径变更才构建。
+  # 自动触发：会影响镜像内容、或会影响【发布出去的那三个资产】的路径变更才跑。
   # 漏了 paths 过滤的话，一次文档提交也会烧掉十几分钟额度 + 产出一个无意义 tag。
+  #
+  # ⚠️ 最后三条（前三个是 tag 哈希的输入，后三个不是）必须分开看：
+  #   前三个改了 → tag 变 → 走正常构建，十几分钟。
+  #   后三个改了 → tag **不变**（它们不在哈希里）→ 守卫判「资产内容旧」→ mode=publish
+  #                → 只重传三个文件，**40 秒，不重建**。
+  # 所以把后三个加进来不会让文档改动烧构建额度；不加的话它们压根不会触发 workflow，
+  # 于是固定的安装 URL 上那份**永远是旧的**（2026-09-21 发现的洞，见守卫里那段注释）。
   push:
     branches: [main]
     paths:
-      - 'patches/**'
+      - 'patches/**'                 # ↓ 三条是 tag 哈希输入，改了要真构建
       - 'deploy/image/**'
       - 'deploy/build-image.sh'
+      - 'deploy/seafile-prod.yml'    # ↑ 这三条是 Release 资产（= 新服务器的安装入口）
+      - 'deploy/init-prod-env.sh'    #   不在 tag 哈希里 → 只会触发「重传」，不会重建
+      - 'deploy/env.prod.example'
       - '.github/workflows/build-image.yml'
 
 # 同一 ref 上不并发构建；且**不取消**进行中的构建——两次构建抢同一个 tag 是最糟的失败模式
@@ -203,19 +213,41 @@ jobs:
             # 所以先判「发布是否已完整」。三个条件**全部**成立才算完整：
             #   ① 通道 tag 存在且指向本 tag 的同一个 digest
             #   ② Release 存在
-            #   ③ Release 上的资产一个不少
+            #   ③ Release 上的资产一个不少，**且内容与仓库当前的一字不差**
             # ③ 是实际踩出来的（2026-09-21 首跑）：只判 Release 存在的话，资产缺失
             # 的残缺发布会让重跑判定为「完整」而静默什么都不做——正是这个守卫要防的事。
+            #
+            # ⚠️ ③ 后来从「名字在不在」升级成了「**逐字节一致**」（2026-09-21 补）。
+            # 原来只查名字，漏掉的是这么一个洞：三个资产不在 tag 哈希的输入里
+            # （哈希只含 patches/ + deploy/image/ + build-image.sh），所以**单独改它们
+            # 不会产生新 tag**；只改资产 → tag 不变、名字也都在 → 守卫判「完整」→
+            # mode=none → **固定安装 URL 上那份永远是旧的**。新服务器会装到
+            # 「旧 compose + 新镜像」的组合，全程全绿、零告警。
+            # 用 release asset API 的 digest 字段（就是 sha256）比，缺字段时按不一致
+            # 处理——宁可多补发一次（幂等、40 秒、不重建），不可静默漏发。
             CH=$(docker buildx imagetools inspect "$IMAGE:$CHANNEL" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
             TG=$(docker buildx imagetools inspect "$IMAGE:$TAG"     --format '{{.Manifest.Digest}}' 2>/dev/null || true)
             ASSETS_OK=true
+            ASSETS_WHY=""
             if gh release view "$TAG" >/dev/null 2>&1; then
-              HAVE=$(gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null || true)
+              HAVE=$(gh release view "$TAG" --json assets \
+                       --jq '.assets[] | "\(.name) \(.digest // "")"' 2>/dev/null || true)
               for f in $RELEASE_ASSETS; do
-                echo "$HAVE" | grep -qx "$(basename "$f")" || ASSETS_OK=false
+                n=$(basename "$f")
+                # 先认名字在不在（各占一行，名字里不会有空格）
+                line=$(echo "$HAVE" | awk -v n="$n" '$1==n {print; exit}')
+                if [ -z "$line" ]; then
+                  ASSETS_OK=false; ASSETS_WHY="$ASSETS_WHY $n(缺);"
+                  continue
+                fi
+                got=$(echo "$line" | cut -d' ' -f2)
+                want="sha256:$(sha256sum "$f" | cut -d' ' -f1)"
+                if [ "$got" != "$want" ]; then
+                  ASSETS_OK=false; ASSETS_WHY="$ASSETS_WHY $n(内容旧/无digest);"
+                fi
               done
             else
-              ASSETS_OK=false
+              ASSETS_OK=false; ASSETS_WHY=" Release(不存在);"
             fi
             if [ -n "$CH" ] && [ "$CH" = "$TG" ] && [ "$ASSETS_OK" = "true" ]; then
 
@@ -230,7 +262,7 @@ jobs:
                 {
                   echo "## 跳过构建：镜像已是最新"
                   echo ""
-                  echo "\`$IMAGE:$TAG\` 已存在，通道 \`$CHANNEL\` 已指向它，Release 与三个资产都在。"
+                  echo "\`$IMAGE:$TAG\` 已存在，通道 \`$CHANNEL\` 已指向它，Release 的三个资产在且与仓库一字不差。"
                   echo "tag 含构建输入哈希，同 tag 即同内容，说明这次推送没有改动任何构建输入"
                   echo "（\`patches/\`、\`deploy/image/\`、\`build-image.sh\`）。无需重建，本次运行视为成功。"
                 } >> "$GITHUB_STEP_SUMMARY"
@@ -249,7 +281,7 @@ jobs:
 
             # 走到这儿：镜像在，但通道 / Release / 资产没跟上（多半是上次发布半途失败）。
             # 只补做发布，不重建 —— 内容寻址的 tag 保证了补做的是同一份字节。
-            echo "::notice::$IMAGE:$TAG 已存在，但发布不完整（通道 digest=$CH 本 tag digest=$TG，Release 资产齐全=$ASSETS_OK）——跳过构建，只补做发布。"
+            echo "::notice::$IMAGE:$TAG 已存在，但发布不完整（通道 digest=$CH 本 tag digest=$TG；资产问题：${ASSETS_WHY:-无}）——跳过构建，只补做发布。"
             echo "mode=publish" >> "$GITHUB_OUTPUT"
             exit 0
           fi

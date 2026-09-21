@@ -47,13 +47,23 @@ TLS 由云上反向代理终止（本项目的实际形态，见 §9）；容器
   | `codeload.github.com` | 取部署 tarball | `curl -so /dev/null -w '%{http_code}\n' --max-time 20 https://codeload.github.com/` → 200 |
   | `ghcr.io` | 拉**全部三个**镜像 | `curl -so /dev/null -w '%{http_code}\n' --max-time 20 https://ghcr.io/v2/` → **401 即通**（未认证是预期） |
 
-  三个镜像全走 ghcr，所以**只需要两个域名**。一条命令验完：
+  一条命令验完这两个：
   ```bash
   for h in codeload.github.com ghcr.io; do
     printf '%-24s ' "$h"
     curl -so /dev/null -w '%{http_code}\n' --max-time 20 "https://$h/"
   done
   ```
+
+  > **需要几个域名取决于是「新装」还是「升级」——别混为一谈：**
+  >
+  > | 场景 | 要通的域名 |
+  > |---|---|
+  > | 日常**升级/回滚** | 只有 `ghcr.io` 一个（一个文件都不取，§6） |
+  > | **新装**（固定 URL 那条） | `github.com` + `release-assets.githubusercontent.com` + `ghcr.io` |
+  > | **新装**（codeload 兜底那条） | `codeload.github.com` + `ghcr.io`（✅ 两条都已在服务器实测） |
+  >
+  > 所以「只需要两个域名」这句话只对升级成立。**新装**要按上表选一条走。
 
   > ⚠️ **新装入口还要多一条，走的是另一个域名。** §4.1 的安装命令取的是
   > `https://github.com/<owner>/<repo>/releases/latest/download/<文件>`——它先是
@@ -219,23 +229,27 @@ up -d`，不需要再取任何文件（版本由 CI 搬动通道 tag，见 §6�
 # ---- 4.1 取部署文件（免代理、免凭据）----
 # 从 GitHub Release 的固定 URL 取，仓库是 public，裸 curl 即可。
 # （服务器到 github.com 的 git 协议不通，但 HTTPS 下载这条路可直连，见 §2）
-mkdir -p /opt/seafile-custom && cd /opt/seafile-custom
+# ⚠️ 目录名是 deploy/ ：§6 的升级与回滚命令都写 `cd /opt/seafile-custom/deploy`，
+#    下面 codeload 兜底解出来的也是 deploy/ 。两条入口必须落到同一个位置，
+#    否则升级那条命令照抄就是 No such file or directory。
+mkdir -p /opt/seafile-custom/deploy && cd /opt/seafile-custom/deploy
 B=https://github.com/topiceyes/seafile-custom/releases/latest/download
 curl -fLO $B/seafile-prod.yml
 curl -fLO $B/env.prod.example
 curl -fLfo init-prod-env.sh $B/init-prod-env.sh && chmod +x init-prod-env.sh
 
 # ---- 4.2 配置：一条命令生成 .env（密钥自动生成，零提问）----
-./init-prod-env.sh                 # 什么都不用给，直接回车到底
+./init-prod-env.sh                 # 零交互，直接跑
 # 想提前定好就带参数（都可省略）：
 #   ./init-prod-env.sh --domain seafile.x.cn --admin-email a@x.cn --admin-password 'xxx'
 #
 # 脚本做三件事：生成全部密钥、只改该改的行（反代模式那两个开关原样保留，并会自检）、
-# 拒绝含单引号的值（单引号会破坏 .env 的 '值' 解析）。末尾直接打印后续命令。
+# 拒绝含单引号的值（单引号会破坏 .env 的 '值' 解析）。
+# 它还会把 .env 里那两个数据目录**直接建好**，并打印后续命令。
 
 # 管理员密码默认自动生成、只在终端显示这一次 —— 记得抄进密码管理器。
 
-mkdir -p /data/seafile /data/seafile-mysql
+# （没有 mkdir 那一步了：init-prod-env.sh 已经按 .env 里的路径建好数据目录）
 
 # ---- 4.3 起服务（就这一条命令，没有下一步）----
 docker compose pull                # 镜像包是 public，不需要 docker login
@@ -254,14 +268,29 @@ docker compose up -d               # db + memcached + seafile 一起起，按依
 **装完就完了。** 二开定制的追加已在镜像内完成（见 §4.2.2），生产上**没有**"再跑一个脚本"
 这一步；仓库里的 `init-conf.sh` 现在只剩 dev 用途，`--prod` 会直接报错退出。
 
-要点：资产 URL 走 `github.com` → `objects.githubusercontent.com`。万一那台机器不通，
-用 `codeload.github.com` + release 的 git tag 兜底（那是一棵钉死的树）：
+**资产 URL 的真实链路**（2026-09-21 实测，不是推断）：
+
+```
+…/releases/latest/download/<名>      302 →  …/releases/download/<tag>/<名>
+                                     302 →  release-assets.githubusercontent.com/…
+                                     200
+```
+
+也就是说要通两个域名：`github.com`（两次 302 都在这台上）+ `release-assets.githubusercontent.com`
+（真正吐字节的那台）。**这两个域名从没在生产服务器上验过**——本机实测 `github.com`
+直连超时（得走代理），而服务器代理机可能又是另一回事。
+
+所以下面这条 `codeload.github.com` 入口**不是「万一不通再说」的备选，而是并列的第二条路**：
+它已在服务器上实测可达（§2）。两条都给全，你按哪条走都能成，**不需要先试错**：
 
 ```bash
 curl -fL --max-time 120 \
   https://codeload.github.com/topiceyes/seafile-custom/tar.gz/refs/tags/<tag> \
   | tar -xz --strip-components=1 -C /opt/seafile-custom
 ```
+
+（<tag> 取 GitHub Releases 上最新那条，形如 `12.0.14-dingtalk.9.ed2042da`。这是一棵钉死的树，
+解出来就是 `deploy/`，与上面固定 URL 那条落到同一个位置。）
 
 `init-prod-env.sh` 会自检取回来的 `seafile-prod.yml` 是否完整（形状 + `docker compose
 config -q` 能整份解析），弄坏了会立刻报错而不是等 `pull` 时才炸。
@@ -491,9 +520,12 @@ docker exec seafile grep -iE "Forbidden|csrf" /shared/seafile/logs/seahub.log | 
    然后试一次**文件上传 + 下载**——这条过了就说明新地址完全生效了。
 1. **钉钉开发者后台**：回调域名改为 `https://<域名>/dingtalk/callback/`
 2. 管理员登录 → 系统管理 → 设置：核对钉钉开关与密钥（constance 默认值来自渲染的 seahub_settings.py）
-3. 验证清单：
-   - `curl -I http://<域名>/` → 301 https
-   - `curl -sI https://<域名>/` → 200；`openssl s_client` 确认证书签发者是 Let's Encrypt
+3. 验证清单（**按本项目的反代形态写的**；`LETSENCRYPT=true` 的自签形态另有几条，见括号）：
+   - `curl -sI https://<域名>/` → 200，证书链正常（**反代模式下签发者是你的云代理/证书服务，
+     不是 Let's Encrypt**——那台机器不跑 acme.sh）
+   - 容器 80 只被**代理**访问：`curl -sI http://<容器IP>/` 有响应即可，
+     **不要**期待浏览器访问 `http://<域名>/` 会 301 到 https——那次跳转是云代理做的，
+     不是容器做的（容器侧只在 `LETSENCRYPT=true` 时才渲染那条 `rewrite … permanent`）
    - 钉钉扫码登录（真实手机）
    - 桌面客户端 client-SSO（`https://<域名>`，正式证书无需手动信任）
    - 普通用户密码登录被拒（0008 生效）、管理员可登录
@@ -547,9 +579,12 @@ unreleased 的 tag、digest、构建输入指纹都在里面。数据卷全程�
 `gunzip | docker load` 之后直接 `docker compose up -d`（**不要** `pull`）即可，
 `.env` 一行都不用改。
 
-更新前先记下当前镜像的 digest（`docker inspect --format '{{index .RepoDigests 0}}' <镜像>`），
-回滚时就有确切落点。**首次生产更新后做一次回滚演练**：按上面的方式切回旧 tag →
-确认行为回到旧版本，再切回新版。数据卷全程不动。
+**首次生产更新后做一次回滚演练**：按上面的方式切回旧 tag → 确认行为回到旧版本，
+再切回新版。数据卷全程不动。
+
+（这里以前还有一句「更新前先记下当前镜像的 digest」——那是手工台账时代的习惯，
+现在每一版的 tag 与 digest 都记在 [GitHub Releases](https://github.com/topiceyes/seafile-custom/releases) 上，
+不需要你在服务器上抄任何东西。）
 
 > ⚠️ **一条通道 = 所有服务器共用一道闸门。** 冒烟测不出、但真坏了的版本（反代下登录 403
 > 那一类）会随下一次 `pull` 扩散到所有机器。最便宜的缓解：**先在一台 pull + 真浏览器走一遍
@@ -560,7 +595,18 @@ unreleased 的 tag、digest、构建输入指纹都在里面。数据卷全程�
 **升级 Seafile 版本**（如 12.0.14 → 12.1.x）时三处硬编码要同步：
 `deploy/image/Dockerfile` 的 BASE_IMAGE 与 INSTALLPATH、seahub 仓库基线（patches 重放）。官方镜像可能改 bootstrap 行为，升级前**必须重跑本地彩排**。
 
-## 7. 本地彩排（上线前预演，已验证流程）
+## 7. 本地彩排
+
+两个模式，**覆盖的东西不一样，别只跑一个**：
+
+| | §7.1 模式 A：容器自签 TLS | §7.2 模式 B：反代模式 |
+|---|---|---|
+| `SEAFILE_SERVER_LETSENCRYPT` | `true`（容器自己终止 TLS） | `false`（代理终止 TLS） |
+| 对应生产形态 | ❌ 不是本项目形态 | ✅ **就是本项目形态** |
+| 速度 | 快（arm64 本地产物） | 慢（要拉 amd64 通道 tag） |
+| 用途 | 改 nginx 模板 / settings 时的快速回归 | **上线前必跑** |
+
+### 7.1 模式 A：容器自签 TLS（快速回归，**不覆盖反代模式**）
 
 利用 `init_letsencrypt()` 的特性——证书有效期 >30 天就跳过签发只装续期 cron——在 Mac 上完整走一遍生产首启链路（唯一差异：证书是自签而非 LE）。
 
@@ -571,13 +617,14 @@ cd deploy
 ./build-image.sh --local
 
 # 2) 彩排环境配置（独立数据目录 + 独立项目名 + macOS db 覆盖）
-cp .env.prod.example .env.rehearsal
+cp env.prod.example .env.rehearsal
 vi .env.rehearsal     # ⚠️ SEAFILE_SERVER_LETSENCRYPT='true' —— 彩排必须显式设回 true！
                       #    模板默认是 false（反代模式，见 §9），那会让容器只监听 80、
                       #    不渲染 443 块，下面的自签证书就白做了。LE 模式才是
                       #    「证书有效期>30天则跳过签发」这条彩排技巧成立的前提。
                       # SEAFILE_DOMAIN=<生产规划域名>（仅本机解析，curl 用 --resolve 即可不改 /etc/hosts）
-                      # SEAFILE_PRO_IMAGE=seafile-mc-devbuild:<tag>
+                      # SEAFILE_PRO_IMAGE=seafile-mc-devbuild:<tag>（本地产物；要走已发布的
+                      #    amd64 通道 tag 就别设这一行，见 §7.2）
                       # SEAFILE_VOLUME=./rehearsal-data
                       # SEAFILE_MYSQL_VOLUME=./rehearsal-mysql（数据卷改相对路径）
                       # COMPOSE_FILE='seafile-prod.yml:rehearsal-db-override.yml'   ⚠️ mac 必加
@@ -601,15 +648,13 @@ grep -A2 '二开定制' rehearsal-data/seafile/conf/seahub_settings.py
 grep '^enabled' rehearsal-data/seafile/conf/seafdav.conf    # 期望 enabled = true
 ```
 
-> ⚠️ **彩排覆盖不到的：反代模式。** 彩排为了让自签证书生效，把
+> ⚠️ **§7.1 覆盖不到反代模式。** 这里为了让自签证书生效，把
 > `SEAFILE_SERVER_LETSENCRYPT` 设回了 `true`（容器自己终止 TLS），于是
 > `$scheme` 就是 https、`request.is_secure()` 天然为真。**生产的形态是
-> `https=false`（TLS 在云代理终止、容器只听 80），那条登录路径彩排里根本没跑过**——
+> `false`（TLS 在云代理终止、容器只听 80），那条登录路径在 §7.1 里根本没跑过**——
 > 2026-09-21 的登录 403 就藏在这个缺口里（见 §9）。
 >
-> 所以彩排通过**不等于**登录能通。反代模式下必须另做一次验证：真浏览器访问
-> `https://<域名>/`，走一遍**表单登录**（钉钉扫码也走一次）。只 `curl` 到页面 200
-> 不够——CSRF 是提交表单那一刻才炸的。
+> 所以 **§7.1 通过 ≠ 生产能登录**。反代模式必须跑 **§7.2**——那不是可选项。
 
 彩排验证清单（docs/008/009 的功能都在这里验）：
 - [ ] `rehearsal-data/nginx/conf/seafile.nginx.conf` 是**模板渲染产物**且含 `X-Forwarded-Proto`
@@ -843,11 +888,11 @@ https」，需要**两个条件同时成立**：
 | **`compose pull` 会不会跳过本地已有的 tag** | ✅ 2026-09-21 本机实测（Compose 5.5.0），这条决定通道叫什么名字：给同一镜像打 `:stable` 与 `:latest` 两个 tag 各写一个 compose，**两个都被拉取**、都访问了 registry。源码依据是 `docker/compose` `pkg/compose/pull.go` 里 `shouldPullImage()` **switch 之上**的提前返回 `if service.PullPolicy == "" { return true, "", nil }`——没显式写 `pull_policy` 时，显式 `pull` 一律刷新，`isLatestTag()` 那个特例走不到。（**先得出过一个相反的错误结论，已推翻**，留档以免重犯：通道名选 `latest` 的真正理由不是「非 latest 会被跳过」，而是「万一将来有人加了 `pull_policy: missing`，`latest` 构造性免疫而 `stable` 会静默停更」。） |
 | **`imagetools create` 会不会改 digest** | ✅ 2026-09-21 本机 `--dry-run` 复验：不带 `--prefer-index=false` 时，单平台的 `image.manifest.v1+json` 被包成新的 `image.index.v1+json`，digest 随之改变；带上则逐字节拷贝、digest 保持为 `sha256:bfe7bfe2…`。所以通道搬运步骤里那条 `imagetools create` 必须带这个标志，且搬完要断言两个 tag 的 digest 相等（[010 §4](010-ci-release-pipeline.md)） |
 | **离线包带通道 tag** | ✅ 2026-09-21 本机真跑一次（693MB）：`manifest.json` 里 seafile 那条 `RepoTags` 同时列出不可变 tag 与 `:latest`，服务器 load 后 compose 直接命中本地镜像，`.env` 一行不用改 |
-| **通道搬运 + Release 全链路** | ✅ 2026-09-21 首跑（run 35590588040）：`imagetools create` 搬通道 → digest 断言通过 → Release 建出。**红在最后一步**——资产 `.env.prod.example` 被 GitHub 改写成 `default.env.prod.example`，固定 URL 取不到。见下 |
-| **守卫的补做路径** | ✅ 2026-09-21 修完重跑（run 35590876529）：守卫判出「发布不完整（Release 资产齐全=false）」→ `skip_build=true`，**全程 40 秒、无重建**，只补做搬运与发布，并删掉那个陈旧资产 |
-| **固定安装 URL** | ✅ 三个资产 `curl -fL …/releases/latest/download/<名>` 全部 200，且与仓库逐字节一致（`cmp` 通过）。`latest` 标记指向该 Release，非 draft、非 prerelease |
 | **通道搬运 + Release 全链路** | ✅ 2026-09-21 首跑（run 35590588040）：`imagetools create` 搬通道 → digest 断言通过 → Release 建出。**红在最后一步**：资产 `.env.prod.example` 被 GitHub 改写成 `default.env.prod.example`，固定 URL 取不到。已把模板改名 `env.prod.example` |
-| **守卫的补做路径** | ✅ 2026-09-21 修完重跑（run 35590876529）：守卫判出「发布不完整（Release 资产齐全=false）」→ 只补做搬运与发布，**40 秒、无重建**，并删掉那个陈旧资产 |
+| **守卫的补做路径** | ✅ 2026-09-21 修完重跑（run 35590876529）：守卫判出「发布不完整（资产齐全=false）」→ 只补做搬运与发布，**40 秒、无重建**，并删掉那个陈旧资产 |
+| **固定安装 URL** | ✅ 三个资产 `curl -fL …/releases/latest/download/<名>` 全部 200，且与仓库逐字节一致（`cmp` 通过）。`latest` 标记指向该 Release，非 draft、非 prerelease |
+| **资产 URL 的真实重定向目标** | ✅ 2026-09-21 实测链路：`…/releases/latest/download/<名>` →302→ `…/releases/download/<tag>/<名>` →302→ **`release-assets.githubusercontent.com/…`** →200。文档里早先写的 `objects.githubusercontent.com` 是错的，已统一 |
+| ⚠️ **资产会静默腐坏（2026-09-21 发现并修）** | ❌→✅ 三个资产不在 tag 哈希的输入里，所以**单独改它们不产生新 tag**；而 `paths:` 过滤不含它们、守卫第 ③ 条又只查「名字在不在」→ 判「发布完整」→ `mode=none` → **固定 URL 上那份永远是旧的**，新服务器装到「旧 compose + 新镜像」，全程全绿。**已修**：`paths:` 补三个资产，第 ③ 条改为**逐字节比对**（用 release asset API 的 `digest` 字段，实测与仓库 `sha256` 完全相同）。此后改资产 → `mode=publish` → 40 秒重传、**不重建** |
 | **新装入口（干净目录）** | ✅ 2026-09-21 复验：从固定 URL 取三个文件 → `./init-prod-env.sh --domain … --admin-email …` 生成密钥齐全的 `.env`（且**不含** `SEAFILE_PRO_IMAGE`）→ `docker compose config` 三行镜像全部解析。仅未真起容器（那一步在服务器上） |
 | ⚠️ **开发机直连 `github.com` 会超时** | 2026-09-21 实测：`codeload.github.com` 可直连，但 `github.com`（release 资产入口）直连 000/超时，走 `HTTPS_PROXY=127.0.0.1:8118` 才通。**服务器上必须单独验**，见 §2 那条⚠️——这是安装入口唯一的未验证假设 |
 | **空转不动通道** | ⚠️ **当时是假绿**，见下一行。2026-09-21（run 35592557433）：修好后复验——只改文档的 push 撞上「tag 已存在且发布完整」→ 守卫判 `mode=none`，**构建与冒烟都 skipped**、通道未动，运行结论为**成功**（不是失败——空转报红会天天给管理员发误报邮件） |

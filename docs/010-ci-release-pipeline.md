@@ -234,14 +234,15 @@ cd deploy && ./export-patches.sh
 **安装（一台新机器，一辈子只做一次）** —— 从 Release 资产取，固定 URL：
 
 ```bash
-mkdir -p /opt/seafile-custom && cd /opt/seafile-custom
+# 目录必须是 deploy/ —— 升级与回滚（§6）都写 `cd /opt/seafile-custom/deploy`
+mkdir -p /opt/seafile-custom/deploy && cd /opt/seafile-custom/deploy
 B=https://github.com/topiceyes/seafile-custom/releases/latest/download
 curl -fLO $B/seafile-prod.yml
 curl -fLO $B/env.prod.example
 curl -fLfo init-prod-env.sh $B/init-prod-env.sh && chmod +x init-prod-env.sh
 
 ./init-prod-env.sh          # 只做一件事：生成密钥、写 .env。此后 .env 是操作员的文件
-mkdir -p /data/seafile /data/seafile-mysql
+                            # （数据目录也由它按 .env 里的路径建好，不用手动 mkdir）
 docker compose pull && docker compose up -d     # 镜像包是 public，不需要 docker login
 ```
 
@@ -256,8 +257,9 @@ docker compose pull && docker compose up -d
 
 几个容易踩的点：
 
-- Release 资产 URL 走 `github.com` → `objects.githubusercontent.com`；万一那台机器
-  不通，用 `codeload.github.com` + release 的 git tag 兜底（是一棵钉死的树）：
+- Release 资产 URL 走 `github.com`（两次 302）→ `release-assets.githubusercontent.com`
+  （2026-09-21 实测，早先写的 `objects.githubusercontent.com` 是错的）。
+  另一条并列入口是 `codeload.github.com` + release 的 git tag，它已在服务器实测可达：
   `curl -fL https://codeload.github.com/topiceyes/seafile-custom/tar.gz/refs/tags/<tag> | tar -xz --strip-components=1 -C /opt/seafile-custom`
 - 这套命令**不需要任何凭据**（仓库与镜像包都是 public）。曾经需要一个 classic PAT
   （`repo` + `read:packages`），2026-09-20 转 public 后取消——详见 §2 的说明

@@ -76,13 +76,14 @@ services:
     container_name: seafile
     restart: unless-stopped
     ports:
-      # 两种模式都需要 80：
+      # 两种模式都只需要 80：
       #   LETSENCRYPT=true  → LE webroot 验证 + http→https 跳转，必须公网可达
       #   LETSENCRYPT=false → 上游反向代理把明文 HTTP 转发到这里（本项目形态）
       - "80:80"
-      # 仅 LETSENCRYPT=true 时容器内才有 443 server 块。反代模式下容器根本不监听 443，
-      # 这条留着只为本机直连排查；确认不用就可以整行删掉。
-      - "443:443"
+      # ⚠️ 这里【故意没有】443。反代模式下容器根本不监听 443（模板只渲染 `listen 80`），
+      #    映射它纯属冗余；而这台机器上往往还跑着别的东西，一旦对方占了 443，
+      #    `docker compose up -d` 会在**新装那一刻**直接失败——属于「装完才发现」。
+      #    LETSENCRYPT=true 的人（容器自己终止 TLS）自行加回 `- "443:443"`。
     volumes:
       # 唯一的挂载：数据卷。备份脚本与 cron 已烘进镜像（见 image/Dockerfile 第 7 项），
       # 所以本文件不含任何宿主机相对路径 —— 放哪个目录都能起，服务器上只需

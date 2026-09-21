@@ -182,8 +182,25 @@ else
 fi
 echo "ℹ️  钉钉凭据留空 —— 装完在「系统管理 → 设置」页填即可，免重启（docs/002）"
 echo
+# ---- 数据目录直接建好，不让人照抄 ----
+# 这两个路径就在上面刚生成的 .env 里。以前是打印一行 `mkdir -p …` 让人自己抄——
+# 那等于把「手工操作」塞回安装路径里，而消灭这种东西正是本脚本存在的理由。
+# 失败只警告不中断：非 root 且路径落在 / 下时会失败，那属于用户环境，不该拦。
+for v in SEAFILE_VOLUME SEAFILE_MYSQL_VOLUME; do
+  d=$(grep -oE "^${v}='[^']*'" "$TARGET" | cut -d"'" -f2)
+  [ -n "$d" ] || continue
+  if mkdir -p "$d" 2>/dev/null; then
+    echo "✅ 数据目录就绪：$d"
+  else
+    # ⚠️ 这里必须是 ${d} 而不是 $d：紧跟其后的是全角括号，bash 在 UTF-8 locale 下
+    # 会把它的字节当成变量名的一部分，于是报 "d（: unbound variable"。全角字符
+    # 紧跟在变量后面时一律加花括号。
+    echo "⚠️  建不了 ${d}（多半是权限）——自行 mkdir -p 后重跑，"
+    echo "     或改 $TARGET 里的 ${v} 指向你有权限的路径"
+  fi
+done
+echo
 echo "下一步（照抄）："
-echo "  mkdir -p /data/seafile /data/seafile-mysql"
 echo "  docker compose pull"
 echo "  docker compose up -d           # 一条命令起全部；db 的 healthcheck 会自动排好顺序"
 echo "                                 # 二开定制的追加由镜像内自动完成，没有下一步了"
