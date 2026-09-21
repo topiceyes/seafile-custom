@@ -131,8 +131,15 @@ jobs:
               exit 1 ;;
           esac
 
-          if ! docker buildx imagetools inspect "$DST" | grep -q 'linux/amd64'; then
+          # ⚠️ 必须先把输出收进变量再 grep，不能写成 `inspect | grep -q`：
+          # grep -q 命中即退出 → 关闭管道 → inspect 收到 SIGPIPE 而非零退出 →
+          # 在 `set -o pipefail` 下整条管道报失败，**即使匹配成功**。
+          # 这个坑的迷惑性在于失败信息是「索引里没有 linux/amd64」，
+          # 而索引里明明有（第一次跑就是这么误报的）。
+          INSPECT=$(docker buildx imagetools inspect "$DST")
+          if ! grep -q 'linux/amd64' <<<"$INSPECT"; then
             echo "::error::$DST 的索引里没有 linux/amd64"
+            echo "$INSPECT" | head -20
             exit 1
           fi
           echo "✅ 索引含 linux/amd64"
