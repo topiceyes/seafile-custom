@@ -1,0 +1,174 @@
+# 把生产依赖的两个基础设施镜像（MariaDB / memcached）镜像到 ghcr.io。
+#
+# ## 为什么需要这个
+#
+# 生产 compose 有三个镜像，分别来自【两个】仓库：
+#   seafile   → ghcr.io/topiceyes/seafile-mc   （本项目 CI 构建）
+#   mariadb   → docker.io/library/mariadb      （Docker Hub）
+#   memcached → docker.io/library/memcached    （Docker Hub）
+#
+# 2026-09-21 实测（国内网络、不带代理）：ghcr.io 匿名拉取完整可用，
+# registry-1.docker.io 直接超时。所以生产服务器上 `docker compose pull` 必然
+# 卡在 MariaDB/memcached 上——报错会指向 Docker Hub，而不是我们自己的镜像，
+# 很容易误判成「ghcr 挂了」。
+#
+# 镜像过来之后三个镜像同源，服务器侧就只剩一个能连通的目标，
+# 既不需要 docker login，也不需要每次更新都手工搬 693MB 离线包。
+#
+# ## 为什么不从开发机直接推
+#
+# 开发机存的 ghcr 凭据只有读权限（`docker push` 报
+# permission_denied: The token provided does not match expected scopes），
+# 而 CI 的 GITHUB_TOKEN 带 `packages: write`。所以这一步只能走 CI。
+#
+# ## 什么时候跑
+#
+# 手动（改完下面的镜像清单后跑一次即可）。push 触发只挂在【本文件自身】上——
+# 改清单 = 想重跑；其它提交不该动它。
+#   gh workflow run mirror-infra-images.yml
+#
+# 上游基础镜像更新（如 mariadb:10.11 被重推）时重跑一次刷新即可。
+#
+# 排障见 docs/010 §8。
+name: mirror-infra-images
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mirror-infra-images.yml'
+
+concurrency:
+  group: mirror-infra-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write          # 推 ghcr.io 需要
+
+env:
+  # 只镜像 amd64：生产是 amd64，runner 也是 amd64，全程 native。
+  # 不带多架构——那会把镜像索引顶起来，而没有任何消费方需要 arm64。
+  PLATFORM: linux/amd64
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false     # 一个失败不掩盖另一个的结果
+      matrix:
+        # 这里就是唯一的事实来源：两个 compose 文件都从 ghcr 引这些 tag，
+        # 改这里 = 改服务器实际用的版本。
+        image:
+          - docker.io/library/mariadb:10.11
+          - docker.io/library/memcached:1.6.29
+
+    steps:
+      # 共享 runner IP 上匿名拉 Docker Hub 容易撞限流（toomanyrequests）。
+      # 有凭据就用，没有就跳过——不因此让镜像失败（secrets 在 step 级 if 里不可用，
+      # 只能先放进 env 再判断，与 build-image.yml 同一套路）。
+      - name: 登 Docker Hub（配置了凭据才跑，规避匿名拉取限流）
+        if: env.DOCKERHUB_USERNAME != ''
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 镜像 ${{ matrix.image }}
+        id: m
+        env:
+          SRC: ${{ matrix.image }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+
+          # docker.io/library/mariadb:10.11 → mariadb / 10.11
+          NAME=${SRC##*/}
+          REPO=${NAME%%:*}
+          TAG=${NAME##*:}
+          DST="ghcr.io/${OWNER}/${REPO}:${TAG}"
+
+          echo "==> $SRC  →  $DST"
+          docker pull --platform "$PLATFORM" "$SRC"
+
+          # 把源 digest 记下来：这是「镜像内容确实一致」的唯一凭据。
+          # 注意这是【index digest】（tag 指向的多架构清单），推上去的会是
+          # 单平台清单，digest 必然不同——所以只作记录，不作比对。
+          SRC_DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' "$SRC" | cut -d@ -f2)
+
+          docker tag "$SRC" "$DST"
+          docker push "$DST"
+
+          DST_DIGEST=$(docker buildx imagetools inspect "$DST" --format '{{.Manifest.Digest}}')
+          ARCH=$(docker inspect --format '{{.Architecture}}/{{.Os}}' "$DST")
+
+          {
+            echo "| \`$DST\` | \`$ARCH\` | \`$DST_DIGEST\` | \`$SRC_DIGEST\` |"
+          } >> /tmp/mirror-rows.md
+
+          {
+            echo "dst_digest=$DST_DIGEST"
+            echo "dst=$DST"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "✅ $DST"
+          echo "   架构   : $ARCH"
+          echo "   目标   : $DST_DIGEST"
+          echo "   源     : $SRC_DIGEST"
+
+      # 尽力而为：新包默认可能是 private，而匿名拉不到就等于这次镜像白做。
+      # 这个 PATCH 对【用户所有】的包不保证被 GITHUB_TOKEN 接受，所以
+      # continue-on-error——成不成都由下一步的汇总给出人工兜底路径。
+      - name: 尝试把包设为 public（尽力而为）
+        continue-on-error: true
+        env:
+          SRC: ${{ matrix.image }}
+          OWNER: ${{ github.repository_owner }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO=$(basename "${SRC%%:*}")
+          echo "尝试 PATCH /user/packages/container/$REPO → public"
+          curl -sS -X PATCH \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/user/packages/container/$REPO" \
+            -d '{"visibility":"public"}' | head -c 400
+          echo
+
+      - name: 汇总
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "## 基础设施镜像已镜像到 ghcr.io"
+            echo ""
+            echo "| 目标 | 架构 | 目标 digest | 上游 digest |"
+            echo "|---|---|---|---|"
+            [ -f /tmp/mirror-rows.md ] && cat /tmp/mirror-rows.md
+            echo ""
+            echo "服务器侧至此三个镜像全部来自 ghcr.io，无需 Docker Hub、无需 docker login。"
+            echo ""
+            echo "### ⚠️ 首次镜像后要确认包是 public"
+            echo ""
+            echo "仓库 public **不等于** 镜像包 public，两者是分开的。新包默认可能是私有，"
+            echo "匿名拉取会 404。逐个确认（应显示 Public）："
+            echo ""
+            echo "- https://github.com/users/${{ github.repository_owner }}/packages/container/mariadb/settings"
+            echo "- https://github.com/users/${{ github.repository_owner }}/packages/container/memcached/settings"
+            echo ""
+            echo "验证（不带任何凭据能拉到 manifest 才算真的 public）："
+            echo '```'
+            echo "docker pull --platform linux/amd64 ghcr.io/${{ github.repository_owner }}/mariadb:10.11"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
