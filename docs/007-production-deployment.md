@@ -823,5 +823,8 @@ https」，需要**两个条件同时成立**：
 | **`compose pull` 会不会跳过本地已有的 tag** | ✅ 2026-09-21 本机实测（Compose 5.5.0），这条决定通道叫什么名字：给同一镜像打 `:stable` 与 `:latest` 两个 tag 各写一个 compose，**两个都被拉取**、都访问了 registry。源码依据是 `docker/compose` `pkg/compose/pull.go` 里 `shouldPullImage()` **switch 之上**的提前返回 `if service.PullPolicy == "" { return true, "", nil }`——没显式写 `pull_policy` 时，显式 `pull` 一律刷新，`isLatestTag()` 那个特例走不到。（**先得出过一个相反的错误结论，已推翻**，留档以免重犯：通道名选 `latest` 的真正理由不是「非 latest 会被跳过」，而是「万一将来有人加了 `pull_policy: missing`，`latest` 构造性免疫而 `stable` 会静默停更」。） |
 | **`imagetools create` 会不会改 digest** | ✅ 2026-09-21 本机 `--dry-run` 复验：不带 `--prefer-index=false` 时，单平台的 `image.manifest.v1+json` 被包成新的 `image.index.v1+json`，digest 随之改变；带上则逐字节拷贝、digest 保持为 `sha256:bfe7bfe2…`。所以通道搬运步骤里那条 `imagetools create` 必须带这个标志，且搬完要断言两个 tag 的 digest 相等（[010 §4](010-ci-release-pipeline.md)） |
 | **离线包带通道 tag** | ✅ 2026-09-21 本机真跑一次（693MB）：`manifest.json` 里 seafile 那条 `RepoTags` 同时列出不可变 tag 与 `:latest`，服务器 load 后 compose 直接命中本地镜像，`.env` 一行不用改 |
+| **通道搬运 + Release 全链路** | ✅ 2026-09-21 首跑（run 35590588040）：`imagetools create` 搬通道 → digest 断言通过 → Release 建出。**红在最后一步**——资产 `.env.prod.example` 被 GitHub 改写成 `default.env.prod.example`，固定 URL 取不到。见下 |
+| **守卫的补做路径** | ✅ 2026-09-21 修完重跑（run 35590876529）：守卫判出「发布不完整（Release 资产齐全=false）」→ `skip_build=true`，**全程 40 秒、无重建**，只补做搬运与发布，并删掉那个陈旧资产 |
+| **固定安装 URL** | ✅ 三个资产 `curl -fL …/releases/latest/download/<名>` 全部 200，且与仓库逐字节一致（`cmp` 通过）。`latest` 标记指向该 Release，非 draft、非 prerelease |
 
 **生产首次上线后回填**：LE 签发耗时、扫码登录、client-SSO、首次备份、服务器 ghcr 拉取实测耗时。

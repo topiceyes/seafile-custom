@@ -331,19 +331,34 @@ jobs:
           # PATCHES 在上游那一步是 shell 局部变量，传不过来；这里重算一次
           PATCHES=$(ls patches/*.patch | wc -l | tr -d ' ')
 
-          PREV=$(gh release list --limit 1 --exclude-drafts --json tagName --jq '.[0].tagName' 2>/dev/null || true)
-          if [ -n "$PREV" ] && git rev-parse -q --verify "refs/tags/$PREV" >/dev/null; then
+          # 上一个【别的】版本的 tag。必须排掉本 tag 自己：补做发布时 Release 已经
+          # 存在，直接取 list 的第一条会拿到自己，于是 diff 成空、正文写着
+          # 「构建输入变更（自 <本 tag>）」——2026-09-21 那条记录就是这么来的。
+          PREV=$(gh release list --limit 20 --exclude-drafts --json tagName --jq '.[].tagName' 2>/dev/null \
+                   | grep -vx "$TAG" | head -1 || true)
+
+          if [ -z "$PREV" ]; then
+            CHANGES="（首次发布，无对比基线）"
+          elif git rev-parse -q --verify "refs/tags/$PREV" >/dev/null 2>&1; then
             CHANGES=$(git log --no-decorate --oneline "$PREV..$GITHUB_SHA" -- \
                         patches deploy/image deploy/build-image.sh)
+            [ -n "$CHANGES" ] || CHANGES="（构建输入无变化——内容寻址的 tag 本不该重现，这多半是同 tag 的补做发布）"
           else
-            PREV=""; CHANGES="（首次发布，无对比基线）"
+            CHANGES="（上一个版本 $PREV 的 git tag 不在本地——浅克隆？改 fetch-depth）"
           fi
 
           # 部署文件（compose）改动是**唯一**还需要已装服务器重取文件的场景 —— 必须让人看见。
           # 服务器不再取任何文件是设计使然，代价就是 compose 改动不会自己传播。
+          #
+          # ⚠️ 这一条对「同 tag 的补做发布」也成立且必要：补做时 Release 上挂着的资产
+          # 可能来自更早的提交（首跑就是 d7772c3 的文件，而本跑是 4456893 的）。
+          # 拿它跟自己比，能如实反映「服务器手上那份是不是最新的」。
           NEED_REFETCH=""
           if [ -n "$PREV" ] && gh release download "$PREV" -p seafile-prod.yml -O /tmp/prev-compose.yml 2>/dev/null; then
             cmp -s /tmp/prev-compose.yml deploy/seafile-prod.yml || NEED_REFETCH=yes
+          elif [ -n "$PREV" ]; then
+            # 老 Release 没有这个资产（或下载失败）：无从对比，宁可提示也不静默放过
+            NEED_REFETCH=unknown
           fi
 
           {
@@ -353,10 +368,17 @@ jobs:
               echo "> ⚠️ **本版改了部署文件（\`seafile-prod.yml\`）——已装好的服务器需要重取一次**:"
               echo ">"
               echo "> \`\`\`"
+              echo "> cd /opt/seafile-custom/deploy"
               echo "> curl -fL -o seafile-prod.yml https://github.com/$GITHUB_REPOSITORY/releases/latest/download/seafile-prod.yml"
+              echo "> docker compose config | grep image:     # 先只解析，确认文件是完整的"
+              echo "> docker compose pull && docker compose up -d"
               echo "> \`\`\`"
               echo ">"
               echo "> 这是服务器侧**唯一**还需要取文件的场景。平时升级什么都不用取。"
+              echo ""
+            elif [ "$NEED_REFETCH" = "unknown" ]; then
+              echo "> ℹ️ **无法自动比对部署文件**（上一个 Release \`$PREV\` 上没有 \`seafile-prod.yml\` 资产）。"
+              echo "> 若你的服务器是在通道 tag 模型之前装的，升级前请按 [docs/007 §6](https://github.com/$GITHUB_REPOSITORY/blob/main/docs/007-production-deployment.md) 重取一次部署文件。"
               echo ""
             fi
             echo "| 项 | 值 |"
