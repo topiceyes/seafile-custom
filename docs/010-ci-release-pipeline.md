@@ -323,6 +323,7 @@ docker login registry.cn-hangzhou.aliyuncs.com
 
 | 日期 | tag | 补丁数 | 源码树 | 镜像 digest | 备注 |
 |---|---|---|---|---|---|
+| 2026-09-21 | `12.0.14-dingtalk.9.ed2042da` | 9 | `446fe9ea…c38e393f` | `sha256:bfe7bfe2…e054a7e8` | **内容与上一行逐字节等价**（三层指纹 937/269/305 全同）。换 tag 只因 `build-image.sh` 自身是构建输入：改它修「`__pycache__` 影响 tag 哈希」。**生产 pin 仍指上一行**，无需改动。run 35586728069，6m12s |
 | 2026-09-21 | `12.0.14-dingtalk.9.1464e1b4` | 9 | `446fe9ea…c38e393f` | `sha256:e54f6234…9f89ac85` | **当前生产用**（`deploy/seafile-prod.yml` 的 `image:` 钉的就是它）。**修反代模式登录 403**：补 `SECURE_PROXY_SSL_HEADER`（Django 不认 `X-Forwarded-Proto`）+ `custom_bootstrap` 幂等改逐项核对（[docs/007 §9](007-production-deployment.md)）。run 35584259460，5m50s |
 | 2026-09-21 | `12.0.14-dingtalk.9.e3c4174f` | 9 | `446fe9ea…c38e393f` | `sha256:5cf3abfd…0f2fb9d7` | 启动链路加固：seahub 启动失败重试 + 保活循环跟着死（[docs/007 §4.2.3](007-production-deployment.md)）。run 35574442997，6m27s |
 | 2026-09-21 | `12.0.14-dingtalk.9.b7a741d8` | 9 | `446fe9ea…c38e393f` | `sha256:aa906c16…467b6e0a4` | 二开定制搬进镜像：`init-conf.sh --prod` 整个删除，部署不再有「再跑一个脚本」这一步。run 35573252750，5m38s |
