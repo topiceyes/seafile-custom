@@ -124,13 +124,32 @@ rm -f /etc/nginx/sites-enabled/seafile.nginx.conf
 # 光检查文件存在不够——所以下面在一个假配置目录上真跑一遍，验实际行为。
 test -f /scripts/custom_bootstrap.py || fail "缺 /scripts/custom_bootstrap.py"
 test -x /scripts/custom_bootstrap.py || fail "/scripts/custom_bootstrap.py 不可执行"
-grep -q '^from custom_bootstrap import init_custom_settings$' /scripts/start.py \
-  || fail "start.py 缺 custom_bootstrap 的 import（Dockerfile 的 sed 没生效？）"
+grep -q '^from custom_bootstrap import init_custom_settings, start_service_retry$' /scripts/start.py \
+  || fail "start.py 缺 custom_bootstrap 的 import（patch-upstream.py 没生效？）"
 # 调用点必须在 init_seafile_server() 之后、seafile.sh 启动之前——顺序错了就白搭：
 # 早了会被 setup 的 open('w') 覆盖，晚了 seahub 已经起来、settings.py 改不生效。
 awk '/^    init_seafile_server\(\)$/ {s=NR} /^    init_custom_settings\(\)$/ {c=NR} END {exit !(s && c && c == s+1)}' \
   /scripts/start.py \
   || fail "start.py 里 init_custom_settings() 没有紧跟 init_seafile_server()（顺序不对）"
+
+# 起 seahub 必须走带重试的那条路。上游 seahub.sh 是「硬编码 sleep 5 再 pgrep 一次」
+# 判定成败，而 gunicorn 带 --preload 要先导入整个 Django 应用，机器一忙就误判失败
+# （2026-09-21 彩排实测撞到过）。改回裸 call( 就等于把这个坑放回去。
+grep -q "start_service_retry('{} start'.format(get_script('seahub.sh')))" /scripts/start.py \
+  || fail "start.py 起 seahub 没走 start_service_retry（重试补丁没生效？）"
+if grep -q "call('{} start'.format(get_script('seahub.sh')))" /scripts/start.py; then
+  fail "start.py 里还剩裸 call() 起 seahub（重试补丁只打了一半）"
+fi
+
+# enterpoint.sh 必须跟着 start.py 一起死。
+# 不这么做的话，start.py 因任何原因退出都会留下「docker ps 显示 Up、网站是死的」
+# 容器，restart 策略也救不了（容器没退出）—— 这是本项目一直在消灭的静默失败。
+grep -q '^SERVER_PID=\$!$' /scripts/enterpoint.sh \
+  || fail "enterpoint.sh 没记下 start.py 的 PID（补丁没生效？）"
+grep -q 'kill -0 "\$SERVER_PID"' /scripts/enterpoint.sh \
+  || fail "enterpoint.sh 没在保活循环里检查 start.py 是否还活着"
+grep -q 'exit 1' /scripts/enterpoint.sh \
+  || fail "enterpoint.sh 检测到 start.py 死了却没有退出容器"
 
 # 在真路径上放一份假的 setup 产物，跑钩子，验它写对了、且第二遍幂等
 mkdir -p /opt/seafile/conf

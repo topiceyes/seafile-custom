@@ -302,18 +302,16 @@ start.py: main()
 > 一路上在消灭的其它静默失败（换目录挂载落空、`from seahub.settings import` 静默过期）
 > 是同一个模式。
 
-**代价**：动了一个上游文件 `start.py`（插一行调用）。这是升级 Seafile 时的漂移点之一，
-Dockerfile 头部列了完整清单。鉴于本项目已冻结在 12.0.14（不再跟随上游），这个代价可以接受；
-即便如此，断言仍然保留——它防的不再是上游漂移，而是**我自己的编辑静默失效**。
+**代价**：动了上游的启动脚本（`start.py` 与 `enterpoint.sh`，共三处；清单与理由见 §4.2.3）。
+这是升级 Seafile 时的漂移点，Dockerfile 头部列了完整清单。鉴于本项目已冻结在 12.0.14
+（不再跟随上游），这个代价可以接受；即便如此，断言仍然保留——它防的不再是上游漂移，
+而是**我自己的编辑静默失效**。
 
 > **（被否决的替代方案）** 不改 `start.py`，改为让二开代码从环境变量 / constance 读这三项。
 > 否决理由：`CLIENT_SSO_VIA_LOCAL_BROWSER` 在 `urls.py` 导入期决定路由注册、
 > `ENABLE_DELETE_ACCOUNT` 在 `profile/views.py` 模块级绑定——这两处本来就必须在**模块导入期**
 > 拿到值，改成运行时读只是把"写文件"换成"改二开代码去读别处"，并没有消灭那个约束，
 > 反而把配置来源从一处变成两处。
-
-**为什么这三项非得写文件、不能像 `SERVICE_URL` 那样走 constance**：判据是**调用点的绑定方式**，
-不是「重不重要」。清单（改一处要对照一处）：
 
 **为什么这三项非得写文件、不能像 `SERVICE_URL` 那样走 constance**：判据是**调用点的绑定方式**，
 不是「重不重要」。清单（改一处要对照一处）：
@@ -336,9 +334,73 @@ Dockerfile 头部列了完整清单。鉴于本项目已冻结在 12.0.14（不�
 4. `custom_bootstrap.py` 追加二开定制（SSO / 钉钉默认开关 / 账号管控）+ 开 WebDAV（见 §4.2.2）
 5. 起 seafile/seahub/seafdav
 
+### 4.2.3 对上游启动脚本的三处改动（`deploy/image/patch-upstream.py`）
+
+二开本身只动 `seahub/`，但**启动链路**上有三处非改不可。三处全部由 `patch-upstream.py` 在
+构建期打入，每处都带前后断言（匹配不上 → 构建失败）。脚本跑完即删，不进最终镜像。
+
+| # | 文件 | 改了什么 | 不改会怎样 |
+|---|---|---|---|
+| 1 | `start.py` | 插入 `custom_bootstrap` 的 import 与 `init_custom_settings()` 调用 | 二开定制不生效（见 §4.2.2） |
+| 2 | `start.py` | 起 seahub 的 `call(...)` → `start_service_retry(...)` | 忙时误判启动失败，容器反复重启 |
+| 3 | `enterpoint.sh` | 记下 `start.py` 的 PID；它死掉时容器跟着退出 | **容器永远 `Up`、网站却是死的** |
+
+**为什么用脚本而不是 Dockerfile 里堆 `sed`**：`sed` 的失败方式是静默的——正则没匹配上时它
+**成功返回**，改动没进去而构建照样绿。这里统一要求「改前匹配恰好 N 处、改后确实生效」，
+任一不满足就 `exit 1`。
+
+#### 第 2 处：`seahub.sh` 的 5 秒误判
+
+上游 `seahub.sh` 判定 seahub 起没起来的方式是硬编码 `sleep 5` 再 `pgrep` 一次：
+
+```bash
+$PYTHON $gunicorn_exe seahub.wsgi:application -c "${gunicorn_conf}" --preload &
+sleep 5
+if ! pgrep -f "seahub.wsgi:application"; then ... exit 1; fi
+```
+
+`--preload` 要求 gunicorn master 先把整个 Django 应用导入完才 fork。机器一忙就可能超过 5 秒
+→ **误判成失败** → `start.py` 退出。2026-09-21 本地彩排实测撞到过一次：日志报
+`Seahub failed to start`，而手工再跑一次 `seahub.sh start` 立刻就好。
+
+重试是对症的：它不关心失败原因，在上层重来一次即可。`utils.call()` 默认走
+`subprocess.check_call`，失败抛 `CalledProcessError`，所以重试**真的会被触发**，不是装饰性的。
+默认 3 次、间隔 5 秒。
+
+> **为什么不直接改 `seahub.sh`**：那个 5 秒是上游对「启动快慢」的假设，改成轮询等待要重写它的
+> 判定逻辑；而我们需要的只是「失败就再来一次」。改 `start.py` 的调用点，改动面小得多。
+
+#### 第 3 处：保活循环为什么必须跟着死（本次最要紧的一条）
+
+上游 `enterpoint.sh` 的保活循环：
+
+```bash
+/scripts/start.py &
+...
+while [ 1 ]; do sleep 60 & wait $!; done
+```
+
+只要这个循环还在，容器就一直是 `Up`。于是**任何**导致 `start.py` 退出的原因（setup 失败、
+MySQL 等不到、seahub 起不来、LE 签发失败）都会留下一个「`docker ps` 显示 `Up`、网站却是死的」
+容器——而且 `restart: unless-stopped` **救不了它，因为容器根本没有退出**。
+
+这是最坏的一类静默失败：它骗过所有常规检查（进程在、容器在、端口在监听），只有真去访问站点
+才会发现。修法是让保活循环检查 `start.py` 是否还活着，死了就 `exit 1` → 容器退出 →
+重启策略接管 → 失败可见、可自愈。
+
+**检测延迟最长 60 秒**（受 `sleep 60 & wait $!` 的粒度限制），可接受——重启策略本来就不是秒级的。
+改完之后容器多了一种「反复重启」的表现，那是**好**现象：它把静默失败换成了可见失败。
+
+> `SERVER_PID=$!` 放在 `if/else` **之后**：两个分支（cluster server / 普通）都以后台方式启动，
+> 所以 `$!` 在两种情况下都指向它。位置若放错（比如塞进某个分支里），`kill -0 ""` 恒失败，
+> 容器会一启动就退出、陷入无限重启。`smoke-test.sh` 第 6 项对 `SERVER_PID=$!` 独占一行有断言，
+> 就是为了拦住这类改法。
+
 ### ⚠️ 首启常见失败与处置
 
-**1. LE 首签失败**（签发失败会 `RuntimeError` 杀死启动脚本，但容器**看起来还是 running**——保活循环还在）。症状：网站无响应、`docker logs` 停在 letsencrypt 相关错误。排查：
+**1. LE 首签失败**（签发失败会 `RuntimeError` 杀死启动脚本，容器随之退出并进入重启循环——
+这是 2026-09-21 保活补丁之后的行为，见 §4.2.3；补丁之前容器会一直显示 `Up` 而网站是死的）。
+症状：容器反复重启、`docker logs` 停在 letsencrypt 相关错误。排查：
 - `dig +short <域名>` 是否解析到本机
 - 80 端口公网可达性（见前置检查）
 - `/shared/ssl/letsencrypt.log`（容器内路径）
@@ -556,8 +618,12 @@ if os.environ.get('SEAFILE_SERVER_PROTOCOL') == 'https':
 | 两个 healthcheck 参数缺一不可 | ✅ `--connect` 单独用会在初始化期间就返回成功；必须配 `--innodb_initialized` |
 | `docker compose up -d` 一条命令 | ✅ 由 `condition: service_healthy` 保证顺序；**「先起 db、等 30s、再起 seafile」那段人工步骤删除** |
 | `init-conf.sh --prod` 一条命令 | ✅（**该步骤已于 2026-09-21 整个删除**，见下条）空跑/写入/幂等三种路径都验过：等待逻辑、写入结果、`ast.parse` 确认追加后仍是合法 python、容器内 `seafile.sh`+`seahub.sh` restart 及重启后自检（实测重启后 gunicorn 与 nginx 均恢复 302） |
-| 二开定制改为镜像内自动追加（`--prod` 删除） | ✅ `custom_bootstrap.py` 的五条路径全验：写入、幂等（第二遍不重复追加）、已存旧标记时不追加第二块、钉钉凭据走环境变量、`seahub_settings.py` 缺失时明确报错退出。`start.py` 的 `sed` 在 GNU sed 4.9 下实测正确（**用 BSD sed 测会假失败**——`-i` 在 BSD 上吃参数，别在 macOS 上验这条） |
-| `smoke-test.sh` 覆盖该钩子 | ✅ 新增第 6 项：断言接线顺序（`init_custom_settings()` 必须紧跟 `init_seafile_server()`）+ **在假配置目录上真跑一遍**验写入与幂等。**这不是可选项**——Dockerfile 的 `sed` 一旦失效，必须是构建失败 |
+| 二开定制改为镜像内自动追加（`--prod` 删除） | ✅ `custom_bootstrap.py` 的五条路径全验：写入、幂等（第二遍不重复追加）、已存旧标记时不追加第二块、钉钉凭据走环境变量、`seahub_settings.py` 缺失时明确报错退出 |
+| `smoke-test.sh` 覆盖该钩子 | ✅ 第 6 项：断言接线顺序（`init_custom_settings()` 必须紧跟 `init_seafile_server()`）+ **在假配置目录上真跑一遍**验写入与幂等。**这不是可选项**——打补丁那一步一旦失效，必须是构建失败 |
+| 上游脚本补丁改用 `patch-upstream.py`（2026-09-21） | ✅ 三处改动在基础镜像上实测全部命中：`start.py` 的 import 与调用点各 1 处、seahub 启动调用 root/non-root 各 1 处、`enterpoint.sh` 2 处。断言按「恰好 N 处」校验，**改前失配会直接让构建失败**（此前 `sed` 是静默成功）。已弃用 `sed` 路线，那条「BSD sed 会假失败」的注意事项随之作废 |
+| 保活补丁真的会让容器退出 | ✅ 行为实测（不只是 grep）：假 `start.py` 起来 2 秒后自杀 → `enterpoint.sh` 在下个检查点打印 `start.py exited unexpectedly...` 并 `exit 1`。**注意测法**：裸 `--entrypoint bash` 里没有 nginx，会先卡死在第 13–22 行的等 nginx 循环（表现为 `timeout` 杀掉、退出码 124，看着像补丁没生效），必须用一个假的 `ps` 让该循环放行 |
+| 重试真的会被触发 | ✅ `utils.call()` 默认 `subprocess.check_call`（`utils.py:53`），失败抛 `CalledProcessError`，`start_service_retry` 捕获后重试。前提成立，重试不是装饰性的 |
+| 第 6 项断言仍成立（补丁改动后重跑） | ✅ 在基础镜像上打完补丁、拷入 `custom_bootstrap.py`，抽出 `smoke-test.sh` 第 6 节单独跑（断言仍只有这一份来源，不是复制件）→ 全绿 |
 | 脚本报错路径 | ✅ 容器不存在 / 容器没在跑 / 环境文件缺失，三种都给明确提示而非堆栈 |
 
 > 顺带查出一个**潜伏 bug**：`init-conf.sh`、`init-prod-env.sh`、`smoke-test.sh` 里共 5 处

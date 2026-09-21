@@ -14,9 +14,11 @@
 #      custom_bootstrap.py 在启动时自动完成，不再需要首启后手工跑 init-conf.sh
 #
 # ⚠️ 被本 Dockerfile 动过的上游文件（升级 Seafile 时要逐个看）：
-#   · /scripts/start.py                  ← 第 8 项插入了一行调用（构建期有断言）
+#   · /scripts/start.py                  ← 第 8 项（插定制调用 + seahub 启动加重试）
+#   · /scripts/enterpoint.sh             ← 第 8 项（start.py 死掉时容器跟着退出）
 #   · /templates/seafile.nginx.conf.template ← 第 5 项整体替换
 #   · seahub_settings.py 的 SEAFILE_VERSION ← 第 4 项 sed（构建期有断言）
+# 前两个的改动全部集中在 image/patch-upstream.py，每处都带断言。
 #
 # 注意：路径写死 12.0.14（镜像内无 seafile-server-latest 软链，运行时才建）。
 # 升级 Seafile 版本 = 同步改 BASE_IMAGE、INSTALLPATH 和 seahub 基线（见 docs/007）。
@@ -70,19 +72,19 @@ RUN chmod 0755 /usr/local/bin/seafile-backup.sh \
 #    而 seahub_settings.py 是导入期读的，改了要重启。所以在这里改完**直接生效**。
 #    （不想动上游脚本的替代方案与代价，见 docs/007 §4.2.2。）
 COPY image/custom_bootstrap.py /scripts/custom_bootstrap.py
+COPY image/patch-upstream.py /tmp/patch-upstream.py
 
+# 三处改动由 patch-upstream.py 打入（start.py ×2、enterpoint.sh ×1），
+# **每一处都带前后断言**。改完立刻删掉脚本，它只服务于构建期。
+#
+# 补丁脚本的头部注释写了每处改动「改了什么、为什么」；这里不重复。
 RUN set -eux; \
-    grep -q '^from bootstrap import ' /scripts/start.py; \
-    grep -q '^    init_seafile_server()$' /scripts/start.py; \
-    sed -i \
-      -e 's|^from bootstrap import |from custom_bootstrap import init_custom_settings\nfrom bootstrap import |' \
-      -e 's|^    init_seafile_server()$|    init_seafile_server()\n    init_custom_settings()|' \
-      /scripts/start.py; \
-    grep -q '^from custom_bootstrap import init_custom_settings$' /scripts/start.py; \
-    grep -q '^    init_custom_settings()$' /scripts/start.py; \
+    python3 /tmp/patch-upstream.py; \
+    rm -f /tmp/patch-upstream.py; \
     chmod 0755 /scripts/custom_bootstrap.py; \
     python3 -c 'import ast; ast.parse(open("/scripts/start.py").read())'; \
-    python3 -c 'import ast; ast.parse(open("/scripts/custom_bootstrap.py").read())'
+    python3 -c 'import ast; ast.parse(open("/scripts/custom_bootstrap.py").read())'; \
+    bash -n /scripts/enterpoint.sh
 
 # 2) 前端构建产物
 COPY --from=frontend /frontend/build ${INSTALLPATH}/seahub/frontend/build

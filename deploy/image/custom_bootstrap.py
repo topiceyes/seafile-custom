@@ -40,6 +40,7 @@ WebDAV 全部静默失效，页面照常打开。现在它在镜像里，每次�
 import os
 import re
 import sys
+import time
 
 # setup 写配置的目录。优先用 /opt/seafile/conf（upstream 的 central_config_dir，
 # create_data_links.sh 把它软链到 /shared/seafile/conf）；软链没建起来时退回真实路径。
@@ -138,6 +139,39 @@ def apply_webdav(confdir):
     with open(path, 'w', encoding='utf-8') as fp:
         fp.write(new)
     log('已开启 WebDAV（seafdav.conf enabled = true）')
+
+
+def start_service_retry(cmd, attempts=3, delay=5):
+    """起服务，失败就重试。替代 start.py 里起 seahub 的那个裸 `call(...)`。
+
+    上游 `seahub.sh` 判断 seahub 起没起来的方式是「硬编码 sleep 5，然后 pgrep 一次」：
+
+        $PYTHON $gunicorn_exe seahub.wsgi:application -c "${gunicorn_conf}" --preload &
+        sleep 5
+        if ! pgrep -f "seahub.wsgi:application"; then ... exit 1; fi
+
+    `--preload` 要先把整个 Django 应用在 master 里导入完才 fork，机器一忙就可能
+    超过 5 秒，于是**误判成失败**。2026-09-21 在容器重启时实测撞到过一次：
+    `Seahub failed to start`，而手工再跑一次 `seahub.sh start` 立刻就好。
+
+    重试是对症的——它不关心失败的原因，在上层重来一次即可。失败原因只在日志里
+    说明，不在这里解释。
+    """
+    from utils import call  # 放在函数内：本模块被 start.py 导入时 /scripts 在 sys.path 上
+
+    for i in range(1, attempts + 1):
+        try:
+            call(cmd)
+            if i > 1:
+                log('第 %d 次尝试起服务成功：%s' % (i, cmd))
+            return
+        except Exception as e:
+            if i >= attempts:
+                log('起服务连续失败 %d 次，放弃：%s' % (attempts, cmd))
+                raise
+            log('起服务失败（第 %d/%d 次）：%s —— %s；%d 秒后重试'
+                % (i, attempts, cmd, e, delay))
+            time.sleep(delay)
 
 
 def init_custom_settings():

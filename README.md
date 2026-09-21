@@ -23,6 +23,8 @@
 │   ├── rehearsal-db-override.yml  # 本地彩排的 macOS MariaDB 覆盖
 │   ├── image/                  # ⬇ 这里的东西全部烘进生产镜像（不是挂载）
 │   │   ├── Dockerfile              # 镜像定义
+│   │   ├── patch-upstream.py       # 构建期给上游启动脚本打的三处补丁（带断言，跑完即删）
+│   │   ├── custom_bootstrap.py     # 启动时追加二开定制（SSO/钉钉开关/账号管控 + WebDAV）
 │   │   ├── nginx/seafile.nginx.conf.template
 │   │   ├── backup.sh / backup.cron # 每日备份（三库 dump + 数据打包）
 │   │   └── dingtalk-sync.cron      # 离职员工同步（dev 从同一路径挂载）
