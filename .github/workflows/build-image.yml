@@ -157,12 +157,35 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 检查 tag 是否已存在
+        id: guard
         if: ${{ github.event.inputs.force != 'true' }}
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
           if docker buildx imagetools inspect "$IMAGE:$TAG" >/dev/null 2>&1; then
+
+            # 自动触发（push）撞上「tag 已存在」= 构建输入一字未改，本来就没什么要建的
+            # ——这是**正常结果，不是失败**。
+            #
+            # 之所以要在这儿分开处理：`paths` 过滤在「强推、before 不是 after 的祖先」时
+            # 判定不可靠（docs/010 §3，2026-09-20 实测两次表现相反），会让这种空转跑起来。
+            # 旧写法一律 `exit 1`，于是**每次空转都给仓库管理员发一封「构建失败」邮件**，
+            # 而实际什么都没坏——2026-09-20 那次就是这么误报的。守卫拦得对，报错报得不对。
+            if [ "${{ github.event_name }}" = "push" ]; then
+              {
+                echo "## 跳过构建：镜像已是最新"
+                echo ""
+                echo "\`$IMAGE:$TAG\` 已存在。tag 含构建输入哈希，同 tag 即同内容，"
+                echo "说明这次推送没有改动任何构建输入（\`patches/\`、\`deploy/image/\`、\`build-image.sh\`）。"
+                echo "无需重建，本次运行视为成功。"
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "::notice::$IMAGE:$TAG 已存在，自动触发无需构建，跳过（非失败）。"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            # 手动触发则相反：是人明确要求构建的，什么都不做必须让人看见 → 保持失败。
             echo "::error::$IMAGE:$TAG 已存在。tag 是内容寻址的（含构建输入哈希），所以同 tag 就"
             echo "::error::意味着同内容——这次构建不会产出任何新东西。多半是你的改动没触及任何"
             echo "::error::构建输入（例如只改了文档）。确认后无需重建。"
@@ -174,13 +197,14 @@ jobs:
       # Docker Hub 匿名拉取在共享 runner IP 上容易撞限流（toomanyrequests）。
       # 有凭据就用，没有就跳过——不因此让构建失败。
       - name: 登 Docker Hub（配置了凭据才跑，规避匿名拉取限流）
-        if: env.DOCKERHUB_USERNAME != ''
+        if: env.DOCKERHUB_USERNAME != '' && steps.guard.outputs.skip != 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: 构建并推送
+        if: steps.guard.outputs.skip != 'true'
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
@@ -199,6 +223,7 @@ jobs:
       # 断言本身在 deploy/smoke-test.sh —— 与开发机人工验证共用同一份，避免两处漂移
       # （这套断言曾因 workflow 与 docs 各存一份而写错了路径，见该脚本头部注释）。
       - name: 冒烟验证已推送的镜像
+        if: steps.guard.outputs.skip != 'true'
         run: |
           set -euo pipefail
           docker pull "$IMAGE:$TAG"
@@ -207,6 +232,7 @@ jobs:
             "$IMAGE:$TAG" /smoke.sh 2>&1 | tee /tmp/smoke.log
 
       - name: 记录 digest
+        if: steps.guard.outputs.skip != 'true'
         run: |
           set -euo pipefail
           DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$TAG")
