@@ -20,7 +20,9 @@
 │   ├── smoke-test.sh           # 镜像冒烟断言（CI 与人工验证共用的唯一一份）
 │   ├── rebuild-frontend.sh     # dev 前端构建（生产走镜像内构建）
 │   ├── sync-dingtalk-users.sh  # 手动触发离职同步
-│   ├── rehearsal-db-override.yml  # 本地彩排的 macOS MariaDB 覆盖
+│   ├── rehearsal-db-override.yml  # 本地彩排的 macOS MariaDB 覆盖（§7.1）
+│   ├── rehearsal-rp-override.yml  # 反代彩排覆盖：改容器名/端口 + 本地 TLS 代理（§7.2）
+│   ├── rehearsal-rp.sh            # 反代彩排（上线前必跑；断言的唯一事实来源）
 │   ├── image/                  # ⬇ 这里的东西全部烘进生产镜像（不是挂载）
 │   │   ├── Dockerfile              # 镜像定义
 │   │   ├── patch-upstream.py       # 构建期给上游启动脚本打的三处补丁（带断言，跑完即删）
@@ -93,7 +95,7 @@ cp .env.example .env          # 填入数据库密码、JWT 密钥等
 docker compose up -d
 ```
 
-**生产部署**（CI 构建镜像 → ghcr.io → 服务器拉取；TLS 由上游反向代理终止，见 [docs/007 §9](docs/007-production-deployment.md)）：完整流程见 [docs/007](docs/007-production-deployment.md)。上线前先跑本地彩排（docs/007 §7）。
+**生产部署**（CI 构建镜像 → ghcr.io → 服务器拉取；TLS 由上游反向代理终止，见 [docs/007 §9](docs/007-production-deployment.md)）：完整流程见 [docs/007](docs/007-production-deployment.md)。上线前先跑反代彩排（`deploy/rehearsal-rp.sh`，docs/007 §7.2）。
 
 部署**零提问**：`./init-prod-env.sh` 不带参数直接跑（密钥全自动生成，域名先用占位值当默认），
 装完在**系统管理 → 设置 → Site** 里填真域名和钉钉凭据——**都免重启生效**。

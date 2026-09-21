@@ -1,0 +1,114 @@
+# 反代模式彩排覆盖（docs/007 §7.2）——在【不停 dev 栈】的前提下把生产 compose 原样跑起来，
+# 再补一个「云反向代理」的角色。
+#
+# 用法（两个 -f 都要给、顺序不能反；后者覆盖前者）：
+#   docker compose -p seafile-rp -f seafile-prod.yml -f rehearsal-rp-override.yml up -d
+# 或者直接用脚本：./rehearsal-rp.sh
+#
+# 为什么需要它：seafile-prod.yml 是给【独占一台服务器】的部署文件，有三处在本机会撞上
+# 正在跑的 dev 栈。本文件【只改这三处 + 加一个代理服务】，其余一行不动 —— 目的是让彩排
+# 跑的就是生产那份文件本身，而不是它的复制品。改了生产 compose 就等于改了彩排。
+#
+# ⚠️ ports 是【追加合并】语义：直接写 `ports:` 会变成 80/443/18080 三条而不是替换。
+#    !override 才是替换（Compose 5.5.0 实测支持）。它【不是标准 YAML tag】，
+#    yamllint / python 的 yaml.safe_load 会因为未知 tag 报错 —— 别「顺手修掉」。
+# ⚠️ container_name 是绝对名，【不受 project 名（-p）影响】，所以必须逐个改，
+#    否则直接撞上 dev 栈的 seafile / seafile-mysql / seafile-memcached。
+
+services:
+  db:
+    container_name: seafile-rp-mysql
+
+  memcached:
+    container_name: seafile-rp-memcached
+
+  seafile:
+    container_name: seafile-rp
+    ports: !override
+      # 只留宿主 18080 → 容器 80（实测空闲，与 dev 的 80/443/8180 不冲突）。
+      # 443 那条本来就不该有：反代模式下容器根本不监听 443（模板 https=false 分支
+      # 只渲染 `listen 80`），生产 compose 里也已删掉。
+      # 绑 127.0.0.1 而不是 0.0.0.0：彩排不该在局域网上开个口子。
+      - "127.0.0.1:18080:80"
+
+  # ---- 本机扮演「云反向代理」：终止 TLS + 明文转发到 seafile 容器的 80 ----
+  # 存在的意义就是 §7.2 要验的那条链路：TLS 在【代理】侧终止，容器只收明文，
+  # 靠 X-Forwarded-Proto 让 Django 知道原始请求是 https。
+  proxy:
+    image: nginx:1.27-alpine
+    container_name: seafile-rp-proxy
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18443:443"
+    volumes:
+      # 复用 deploy/gen-ssl-cert.sh 的产物（它写 <数据卷>/ssl/<域名>.crt|key）。
+      # 反代模式下容器不看这个目录，证书纯粹归代理用 —— 这正是「证书在代理侧」的形态，
+      # 别把它挪回 seafile 服务上，那会变成 §7.1 那个自签模式。
+      - ${SEAFILE_VOLUME}/ssl:/etc/nginx/certs:ro
+    configs:
+      - source: rp_proxy_conf
+        target: /etc/nginx/conf.d/default.conf
+    depends_on:
+      - seafile        # seafile 没有 healthcheck，只能等「起来」；seahub 未就绪时代理先返 502
+    networks:
+      - seafile-net
+
+configs:
+  # 内联在这里，彩排就只有一个自足的文件，不用再散一个 .conf 出去（少一个会漂的副本）。
+  #
+  # ⚠️ compose 会对 configs.content 做变量插值：nginx 自己的 $host / $scheme 必须写成
+  #    $$host / $$scheme。实测写 $host 会被当成 compose 变量插成【空串】，
+  #    生成的配置直接坏掉而且【不报错】—— 这是本文件最容易踩的一个坑。
+  #    （${SEAFILE_DOMAIN} 那种是【要】被插值的，保持单 $。）
+  rp_proxy_conf:
+    content: |
+      # map 必须在 http 上下文、且在 server 之前（conf.d/*.conf 就是 http 上下文）
+      map $$http_upgrade $$connection_upgrade {
+          default upgrade;
+          ''      close;
+      }
+
+      server {
+          listen 443 ssl;
+          server_name ${SEAFILE_DOMAIN};
+
+          ssl_certificate     /etc/nginx/certs/${SEAFILE_DOMAIN}.crt;
+          ssl_certificate_key /etc/nginx/certs/${SEAFILE_DOMAIN}.key;
+
+          # 容器侧 location / 是 client_max_body_size 0（不限），真实代理默认 1m 会 413。
+          # 这里也设 0：彩排不该把「代理侧限制」这个真实风险掩盖掉，也不该假装测了它。
+          client_max_body_size 0;
+
+          location / {
+              # 走 compose 网络内的服务名，不经宿主端口 —— 与生产「代理直连本机 80」等价
+              proxy_pass http://seafile:80;
+
+              # ── 这就是 §9 那条修复的另一半：代理必须把真实协议传下去 ──
+              # 用 nginx 的 scheme 变量而不是硬编码 https：写法和真实代理配置一致，
+              # 而且能证明这个头是从 TLS 连接推导出来的，不是抄来的常量。
+              # （容器侧 nginx 在反代模式下【不能】用它 —— 那里恒为 http。
+              #   两侧恰成对照，见 docs/007 §9 与 smoke-test.sh 第 5 项。）
+              proxy_set_header X-Forwarded-Proto $$scheme;
+
+              # ⚠️ 必须用 nginx 的 host 变量（已剥端口），不能带上 :18443。
+              # 容器侧 nginx 是 proxy_set_header Host http_host，把这个值原样传给 Django，
+              # get_host() 就决定了 CSRF 的 good_origin / good_referer。
+              # 带上端口的话，浏览器发的 Origin: https://<域名> 就对不上 → 又变 403，
+              # 而那会是个【彩排自己造出来】的假故障。
+              #
+              # （上面这两段注释里写的是变量名而不是它的 $ 形式：configs.content 整块
+              #   都过 compose 的插值，注释里的裸 $ 一样会被吃掉并刷一排 warning。）
+              proxy_set_header Host $$host;
+              proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+              proxy_set_header X-Real-IP $$remote_addr;
+
+              # /seafhttp 是大文件上传下载的通道；容器侧给了 36000s，代理侧要跟上
+              proxy_read_timeout 36000s;
+              proxy_send_timeout 36000s;
+
+              # /notification 需要 WebSocket 透传，否则通知不实时
+              proxy_http_version 1.1;
+              proxy_set_header Upgrade $$http_upgrade;
+              proxy_set_header Connection $$connection_upgrade;
+          }
+      }
