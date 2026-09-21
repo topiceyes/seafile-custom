@@ -38,7 +38,9 @@ TLS 由云上反向代理终止（本项目的实际形态，见 §9）；容器
     因为那是容器自己跑 acme.sh webroot 验证）
 - [x] **不需要任何凭据**：仓库与镜像包都是 public，取部署文件和拉镜像都免登录
   （曾是 classic PAT，2026-09-20 转 public 后取消）。CI 推镜像用内置 `GITHUB_TOKEN`
-- [ ] **服务器网络可达两个域名**（免凭据，但都必须是通的）：
+- [x] **服务器网络可达两个域名**（免凭据，但都必须是通的）——**2026-09-21 已在生产服务器上
+  实测通过**：`ghcr.io/v2/` → `401  0.673s`（401 即通），`codeload.github.com` 匿名取
+  tarball → 200。这条曾是全案唯一未验证的假设（开发机可达 ≠ 服务器可达），现已消除：
 
   | 域名 | 用途 | 验证 |
   |---|---|---|
@@ -100,10 +102,9 @@ TLS 由云上反向代理终止（本项目的实际形态，见 §9）；容器
   > ⚠️ **离线导入是应急路径，不是常态**——每次更新都要手工搬一次。服务器长期够不着
   > 仓库的话，应该把镜像推到国内仓库（ACR/TCR），见 [010 §8](010-ci-release-pipeline.md)。
 
-- [ ] **不需要任何凭据**：仓库与镜像包都是 public，取部署文件和拉镜像都免登录
-  （曾是 classic PAT，2026-09-20 转 public 后取消）。CI 推镜像用内置 `GITHUB_TOKEN`
-- [ ] 若 `ghcr.io` 也不通：走 [010 §8](010-ci-release-pipeline.md) 的 ACR 备选，
-  或把 seafile 镜像也 `docker save` 搬过去（同一套办法）
+- [x] 若 `ghcr.io` 也不通：走 [010 §8](010-ci-release-pipeline.md) 的 ACR 备选，
+  或把 seafile 镜像也 `docker save` 搬过去（同一套办法）——**此路本次未启用**
+  （服务器直连 ghcr 已实测可用，见上）
 - [ ] 服务器磁盘规划：`/data/seafile`（库+文件+备份）与 `/data/seafile-mysql` 所在盘要够大
 - [ ] 钉钉回调域名准备好切到 `https://<域名>/dingtalk/callback/`（上线后改）
 
@@ -558,6 +559,6 @@ if os.environ.get('SEAFILE_SERVER_PROTOCOL') == 'https':
 | 首次 CI 运行 + 镜像发布 | ✅ 构建 8m27s；tag `12.0.14-dingtalk.8`，digest 记在 [010 §9](010-ci-release-pipeline.md) 台账 |
 | tag 已存在守卫 | ✅ 被真实触发过一次并正确拦截（在昂贵构建之前） |
 | **CI amd64 产物 vs 本地 arm64 产物** | ✅ 三层指纹**完全一致**：overlay `bee2ffbe…`(937)、前端产物 `e1f7eb47…`(269)、media/assets `6dd7b6e9…`(305) —— 连 webpack 产物都跨架构逐字节相同 |
-| 服务器 ghcr 拉取 | ⏳ 上线时验（用户确认与开发机同网络） |
+| **服务器直连 ghcr.io** | ✅ 2026-09-21 在**生产服务器上**实测：`https://ghcr.io/v2/` → `401  0.673s`。这是全案从设计之初就一直挂着的唯一未验证假设（开发机可达 ≠ 服务器可达），至此消除。仓库 public + 三个镜像包 public 也已用**裸 curl**（不带任何 `Authorization`）复验，故服务器侧凭据数为 0 |
 
 **生产首次上线后回填**：LE 签发耗时、扫码登录、client-SSO、首次备份、服务器 ghcr 拉取实测耗时。
