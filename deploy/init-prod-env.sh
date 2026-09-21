@@ -53,6 +53,24 @@ command -v openssl >/dev/null || die "缺 openssl（用来生成密钥）；Debi
 # docker 不只是下一步要用：脚本末尾拿 `docker compose config -q` 当最后一道自检，
 # 那是唯一能证明「取回来的 compose 整份可用」的检查。缺了它这道检查就成了摆设。
 command -v docker >/dev/null || die "缺 docker（本脚本末尾要用 docker compose 校验部署文件）；见 docs/007 §2"
+# compose 子命令必须真的能用。老 docker（20.10 时代）没装 v2 插件时，`docker compose …`
+# 的报错极具误导性——"unknown shorthand flag: 'f' in -f" 加一整页 docker help，
+# 看着像脚本或 yml 坏了，其实是缺插件（2026-09-21 在生产服务器上撞的）。
+# 这里提前拦下并把安装命令原样给出：装的是独立插件二进制，不动 docker 引擎、
+# 不用重启 docker、不影响同机其它容器。
+if ! docker compose version >/dev/null 2>&1; then
+  die "这台机器的 docker 没有 compose 子命令（compose v2 插件没装）。
+  特征就是 \"unknown shorthand flag: 'f' in -f\" —— 不是部署文件坏了，也不是 .env 写坏了。
+  装一下（root 下照抄即可，架构已按本机算好）：
+    mkdir -p /usr/local/lib/docker/cli-plugins
+    curl -fsSL --max-time 180 \\
+      \"https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)\" \\
+      -o /usr/local/lib/docker/cli-plugins/docker-compose && \\
+      chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+  装完先验（应出 v2.x 版本号）：docker compose version，然后重跑本脚本。
+  github.com 不通时的替代：Ubuntu 24.04 可 apt-get install -y docker-compose-v2；
+  其它发行版先配 docker-ce 软件源，再装 docker-compose-plugin。"
+fi
 
 # ---- 提醒：.env 里的 SEAFILE_PRO_IMAGE 会把这台机器钉死 ----
 #
