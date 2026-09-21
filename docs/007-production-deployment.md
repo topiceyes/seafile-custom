@@ -68,20 +68,13 @@ TLS 由云上反向代理终止（本项目的实际形态，见 §9）；容器
   > # → /tmp/seafile-offline-<tag>.tar.gz（三个镜像，约 690MB）
   > ```
   > ```bash
-
-  > **离线导入**（加速器也搞不定时的保底，一定能成）：在开发机上
-  > ```bash
-  > cd deploy && ./make-offline-bundle.sh 12.0.14-dingtalk.9.4edcb25d
-  > # → /tmp/seafile-offline-<tag>.tar.gz（三个镜像，约 690MB）
-  > ```
-  > ```bash
   > # 服务器上：
   > gunzip -c seafile-offline-<tag>.tar.gz | docker load
   > docker compose up -d        # ⚠️ 用 up，不要用 pull——pull 会强制联网，本地有也照拉
   > ```
   > 脚本会自己校验「每个镜像都有 tag 且都是 amd64」。
   >
-  > 两个不写下来一定踩的坑（脚本里已处理，手工做时要当心）：
+  > 三个不写下来一定踩的坑（脚本里已处理，手工做时要当心）：
   > - **`--platform linux/amd64` 不能省**：开发机是 Apple Silicon，本地镜像是 arm64，
   >   不指定平台导出的包在 amd64 服务器上会报 `exec format error`。
   > - **必须按 tag 拉、不能按 digest 拉**：按 digest 拉的镜像没有 RepoTag，
@@ -89,6 +82,20 @@ TLS 由云上反向代理终止（本项目的实际形态，见 §9）；容器
   >   症状很隐蔽——load 不报错、`docker images` 里也看得到（repo 显示 `<none>`），
   >   但 compose 按 `repo@sha256:…` 找不到它，于是又去联网拉、又失败。
   >   所以**离线路径下 `.env` 里的 `SEAFILE_PRO_IMAGE` 要用 tag 形式**，不能用 digest 形式。
+  > - **基础镜像必须是 manifest list，不能是单平台 manifest**（2026-09-21 踩到）：
+  >   单平台 manifest 在 arm64 上 `docker save --platform linux/amd64` 直接失败；
+  >   **不带 `--platform` 更糟**——产出 8KB 空包且退出码为 0，一路静默到服务器。
+  >   但**按 tag 拉时这一点不用你操心**（前提是镜像仓库里是索引，已保证）；
+  >   只有想按 digest 钉死时才要留意别钉到单平台那份。
+  >
+  > ⚠️ **包里三个镜像的 tag 必须与当前 compose 一致。** compose 换过源
+  > （2026-09-21：`mariadb:10.11` → `ghcr.io/topiceyes/mariadb:10.11`），
+  > **那次之前打的包作废**——load 进去的 tag 名字对不上，compose 会转去联网拉又失败。
+  > 打完之后可以自查：
+  > ```bash
+  > tar -xOf seafile-offline-<tag>.tar.gz manifest.json | python3 -m json.tool | grep RepoTags -A2
+  > # 应列出 ghcr.io/topiceyes/{seafile-mc,mariadb,memcached} 三个
+  > ```
   >
   > ⚠️ **离线导入是应急路径，不是常态**——每次更新都要手工搬一次。服务器长期够不着
   > 仓库的话，应该把镜像推到国内仓库（ACR/TCR），见 [010 §8](010-ci-release-pipeline.md)。

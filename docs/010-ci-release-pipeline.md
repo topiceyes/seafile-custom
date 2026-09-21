@@ -221,8 +221,48 @@ registry.cn-hangzhou.aliyuncs.com  401（可达）
 |---|---|
 | 源 | `docker.io/library/mariadb:10.11` / `docker.io/library/memcached:1.6.29` |
 | 目标 | `ghcr.io/topiceyes/mariadb:10.11` / `ghcr.io/topiceyes/memcached:1.6.29` |
-| 架构 | 只镜像 `linux/amd64`（生产与 runner 都是 amd64，没有消费方需要 arm64）|
+| 方式 | `docker buildx imagetools create`（registry→registry 复制，不落本地）|
+| 产物 | **manifest list（索引）**，含源仓库的全部平台 |
 | 刷新 | 手动 `gh workflow run mirror-infra-images.yml`（改该文件里的清单后 push 也会触发）|
+
+#### ⚠️ 为什么必须是 manifest list，不能是单平台 manifest
+
+第一版用 `docker pull --platform linux/amd64` + `tag` + `push` 镜像，推上去的是
+**单平台 manifest**。表面上服务器 `docker compose pull` 完全正常，但离线包路径炸了：
+
+```
+$ docker save --platform linux/amd64 ghcr.io/topiceyes/mariadb:10.11
+Error response from daemon: no suitable export target found: image with reference
+ghcr.io/topiceyes/mariadb:10.11 was found but does not provide the specified
+platform (linux/amd64)
+```
+
+而本地 `docker inspect` 明明显示 `amd64/linux` —— 所以这**不是「拉错了架构」**，
+是 mediaType 的差别：
+
+| 镜像 | mediaType | `save --platform` |
+|---|---|---|
+| `ghcr.io/topiceyes/seafile-mc`（CI 用 buildx 构建） | OCI manifest | ✅ 572M |
+| `ghcr.io/topiceyes/mariadb`（第一版镜像） | **Docker v2 manifest** | ❌ 报上面那个错 |
+| 同上，**不带** `--platform` | 同上 | ⚠️ **产出 8KB 空包且退出码为 0** |
+| `ghcr.io/topiceyes/mariadb`（imagetools 版） | **OCI index** | ✅ 122M |
+
+最后一行才是最危险的：静默产出一个 8KB 的「成功」包。（`make-offline-bundle.sh`
+末尾的 manifest 校验会拦下它——但那已经是最后一道防线了。）
+
+索引用 `--platform` 选平台是标准路径，与 Docker Hub 自己的 tag 行为一致。所以
+改用 `imagetools create`，并在 workflow 里**把这条假设写成断言**（检查 mediaType
+是索引、且索引含 `linux/amd64`）——写死在代码里而不验证的假设，就是下一次静默漂移。
+
+代价：索引含 arm64，比只留 amd64 多占约一倍存储。GitHub 官方口径是容器镜像的
+存储与带宽免费，可接受；换来的是与 Docker Hub 原 tag 行为完全一致。
+
+> **另一个值得记的坑**：那条断言第一次跑时误报「索引里没有 linux/amd64」，
+> 而索引里明明有。根因是 `imagetools inspect "$DST" | grep -q 'linux/amd64'` ——
+> `grep -q` 命中即退出 → 关闭管道 → 左侧收到 **SIGPIPE** 而非零退出 →
+> `set -o pipefail` 让整条管道判为失败，**即使匹配成功**。
+> 改为先收进变量再 `grep -q <<<"$INSPECT"`。（`echo` 那种短输出不受影响，
+> 数据远小于管道缓冲区，写完才轮到 grep 退出。）
 
 > **仓库 public ≠ 镜像包 public**，新包默认可能是私有。该 workflow 里带一个
 > 尽力而为的 visibility PATCH（`continue-on-error`——对用户所有的包不保证被
@@ -267,17 +307,28 @@ docker login registry.cn-hangzhou.aliyuncs.com
 | 2026-09-20 | `12.0.14-dingtalk.8.4261dd78` | 8 | `a0fe6349…a65f5d25489` | `sha256:c3b12c34…d01952d2` | 含反代模式 nginx 修复；tag 规则改内容寻址后的首次发布（run 35496784127） |
 | 2026-09-20 | `12.0.14-dingtalk.8` | 8 | `a0fe6349…a65f5d25489` | `sha256:add45ed6…23665527` | 首次 CI 发布（run 35495223406），构建 8m27s。**已被覆盖且格式过时，勿用** |
 
-**基础设施镜像**（`mirror-infra-images.yml`，run 35565802445，2026-09-21）：
+**基础设施镜像**（`mirror-infra-images.yml`，run 35566304802，2026-09-21）——
+digest 是**索引**的 digest（含全部平台）：
 
-| 目标 | 架构 | digest |
+| 目标 | digest（索引） | amd64 子清单 |
 |---|---|---|
-| `ghcr.io/topiceyes/mariadb:10.11` | linux/amd64 | `sha256:6f08d1d7…6fd9a02c` |
-| `ghcr.io/topiceyes/memcached:1.6.29` | linux/amd64 | `sha256:c8eed037…c69482e` |
+| `ghcr.io/topiceyes/mariadb:10.11` | `sha256:7f22313f…f9bc66ab` | `sha256:5ae7fc7b…9834d9e` |
+| `ghcr.io/topiceyes/memcached:1.6.29` | `sha256:56a39bd5…a16d3953b` | `sha256:486b2361…ef824c52` |
+
+> ⚠️ **这两行早期记的 digest 已作废**：第一版推的是单平台 manifest
+> （`sha256:6f08d1d7…` / `sha256:c8eed037…`），因离线包路径不可用而改成了索引。
+> 单平台那版**从未被任何服务器消费过**。
 
 > 这两个用 **tag**（不是 digest）引用，与 `SEAFILE_PRO_IMAGE` 的口径不同。理由：它们是
 > 我们自己命名空间下的快照，tag 只会在**手动重跑镜像 workflow 时**移动，不存在上游悄悄
 > 重推导致漂移的问题；而 tag 形式让「刷新基础镜像」就是重跑一次 workflow 这么简单。
-> digest 记在这里，需要钉死时可直接换成 `ghcr.io/topiceyes/mariadb@sha256:6f08d1d7…`。
+> digest 记在这里，需要钉死时可直接换成 `ghcr.io/topiceyes/mariadb@sha256:7f22313f…`。
+
+> **换过一次源，旧离线包因此作废。** compose 从 `mariadb:10.11` 改成
+> `ghcr.io/topiceyes/mariadb:10.11` 之后，**改源前打的那个 693MB 离线包不再可用**：
+> `docker load` 进去的 tag 是 `mariadb:10.11`，而 compose 找不到这个名字，会转去联网拉、
+> 又失败。已用新源重打（三个 RepoTag 与新 compose 逐字一致）。若你手上有更早的包，
+> 丢掉重取。
 
 > **tag 规则的由来**：首次发布当天，`12.0.14-dingtalk.8` 这个 tag 前后指过三个不同镜像 ——
 > 第一次冒烟断言写错（run 35494641254，`sha256:dcf18a2e…`），修好后 `force` 覆盖；
