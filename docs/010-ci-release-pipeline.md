@@ -195,7 +195,45 @@ docker compose pull && docker compose up -d     # 镜像包是 public，不需�
 | 服务器 `docker pull` 报 `denied` | 镜像包是 public 时不该出现。若出现，多半是包的可见性被改回了 private（Package settings → Change visibility），或本地有失效的 `~/.docker/config.json` 缓存旧凭据 → `docker logout ghcr.io` 再试 |
 | 生产机连不上 ghcr.io | 见 §8 的 ACR 备选 |
 
-## 8. ACR 备选（ghcr 不可达时）
+## 8. 基础设施镜像镜像 + ACR 备选
+
+### 8.1 MariaDB / memcached 镜像到 ghcr（2026-09-21）
+
+生产 compose 有三个镜像。早先只有 seafile 走 ghcr，另两个直接引 Docker Hub——
+而国内网络常常**只有 Docker Hub 不通**：
+
+```
+ghcr.io                            401（可达；/v2/ 未认证的正常响应）
+registry-1.docker.io               000（12s 超时）
+registry.cn-hangzhou.aliyuncs.com  401（可达）
+```
+
+已于 2026-09-21 由 `.github/workflows/mirror-infra-images.yml` 镜像到 ghcr，
+三个镜像同源，服务器侧只剩一个要连通的目标。
+
+**这个坑最阴的地方是报错指向的仓库不对**：`docker compose pull` 会依次拉三个镜像，
+最先失败的是 Docker Hub 那两个，于是屏幕上是
+`Get "https://registry-1.docker.io/v2/": context deadline exceeded` ——
+看起来像我们的镜像出了问题，实际 ghcr 一直是好的（匿名 `tags/list` 200，
+匿名 pull 拿到的 digest 与 CI 记录一致）。**排查时先分清报错里的域名属于谁。**
+
+| 项 | 值 |
+|---|---|
+| 源 | `docker.io/library/mariadb:10.11` / `docker.io/library/memcached:1.6.29` |
+| 目标 | `ghcr.io/topiceyes/mariadb:10.11` / `ghcr.io/topiceyes/memcached:1.6.29` |
+| 架构 | 只镜像 `linux/amd64`（生产与 runner 都是 amd64，没有消费方需要 arm64）|
+| 刷新 | 手动 `gh workflow run mirror-infra-images.yml`（改该文件里的清单后 push 也会触发）|
+
+> **仓库 public ≠ 镜像包 public**，新包默认可能是私有。该 workflow 里带一个
+> 尽力而为的 visibility PATCH（`continue-on-error`——对用户所有的包不保证被
+> `GITHUB_TOKEN` 接受），失败时 step summary 会给出人工改可见性的链接。
+> 实测这次两个包匿名 `tags/list` 都是 200，无需人工干预。
+
+> **不能从开发机直接推**：本地 ghcr 凭据只有读权限，`docker push` 报
+> `permission_denied: The token provided does not match expected scopes`。
+> CI 的 `GITHUB_TOKEN` 带 `packages: write`，所以这一步只能走 CI。
+
+### 8.2 ACR 备选（ghcr 不可达时）
 
 `build-image.sh` 对 registry 无假设，本地推 ACR 的能力一直保留：
 
@@ -206,6 +244,11 @@ docker login registry.cn-hangzhou.aliyuncs.com
 ```
 
 生产 `.env` 的 `SEAFILE_PRO_IMAGE` 换成对应 ACR 地址即可，compose 文件不用动。
+
+> ⚠️ 走 ACR 时**别忘了基础设施镜像**：`seafile-prod.yml` 里的 `mariadb`/`memcached`
+> 现在写死指向 `ghcr.io/topiceyes/…`（§8.1）。若 ghcr 整个不可达，这两行也要换成
+> ACR 地址，否则 pull 会卡在它们上面——症状与本文档反复强调的那个坑一模一样：
+> **报错指的是基础设施镜像，看起来却像主镜像有问题。**
 
 **关于 ghcr 的额度**：GitHub Packages 免费额度是 500 MB 存储 / 1 GB 月流量，但官方
 文档明确「容器镜像的存储与带宽目前免费」——这是两套口径，容器镜像大概率不受 500 MB 限制。
@@ -223,6 +266,18 @@ docker login registry.cn-hangzhou.aliyuncs.com
 | 2026-09-20 | `12.0.14-dingtalk.8.e9313643` | 8 | `a0fe6349…a65f5d25489` | `sha256:a9d840d6…42e584a4` | 运维脚本烘进镜像（不再 bind-mount），生产 compose 已无宿主机相对路径（run 35497571764） |
 | 2026-09-20 | `12.0.14-dingtalk.8.4261dd78` | 8 | `a0fe6349…a65f5d25489` | `sha256:c3b12c34…d01952d2` | 含反代模式 nginx 修复；tag 规则改内容寻址后的首次发布（run 35496784127） |
 | 2026-09-20 | `12.0.14-dingtalk.8` | 8 | `a0fe6349…a65f5d25489` | `sha256:add45ed6…23665527` | 首次 CI 发布（run 35495223406），构建 8m27s。**已被覆盖且格式过时，勿用** |
+
+**基础设施镜像**（`mirror-infra-images.yml`，run 35565802445，2026-09-21）：
+
+| 目标 | 架构 | digest |
+|---|---|---|
+| `ghcr.io/topiceyes/mariadb:10.11` | linux/amd64 | `sha256:6f08d1d7…6fd9a02c` |
+| `ghcr.io/topiceyes/memcached:1.6.29` | linux/amd64 | `sha256:c8eed037…c69482e` |
+
+> 这两个用 **tag**（不是 digest）引用，与 `SEAFILE_PRO_IMAGE` 的口径不同。理由：它们是
+> 我们自己命名空间下的快照，tag 只会在**手动重跑镜像 workflow 时**移动，不存在上游悄悄
+> 重推导致漂移的问题；而 tag 形式让「刷新基础镜像」就是重跑一次 workflow 这么简单。
+> digest 记在这里，需要钉死时可直接换成 `ghcr.io/topiceyes/mariadb@sha256:6f08d1d7…`。
 
 > **tag 规则的由来**：首次发布当天，`12.0.14-dingtalk.8` 这个 tag 前后指过三个不同镜像 ——
 > 第一次冒烟断言写错（run 35494641254，`sha256:dcf18a2e…`），修好后 `force` 覆盖；

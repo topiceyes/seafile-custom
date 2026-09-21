@@ -38,20 +38,36 @@ TLS 由云上反向代理终止（本项目的实际形态，见 §9）；容器
     因为那是容器自己跑 acme.sh webroot 验证）
 - [x] **不需要任何凭据**：仓库与镜像包都是 public，取部署文件和拉镜像都免登录
   （曾是 classic PAT，2026-09-20 转 public 后取消）。CI 推镜像用内置 `GITHUB_TOKEN`
-- [ ] **服务器网络可达三个域名**（免凭据，但都必须是通的）：
+- [ ] **服务器网络可达两个域名**（免凭据，但都必须是通的）：
 
   | 域名 | 用途 | 验证 |
   |---|---|---|
   | `codeload.github.com` | 取部署 tarball | `curl -so /dev/null -w '%{http_code}\n' --max-time 20 https://codeload.github.com/` → 200 |
-  | `ghcr.io` | 拉自建 seafile 镜像 | `curl -so /dev/null -w '%{http_code}\n' --max-time 20 https://ghcr.io/v2/` → **401 即通**（未认证是预期） |
-  | **`registry-1.docker.io`** | 拉 `mariadb:10.11` 与 `memcached:1.6.29` | `docker pull mariadb:10.11` 能成功 |
+  | `ghcr.io` | 拉**全部三个**镜像 | `curl -so /dev/null -w '%{http_code}\n' --max-time 20 https://ghcr.io/v2/` → **401 即通**（未认证是预期） |
 
-  > ⚠️ **Docker Hub 这一条最容易漏。** compose 里三个镜像来自两个仓库：
-  > seafile 走 ghcr.io，**db 和 memcached 走 Docker Hub**。国内服务器常常只有
-  > Docker Hub 不通，报错是 `Get "https://registry-1.docker.io/v2/": context deadline exceeded`。
-  > 这不是「镜像包私有」那类问题（重装 docker login 没用），两条出路：
-  > ① 云厂商的容器镜像加速器（阿里云/腾讯云控制台里有，配 `/etc/docker/daemon.json`
-  > 的 `registry-mirrors`）；② 见下方「离线导入」。
+  三个镜像全走 ghcr，所以**只需要两个域名**。一条命令验完：
+  ```bash
+  for h in codeload.github.com ghcr.io; do
+    printf '%-24s ' "$h"
+    curl -so /dev/null -w '%{http_code}\n' --max-time 20 "https://$h/"
+  done
+  ```
+
+  > **`registry-1.docker.io` 曾经是必需的第三个域名，2026-09-21 起不再需要。**
+  > 早先 compose 里 `mariadb` 与 `memcached` 直接引 Docker Hub，而国内网络常只有
+  > 这一条不通（`Get "https://registry-1.docker.io/v2/": context deadline exceeded`
+  > 或 `connection reset by peer`）。**这个报错会指向 Docker Hub 而不是我们自己的镜像，
+  > 极易误判成「ghcr 挂了」**——当时就是在这个误判上绕了几轮。
+  > 现在这两个镜像由 `.github/workflows/mirror-infra-images.yml` 镜像到 ghcr，
+  > 三个镜像同源。Docker Hub 只影响 **CI 构建**（runner 侧拉基础镜像），
+  > 已由 `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` secrets 缓解，见 docs/010 §7。
+
+  > **离线导入**（服务器确实连不上 ghcr 时的保底，一定能成）：在开发机上
+  > ```bash
+  > cd deploy && ./make-offline-bundle.sh 12.0.14-dingtalk.9.4edcb25d
+  > # → /tmp/seafile-offline-<tag>.tar.gz（三个镜像，约 690MB）
+  > ```
+  > ```bash
 
   > **离线导入**（加速器也搞不定时的保底，一定能成）：在开发机上
   > ```bash

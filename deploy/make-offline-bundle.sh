@@ -12,11 +12,14 @@
 #
 # ## 为什么需要这个脚本
 #
-# compose 里三个镜像来自**两个**仓库：seafile 走 ghcr.io，mariadb/memcached 走
-# Docker Hub。国内服务器常常够不着其中一个或两个（症状：registry-1.docker.io
-# 超时或被 reset）。离线导入是保底手段——能救急，但每次更新都要手工搬一次，
-# 所以它是**应急路径**，不是常态。长期应该把镜像推到服务器够得着的国内仓库
-# （阿里云 ACR / 腾讯云 TCR），详见 docs/010 §8。
+# compose 里三个镜像**现在同源**（都走 ghcr.io）：seafile 由本项目 CI 构建，
+# mariadb/memcached 由 .github/workflows/mirror-infra-images.yml 镜像过去。
+# 2026-09-21 之前 db 与 memcached 直接引 Docker Hub，而国内网络常只有那一条不通。
+#
+# 离线导入是**保底**手段：能救急，但每次更新都要手工搬一次 690MB，所以不是常态。
+# 先确认服务器到底连不连得上 ghcr.io（两分钟）：
+#     curl -so /dev/null -w '%{http_code}\n' --max-time 20 https://ghcr.io/v2/   # 401 即通
+# 通了就别用这个脚本，直接 docker compose pull。不通才走离线。
 #
 # ## 三个不写下来一定会踩的坑
 #
@@ -56,13 +59,22 @@ case "$TAG" in
 esac
 
 # ---- 从 compose 里取基础设施镜像，别在脚本里另写一份 ----
-# 只取写死的基础镜像（mariadb/memcached）；${SEAFILE_PRO_IMAGE} 那行由本脚本自己处理
+# 只取写死的基础镜像（mariadb/memcached）；${SEAFILE_PRO_IMAGE} 那行由本脚本自己处理。
+#
+# ⚠️ 必须先剥掉行尾注释再收。compose 里给 image: 行写行内注释是合法的，而这里的
+# 解析是纯文本的——不剥注释就会把「# 说明文字」当成镜像名的一部分，
+# 报一个跟真实原因毫无关系的错（docker pull: invalid reference format）。
+# 同理必须 tr -d 掉引号，并去掉首尾空白。
 INFRA=""
 while IFS= read -r img; do
   [ -n "$img" ] && INFRA="$INFRA $img"
 done <<EOF
 $(grep -E '^[[:space:]]+image:[[:space:]]' "$COMPOSE" \
-  | sed -E 's/.*image:[[:space:]]*//' | tr -d "'\"" | grep -v '^\$' || true)
+  | sed -E 's/.*image:[[:space:]]*//' \
+  | sed -E 's/[[:space:]]+#.*$//' \
+  | tr -d "'\"" \
+  | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
+  | grep -v '^\$' || true)
 EOF
 [ -n "$INFRA" ] || die "从 ${COMPOSE} 里没解析出基础镜像，检查 image: 那几行"
 

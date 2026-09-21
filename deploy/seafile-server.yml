@@ -5,7 +5,10 @@
 # 首次部署：cp .env.example .env && 填值 && ./init-conf.sh && ./gen-ssl-cert.sh
 services:
   db:
-    image: mariadb:10.11
+    # 与 seafile-prod.yml 一致走 ghcr 镜像。开发机上 Docker Hub 只是靠
+    # Docker Desktop 的代理（proxy.orb.internal:8305）才通，生产机没有这层代理——
+    # 两边用同一个源，就少一类「dev 好好的、生产拉不动」的差异。
+    image: ghcr.io/topiceyes/mariadb:10.11
     container_name: seafile-mysql
     restart: unless-stopped
     environment:
@@ -27,7 +30,7 @@ services:
       - seafile-net
 
   memcached:
-    image: memcached:1.6.29
+    image: ghcr.io/topiceyes/memcached:1.6.29   # 同 db：镜像自 ghcr
     container_name: seafile-memcached
     restart: unless-stopped
     entrypoint: memcached -m 256

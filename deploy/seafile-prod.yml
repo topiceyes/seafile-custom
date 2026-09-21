@@ -11,7 +11,12 @@
 
 services:
   db:
-    image: mariadb:10.11
+    # ⚠️ 走 ghcr 镜像，不是 docker.io/library/mariadb。原因：国内网络下
+    # registry-1.docker.io 直接超时（2026-09-21 实测），而 ghcr.io 匿名可拉。
+    # 三个镜像同源之后，服务器侧只剩一个要连通的目标，也不需要 docker login。
+    # 这两个 ghcr 包由 .github/workflows/mirror-infra-images.yml 镜像而来，
+    # 上游基础镜像更新时重跑那个 workflow 刷新。digest 记在 docs/010 §9。
+    image: ghcr.io/topiceyes/mariadb:10.11
     container_name: seafile-mysql
     restart: unless-stopped
     environment:
@@ -37,7 +42,7 @@ services:
       - seafile-net
 
   memcached:
-    image: memcached:1.6.29
+    image: ghcr.io/topiceyes/memcached:1.6.29   # 同 db：镜像自 ghcr，避开被阻断的 Docker Hub
     container_name: seafile-memcached
     restart: unless-stopped
     entrypoint: memcached -m 256
