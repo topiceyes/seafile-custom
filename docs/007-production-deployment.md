@@ -51,14 +51,31 @@ TLS 由云上反向代理终止（本项目的实际形态，见 §9）；容器
   > Docker Hub 不通，报错是 `Get "https://registry-1.docker.io/v2/": context deadline exceeded`。
   > 这不是「镜像包私有」那类问题（重装 docker login 没用），两条出路：
   > ① 云厂商的容器镜像加速器（阿里云/腾讯云控制台里有，配 `/etc/docker/daemon.json`
-  > 的 `registry-mirrors`）；② 见下方「离线导入基础镜像」。
+  > 的 `registry-mirrors`）；② 见下方「离线导入」。
 
-  > **离线导入基础镜像**（加速器也搞不定时，一定能成）：在开发机上
-  > `docker save --platform linux/amd64 -o infra.tar mariadb:10.11 memcached:1.6.29`
-  > → 传到服务器 → `docker load < infra.tar`。
-  > **`--platform linux/amd64` 不能省**：开发机（Apple Silicon）本地是 arm64，
-  > 不指定平台导出的包在 amd64 服务器上跑不起来。这两个是基础设施镜像、基本不变，
-  > 搬一次即可，后续更新只涉及 ghcr 上的 seafile 镜像。
+  > **离线导入**（加速器也搞不定时的保底，一定能成）：在开发机上
+  > ```bash
+  > cd deploy && ./make-offline-bundle.sh 12.0.14-dingtalk.9.4edcb25d
+  > # → /tmp/seafile-offline-<tag>.tar.gz（三个镜像，约 690MB）
+  > ```
+  > ```bash
+  > # 服务器上：
+  > gunzip -c seafile-offline-<tag>.tar.gz | docker load
+  > docker compose up -d        # ⚠️ 用 up，不要用 pull——pull 会强制联网，本地有也照拉
+  > ```
+  > 脚本会自己校验「每个镜像都有 tag 且都是 amd64」。
+  >
+  > 两个不写下来一定踩的坑（脚本里已处理，手工做时要当心）：
+  > - **`--platform linux/amd64` 不能省**：开发机是 Apple Silicon，本地镜像是 arm64，
+  >   不指定平台导出的包在 amd64 服务器上会报 `exec format error`。
+  > - **必须按 tag 拉、不能按 digest 拉**：按 digest 拉的镜像没有 RepoTag，
+  >   `docker save` 写出 `"RepoTags": null`，`docker load` 之后是个**无标签的悬空镜像**。
+  >   症状很隐蔽——load 不报错、`docker images` 里也看得到（repo 显示 `<none>`），
+  >   但 compose 按 `repo@sha256:…` 找不到它，于是又去联网拉、又失败。
+  >   所以**离线路径下 `.env` 里的 `SEAFILE_PRO_IMAGE` 要用 tag 形式**，不能用 digest 形式。
+  >
+  > ⚠️ **离线导入是应急路径，不是常态**——每次更新都要手工搬一次。服务器长期够不着
+  > 仓库的话，应该把镜像推到国内仓库（ACR/TCR），见 [010 §8](010-ci-release-pipeline.md)。
 
 - [ ] **不需要任何凭据**：仓库与镜像包都是 public，取部署文件和拉镜像都免登录
   （曾是 classic PAT，2026-09-20 转 public 后取消）。CI 推镜像用内置 `GITHUB_TOKEN`
