@@ -826,5 +826,9 @@ https」，需要**两个条件同时成立**：
 | **通道搬运 + Release 全链路** | ✅ 2026-09-21 首跑（run 35590588040）：`imagetools create` 搬通道 → digest 断言通过 → Release 建出。**红在最后一步**——资产 `.env.prod.example` 被 GitHub 改写成 `default.env.prod.example`，固定 URL 取不到。见下 |
 | **守卫的补做路径** | ✅ 2026-09-21 修完重跑（run 35590876529）：守卫判出「发布不完整（Release 资产齐全=false）」→ `skip_build=true`，**全程 40 秒、无重建**，只补做搬运与发布，并删掉那个陈旧资产 |
 | **固定安装 URL** | ✅ 三个资产 `curl -fL …/releases/latest/download/<名>` 全部 200，且与仓库逐字节一致（`cmp` 通过）。`latest` 标记指向该 Release，非 draft、非 prerelease |
+| **通道搬运 + Release 全链路** | ✅ 2026-09-21 首跑（run 35590588040）：`imagetools create` 搬通道 → digest 断言通过 → Release 建出。**红在最后一步**：资产 `.env.prod.example` 被 GitHub 改写成 `default.env.prod.example`，固定 URL 取不到。已把模板改名 `env.prod.example` |
+| **守卫的补做路径** | ✅ 2026-09-21 修完重跑（run 35590876529）：守卫判出「发布不完整（Release 资产齐全=false）」→ 只补做搬运与发布，**40 秒、无重建**，并删掉那个陈旧资产 |
+| **空转不动通道** | ✅ 2026-09-21（run 35591567465）：只改文档的 push 撞上「tag 已存在且发布完整」→ 守卫判 `mode=none`，通道未动、无发布动作，运行结论为**成功**（不是失败——空转报红会天天给管理员发误报邮件） |
+| ⚠️ **同一 tag 被重建覆盖（本设计出的唯一一次事故）** | ❌→✅ 2026-09-21：守卫当时用两个布尔输出 `skip`/`skip_build`，判「发布完整」时只写了 `skip=true`，而构建步骤只看 `skip_build`（空串 ≠ `'true'`）→ **构建照跑**，用新字节覆盖了不可变 tag `ed2042da`。全程全绿、通道未动、零告警；只有比对 registry 才发现 tag 的 digest 与 Release 记录对不上。**已改成单三态输出 `mode`**（两个布尔天然能互相矛盾，三态不会），并在补做路径的 Release 正文加 ℹ️ 提示。两次构建的三层指纹逐字节相同，故内容无差异、只需把通道与记录收敛到新 digest |
 
 **生产首次上线后回填**：LE 签发耗时、扫码登录、client-SSO、首次备份、服务器 ghcr 拉取实测耗时。

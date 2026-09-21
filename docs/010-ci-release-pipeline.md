@@ -280,6 +280,7 @@ docker compose pull && docker compose up -d
 | CI 失败于「移动通道 tag」的 digest 断言 | `imagetools create` 没走原样拷贝分支，`:latest` 变成了一个 index。检查 `--prefer-index=false` 还在不在、有没有人加了 `--annotation` |
 | CI 失败于「发布记录」 | 多半是权限。workflow 的 `permissions` 必须有 `contents: write`（`packages: write` 只管推镜像）；另外确认仓库 Settings → Actions → Workflow permissions 不是只读 |
 | 发布走到一半失败（例如 Release 建之前挂了） | 直接重跑同一个 run。守卫已区分「跳过构建」与「跳过一切」：**通道 digest 对不上 / Release 不在 / 资产缺一个**时会 `skip_build=true` **只补做发布**，不会重建镜像。这三个条件必须全判——只判「Release 在不在」会把残缺发布误判成完整（2026-09-21 首跑就是这么暴露的） |
+| **同一个不可变 tag 的 digest 变了** | 说明有人把它重建覆盖了。tag 是内容寻址的，**同 tag ⇒ 同内容**——但前提是没人用 `force` 或不受守卫约束的路径再打一次。2026-09-21 出过一次，成因不是 `force`，而是守卫的两个布尔输出互相矛盾（`skip=true` 却没设 `skip_build`，构建照跑）——已改成单三态输出 `mode`。若在 Release 正文里看到「本次只做了发布，没有重新构建」的 ℹ️ 提示，就是这条路径在为它收尾 |
 | CI 失败于「Release 缺资产 X」 | 先看 Release 页上资产的真名。**GitHub 会把点开头的资产名改写成 `default.xxx`**（实测 `.env.prod.example` → `default.env.prod.example`），于是固定安装 URL 永远 404。仓库里的文件名就得是不带点的（`deploy/env.prod.example`）。发布步骤会清掉不在清单里的陈旧资产，所以改名后重跑即可自愈 |
 | 服务器 `docker compose pull` 说 `Pulled` 但版本没变 | 先 `docker compose config \| grep image:` 确认 seafile 那行是 `…:latest` 而不是被 `.env` 里的 `SEAFILE_PRO_IMAGE` 钉住了。这个变量一写进 `.env` 就是**刻意 pin**，机器不再跟随通道 |
 | 生产机连不上 ghcr.io | 见 §8 的 ACR 备选 |

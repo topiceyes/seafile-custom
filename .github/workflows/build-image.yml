@@ -172,6 +172,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 守卫的结论走**一个三态输出** `mode`，不是两个布尔。
+      #
+      #   （空）      force=true 时守卫整步不跑；等价于 build
+      #   build       tag 未占用 → 正常构建 → 冒烟 → 搬运 → 发布
+      #   publish     tag 在、发布不完整 → 只补做搬运与发布，**不重建**
+      #   none        tag 在、发布完整 → 什么都不做（绿）
+      #
+      # ⚠️ 这里曾经是两个布尔（`skip` / `skip_build`），2026-09-21 因此出了一次
+      # **静默事故**：守卫判「发布完整」时只写了 `skip=true`，而构建步骤只看
+      # `skip_build`（当时是空串，不等于 'true'）——于是**构建照跑**，把同一个
+      # 不可变 tag 用新构建的字节覆盖了。整个过程全绿，通道没动，没有任何告警；
+      # 结果就是 tag 指向的字节与 Release 记录的 digest 对不上。
+      # 两个布尔天然可以互相矛盾，三态不会。改这里时别退回两个输出。
       - name: 检查 tag 是否已存在
         id: guard
         if: ${{ github.event.inputs.force != 'true' }}
@@ -222,7 +235,7 @@ jobs:
                   echo "（\`patches/\`、\`deploy/image/\`、\`build-image.sh\`）。无需重建，本次运行视为成功。"
                 } >> "$GITHUB_STEP_SUMMARY"
                 echo "::notice::$IMAGE:$TAG 已存在且发布完整，自动触发无需构建，跳过（非失败）。"
-                echo "skip=true" >> "$GITHUB_OUTPUT"
+                echo "mode=none" >> "$GITHUB_OUTPUT"
                 exit 0
               fi
 
@@ -237,22 +250,23 @@ jobs:
             # 走到这儿：镜像在，但通道 / Release / 资产没跟上（多半是上次发布半途失败）。
             # 只补做发布，不重建 —— 内容寻址的 tag 保证了补做的是同一份字节。
             echo "::notice::$IMAGE:$TAG 已存在，但发布不完整（通道 digest=$CH 本 tag digest=$TG，Release 资产齐全=$ASSETS_OK）——跳过构建，只补做发布。"
-            echo "skip_build=true" >> "$GITHUB_OUTPUT"
+            echo "mode=publish" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "✅ tag 未被占用：$TAG"
+          echo "mode=build" >> "$GITHUB_OUTPUT"
 
       # Docker Hub 匿名拉取在共享 runner IP 上容易撞限流（toomanyrequests）。
       # 有凭据就用，没有就跳过——不因此让构建失败。
       - name: 登 Docker Hub（配置了凭据才跑，规避匿名拉取限流）
-        if: env.DOCKERHUB_USERNAME != '' && steps.guard.outputs.skip_build != 'true'
+        if: env.DOCKERHUB_USERNAME != '' && steps.guard.outputs.mode != 'publish' && steps.guard.outputs.mode != 'none'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: 构建并推送
-        if: steps.guard.outputs.skip_build != 'true'
+        if: steps.guard.outputs.mode != 'publish' && steps.guard.outputs.mode != 'none'
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
@@ -271,7 +285,7 @@ jobs:
       # 断言本身在 deploy/smoke-test.sh —— 与开发机人工验证共用同一份，避免两处漂移
       # （这套断言曾因 workflow 与 docs 各存一份而写错了路径，见该脚本头部注释）。
       - name: 冒烟验证已推送的镜像
-        if: steps.guard.outputs.skip_build != 'true'
+        if: steps.guard.outputs.mode != 'publish' && steps.guard.outputs.mode != 'none'
         run: |
           set -euo pipefail
           docker pull "$IMAGE:$TAG"
@@ -290,7 +304,7 @@ jobs:
       # image.index.v1+json），那样 :latest 的 digest 与不可变 tag 的 digest 就不再
       # 相同，「同一份字节」这个口径断掉，回滚与离线包都会对不上号。
       - name: 移动通道 tag
-        if: steps.guard.outputs.skip != 'true'
+        if: steps.guard.outputs.mode != 'none'
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
@@ -322,7 +336,7 @@ jobs:
       # 用 view→edit/create 分支做成幂等：force 重建、以及上面那条「只补做发布」
       # 的重跑路径都会走到这里。
       - name: 发布记录（GitHub Release）
-        if: steps.guard.outputs.skip != 'true'
+        if: steps.guard.outputs.mode != 'none'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.tag.outputs.tag }}
@@ -364,6 +378,15 @@ jobs:
           {
             echo "# $TAG"
             echo ""
+            # 补做发布 = 这个 tag 的字节是**此前某次运行**构建的，本次只搬通道 + 更新记录。
+            # 若上一版本记录里的 digest 与本条不同，那是同一个 tag 被重建覆盖过 ——
+            # 这种事必须留在正文里，不能只活在 run 日志里（2026-09-21 就这么出过一次）。
+            if [ "${{ steps.guard.outputs.mode }}" = "publish" ]; then
+              echo "> ℹ️ **本次只做了发布，没有重新构建。** 该 tag 的字节由此前某次运行产出并冒烟。"
+              echo "> 若你记得上一版记录里的 digest 与本条**不同**，那是这个不可变 tag 被重建覆盖过——"
+              echo "> 排查见 [docs/010 §7](https://github.com/$GITHUB_REPOSITORY/blob/main/docs/010-ci-release-pipeline.md)。"
+              echo ""
+            fi
             if [ "$NEED_REFETCH" = "yes" ]; then
               echo "> ⚠️ **本版改了部署文件（\`seafile-prod.yml\`）——已装好的服务器需要重取一次**:"
               echo ">"
@@ -449,7 +472,7 @@ jobs:
           done < <(gh release view "$TAG" --json assets --jq '.assets[].name')
 
           # 发布是否完整的判据 = 这个 tag 的 Release 三个资产都在。不完整就红，
-          # 让重跑走 skip_build 补做路径，而不是留下一个「看着发布了」的残缺记录。
+          # 让重跑走 mode=publish 补做路径，而不是留下一个「看着发布了」的残缺记录。
           HAVE=$(gh release view "$TAG" --json assets --jq '.assets[].name')
           for f in $ASSETS; do
             echo "$HAVE" | grep -qx "$(basename "$f")" \
@@ -458,7 +481,7 @@ jobs:
           echo "已发布：https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
 
       - name: 记录 digest
-        if: steps.guard.outputs.skip != 'true'
+        if: steps.guard.outputs.mode != 'none'
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
