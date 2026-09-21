@@ -66,7 +66,7 @@ TLS 由云上反向代理终止（本项目的实际形态，见 §9）；容器
 
   > **离线导入**（服务器确实连不上 ghcr 时的保底，一定能成）：在开发机上
   > ```bash
-  > cd deploy && ./make-offline-bundle.sh 12.0.14-dingtalk.9.e3c4174f   # 示例 tag，以 docs/010 §9 台账为准
+  > cd deploy && ./make-offline-bundle.sh 12.0.14-dingtalk.9.1464e1b4   # 示例 tag，以 docs/010 §9 台账为准
   > # → /tmp/seafile-offline-<tag>.tar.gz（三个镜像，约 690MB）
   > ```
   > ```bash
@@ -523,6 +523,16 @@ grep -A2 '二开定制' rehearsal-data/seafile/conf/seahub_settings.py
 grep '^enabled' rehearsal-data/seafile/conf/seafdav.conf    # 期望 enabled = true
 ```
 
+> ⚠️ **彩排覆盖不到的：反代模式。** 彩排为了让自签证书生效，把
+> `SEAFILE_SERVER_LETSENCRYPT` 设回了 `true`（容器自己终止 TLS），于是
+> `$scheme` 就是 https、`request.is_secure()` 天然为真。**生产的形态是
+> `https=false`（TLS 在云代理终止、容器只听 80），那条登录路径彩排里根本没跑过**——
+> 2026-09-21 的登录 403 就藏在这个缺口里（见 §9）。
+>
+> 所以彩排通过**不等于**登录能通。反代模式下必须另做一次验证：真浏览器访问
+> `https://<域名>/`，走一遍**表单登录**（钉钉扫码也走一次）。只 `curl` 到页面 200
+> 不够——CSRF 是提交表单那一刻才炸的。
+
 彩排验证清单（docs/008/009 的功能都在这里验）：
 - [ ] `rehearsal-data/nginx/conf/seafile.nginx.conf` 是**模板渲染产物**且含 `X-Forwarded-Proto`
 - [ ] `curl -sI http://<域名>/` → 301；`curl -skI https://<域名>/` → 200
@@ -615,7 +625,7 @@ https」，需要**两个条件同时成立**：
 > 少了第 2 条，`request.is_secure()` 恒为假，CSRF 中间件于是把 `good_origin` 算成
 > `http://域名`（`django/middleware/csrf.py` 的 `_origin_verified`），与浏览器发的
 > `Origin: https://域名` 不匹配 → **表单一提交就 403，而页面照常打开**。
-> 2026-09-21 生产实测撞到；`12.0.14-dingtalk.9.e3c4174f` 起修复。
+> 2026-09-21 生产实测撞到；`12.0.14-dingtalk.9.1464e1b4` 起修复。
 
 > **为什么彩排没拦住它。** §7 的彩排为了让自签证书生效，**故意把
 > `SEAFILE_SERVER_LETSENCRYPT` 设回 `true`**（容器自己终止 TLS）。那个模式下
@@ -678,7 +688,7 @@ https」，需要**两个条件同时成立**：
 | 重试真的会被触发 | ✅ `utils.call()` 默认 `subprocess.check_call`（`utils.py:53`），失败抛 `CalledProcessError`，`start_service_retry` 捕获后重试。前提成立，重试不是装饰性的 |
 | 第 6 项断言仍成立（补丁改动后重跑） | ✅ 在基础镜像上打完补丁、拷入 `custom_bootstrap.py`，抽出 `smoke-test.sh` 第 6 节单独跑（断言仍只有这一份来源，不是复制件）→ 全绿 |
 
-**反代模式登录 403 的修复（2026-09-21，tag `e3c4174f` 之后）——已验证的部分：**
+**反代模式登录 403 的修复（2026-09-21，tag `12.0.14-dingtalk.9.1464e1b4`）——已验证的部分：**
 
 | 项 | 实测 |
 |---|---|

@@ -307,7 +307,8 @@ docker login registry.cn-hangzhou.aliyuncs.com
 
 | 日期 | tag | 补丁数 | 源码树 | 镜像 digest | 备注 |
 |---|---|---|---|---|---|
-| 2026-09-21 | `12.0.14-dingtalk.9.e3c4174f` | 9 | `446fe9ea…c38e393f` | `sha256:5cf3abfd…0f2fb9d7` | **当前生产用**（`.env.prod.example` 钉的就是它）。启动链路加固：seahub 启动失败重试 + 保活循环跟着死（[docs/007 §4.2.3](007-production-deployment.md)）。run 35574442997，6m27s |
+| 2026-09-21 | `12.0.14-dingtalk.9.1464e1b4` | 9 | `446fe9ea…c38e393f` | `sha256:e54f6234…9f89ac85` | **当前生产用**（`.env.prod.example` 钉的就是它）。**修反代模式登录 403**：补 `SECURE_PROXY_SSL_HEADER`（Django 不认 `X-Forwarded-Proto`）+ `custom_bootstrap` 幂等改逐项核对（[docs/007 §9](007-production-deployment.md)）。run 35584259460，5m50s |
+| 2026-09-21 | `12.0.14-dingtalk.9.e3c4174f` | 9 | `446fe9ea…c38e393f` | `sha256:5cf3abfd…0f2fb9d7` | 启动链路加固：seahub 启动失败重试 + 保活循环跟着死（[docs/007 §4.2.3](007-production-deployment.md)）。run 35574442997，6m27s |
 | 2026-09-21 | `12.0.14-dingtalk.9.b7a741d8` | 9 | `446fe9ea…c38e393f` | `sha256:aa906c16…467b6e0a4` | 二开定制搬进镜像：`init-conf.sh --prod` 整个删除，部署不再有「再跑一个脚本」这一步。run 35573252750，5m38s |
 | 2026-09-20 | `12.0.14-dingtalk.9.4edcb25d` | 9 | `446fe9ea…c38e393f` | `sha256:624c439c…4469e0cb9` | 补丁 0009：站点地址 `SERVICE_URL` 挪到管理后台、免重启生效（[docs/011](011-service-url-admin-config.md)）。首次自动触发成功（run 35503681853，5m53s） |
 | 2026-09-20 | `12.0.14-dingtalk.8.325dfdcd` | 8 | `a0fe6349…a65f5d25489` | `sha256:f604d0ba…c55c013ba` | 提交身份改为 GitHub noreply 后重导补丁（run 35500160361，手动触发）。镜像内容与上一版**未变**——三层指纹逐字节相同 |
