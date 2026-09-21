@@ -18,7 +18,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-TEMPLATE=.env.prod.example
+# 模板名故意不带前导点：它同时是 GitHub Release 的资产名，而 GitHub 会把点开头的
+# 资产名改写成 default.xxx（2026-09-21 实测：.env.prod.example 挂上去变成
+# default.env.prod.example），固定安装 URL 就取不到了。别再加回那个点。
+TEMPLATE=env.prod.example
 TARGET=.env
 COMPOSE=seafile-prod.yml
 
@@ -44,7 +47,8 @@ die() { echo "错误：$*" >&2; exit 1; }
 # .env 用 '值' 形式，值里出现单引号会把它截断
 no_quote() { case "$2" in *"'"*) die "$1 不能含单引号（会破坏 .env 解析）";; esac; }
 
-[ -f "$TEMPLATE" ] || die "找不到 ${TEMPLATE}（应在 deploy/ 下）"
+[ -f "$TEMPLATE" ] || die "找不到 ${TEMPLATE}（应在 deploy/ 下）。它是 Release 资产，
+  按 docs/007 §4.1 的 curl 取回来即可（注意文件名不带前导点，GitHub 要求）"
 command -v openssl >/dev/null || die "缺 openssl（用来生成密钥）；Debian/Ubuntu: apt install openssl"
 # docker 不只是下一步要用：脚本末尾拿 `docker compose config -q` 当最后一道自检，
 # 那是唯一能证明「取回来的 compose 整份可用」的检查。缺了它这道检查就成了摆设。

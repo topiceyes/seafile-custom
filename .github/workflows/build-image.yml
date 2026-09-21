@@ -54,6 +54,16 @@ env:
   # 通道 tag：所有生产部署跟随它（compose 里 image: …:latest）。
   # 名字只能是 latest —— 见 deploy/seafile-prod.yml 里那段注释与 docs/010 §4。
   CHANNEL: latest
+  # 挂在 Release 上的三个文件（= 新服务器的安装入口，固定 URL 指向它们）。
+  # 只此一份清单：守卫判「发布是否完整」与发布步骤用它，两处不会漂。
+  # 至少要有这三个 —— 少一个，「发布完整」就是假的，重跑也补不回来。
+  #
+  # ⚠️ 资产名不能以点开头。GitHub 会把点开头的资产名改写成 default.xxx
+  # （2026-09-21 实测：.env.prod.example 挂上去变成 default.env.prod.example），
+  # 固定 URL …/releases/latest/download/.env.prod.example 于是永远 404。
+  # 所以模板在仓库里就叫 deploy/env.prod.example，不带点。
+  RELEASE_ASSETS: >-
+    deploy/seafile-prod.yml deploy/init-prod-env.sh deploy/env.prod.example
 
 jobs:
   build:
@@ -177,11 +187,24 @@ jobs:
             # 发布 = 推镜像 → 搬通道 tag → 建 Release。这三件事分属三个步骤，中间任何
             # 一步失败，重跑都会撞上「tag 已存在」。若这里一律 skip 掉全部后续步骤，
             # 重跑就**静默什么都不做**——正是本项目反复在追的那类失败。
-            # 所以先判「发布是否已完整」：通道 tag 指向本 tag 的同一个 digest，
-            # 且 Release 已存在。只有两条都成立才算完整。
+            # 所以先判「发布是否已完整」。三个条件**全部**成立才算完整：
+            #   ① 通道 tag 存在且指向本 tag 的同一个 digest
+            #   ② Release 存在
+            #   ③ Release 上的资产一个不少
+            # ③ 是实际踩出来的（2026-09-21 首跑）：只判 Release 存在的话，资产缺失
+            # 的残缺发布会让重跑判定为「完整」而静默什么都不做——正是这个守卫要防的事。
             CH=$(docker buildx imagetools inspect "$IMAGE:$CHANNEL" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
             TG=$(docker buildx imagetools inspect "$IMAGE:$TAG"     --format '{{.Manifest.Digest}}' 2>/dev/null || true)
-            if [ -n "$CH" ] && [ "$CH" = "$TG" ] && gh release view "$TAG" >/dev/null 2>&1; then
+            ASSETS_OK=true
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              HAVE=$(gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null || true)
+              for f in $RELEASE_ASSETS; do
+                echo "$HAVE" | grep -qx "$(basename "$f")" || ASSETS_OK=false
+              done
+            else
+              ASSETS_OK=false
+            fi
+            if [ -n "$CH" ] && [ "$CH" = "$TG" ] && [ "$ASSETS_OK" = "true" ]; then
 
               # 自动触发（push）撞上「tag 已存在」= 构建输入一字未改，本来就没什么要建的
               # ——这是**正常结果，不是失败**。
@@ -194,7 +217,7 @@ jobs:
                 {
                   echo "## 跳过构建：镜像已是最新"
                   echo ""
-                  echo "\`$IMAGE:$TAG\` 已存在，通道 \`$CHANNEL\` 已指向它，Release 也已建好。"
+                  echo "\`$IMAGE:$TAG\` 已存在，通道 \`$CHANNEL\` 已指向它，Release 与三个资产都在。"
                   echo "tag 含构建输入哈希，同 tag 即同内容，说明这次推送没有改动任何构建输入"
                   echo "（\`patches/\`、\`deploy/image/\`、\`build-image.sh\`）。无需重建，本次运行视为成功。"
                 } >> "$GITHUB_STEP_SUMMARY"
@@ -211,9 +234,9 @@ jobs:
               exit 1
             fi
 
-            # 走到这儿：镜像在，但通道或 Release 没跟上（多半是上次发布半途失败）。
+            # 走到这儿：镜像在，但通道 / Release / 资产没跟上（多半是上次发布半途失败）。
             # 只补做发布，不重建 —— 内容寻址的 tag 保证了补做的是同一份字节。
-            echo "::notice::$IMAGE:$TAG 已存在，但发布不完整（通道/Release 缺失）——跳过构建，只补做发布。"
+            echo "::notice::$IMAGE:$TAG 已存在，但发布不完整（通道 digest=$CH 本 tag digest=$TG，Release 资产齐全=$ASSETS_OK）——跳过构建，只补做发布。"
             echo "skip_build=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -372,7 +395,9 @@ jobs:
             echo "</details>"
           } > /tmp/release-notes.md
 
-          ASSETS="deploy/seafile-prod.yml deploy/init-prod-env.sh deploy/.env.prod.example"
+          # 资产清单来自 workflow 级 env，守卫用的是同一份，两处不会漂。
+          ASSETS="$RELEASE_ASSETS"
+          echo "资产：$ASSETS"
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --notes-file /tmp/release-notes.md --latest
@@ -388,10 +413,24 @@ jobs:
               --notes-file /tmp/release-notes.md --latest $ASSETS
           fi
 
+          # 清掉不在清单里的旧资产。改过名字的（例如 2026-09-21 那个被 GitHub 改写成
+          # default.env.prod.example 的）会一直挂在 Release 上，成为永远下不到的垃圾，
+          # 也让「Release 上的资产 == 清单」这条不变量失效。先传后删，不会出现空窗。
+          # 两边都用 basename 比：清单里是仓库路径，Release 上是文件名。
+          KNOWN=$(for f in $ASSETS; do basename "$f"; done)
+          while read -r n; do
+            [ -n "$n" ] || continue
+            echo "$KNOWN" | grep -qx "$n" || {
+              echo "删除陈旧资产：$n"
+              gh release delete-asset "$TAG" "$n" --yes
+            }
+          done < <(gh release view "$TAG" --json assets --jq '.assets[].name')
+
           # 发布是否完整的判据 = 这个 tag 的 Release 三个资产都在。不完整就红，
           # 让重跑走 skip_build 补做路径，而不是留下一个「看着发布了」的残缺记录。
+          HAVE=$(gh release view "$TAG" --json assets --jq '.assets[].name')
           for f in $ASSETS; do
-            gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qx "$(basename "$f")" \
+            echo "$HAVE" | grep -qx "$(basename "$f")" \
               || { echo "::error::Release $TAG 缺资产 $(basename "$f")"; exit 1; }
           done
           echo "已发布：https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"

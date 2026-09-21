@@ -11,7 +11,7 @@
 ├── deploy/                 # Docker 部署（本仓库的主体）
 │   ├── seafile-server.yml      # dev compose（源码 bind-mount，本地开发）
 │   ├── seafile-prod.yml        # 生产 compose（自建镜像；无宿主机相对路径）
-│   ├── .env.example / .env.prod.example   # dev / 生产配置模板
+│   ├── .env.example / env.prod.example   # dev / 生产配置模板
 │   ├── init-prod-env.sh        # 生成生产 .env（密钥自动生成，零提问）
 │   ├── init-conf.sh            # 渲染配置进数据卷（仅 dev；生产已由镜像自动完成）
 │   ├── gen-ssl-cert.sh         # 自签证书（dev IP / 彩排域名）

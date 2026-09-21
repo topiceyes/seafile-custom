@@ -202,7 +202,7 @@ up -d`，不需要再取任何文件（版本由 CI 搬动通道 tag，见 §6�
 mkdir -p /opt/seafile-custom && cd /opt/seafile-custom
 B=https://github.com/topiceyes/seafile-custom/releases/latest/download
 curl -fLO $B/seafile-prod.yml
-curl -fLO $B/.env.prod.example
+curl -fLO $B/env.prod.example
 curl -fLfo init-prod-env.sh $B/init-prod-env.sh && chmod +x init-prod-env.sh
 
 # ---- 4.2 配置：一条命令生成 .env（密钥自动生成，零提问）----

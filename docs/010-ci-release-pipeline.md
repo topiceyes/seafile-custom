@@ -25,7 +25,7 @@ seahub/dev-dingtalk 提交
                                          ├ 搬通道 tag（imagetools --prefer-index=false）
                                          │    :latest ──→ 同一个 digest
                                          └ gh release create <不可变 tag>   ← 发布记录（§9）
-                                             资产：seafile-prod.yml / init-prod-env.sh / .env.prod.example
+                                             资产：seafile-prod.yml / init-prod-env.sh / env.prod.example
                                                                                   │
                                       releases/latest/download/<文件> ────────────┤ 只在【首次安装】取一次
                                                                                   ↓
@@ -237,7 +237,7 @@ cd deploy && ./export-patches.sh
 mkdir -p /opt/seafile-custom && cd /opt/seafile-custom
 B=https://github.com/topiceyes/seafile-custom/releases/latest/download
 curl -fLO $B/seafile-prod.yml
-curl -fLO $B/.env.prod.example
+curl -fLO $B/env.prod.example
 curl -fLfo init-prod-env.sh $B/init-prod-env.sh && chmod +x init-prod-env.sh
 
 ./init-prod-env.sh          # 只做一件事：生成密钥、写 .env。此后 .env 是操作员的文件
@@ -425,7 +425,7 @@ docker login registry.cn-hangzhou.aliyuncs.com
 > 每次构建自动建一个 Release（[全部发布](https://github.com/topiceyes/seafile-custom/releases)），
 > 正文含：不可变 tag、通道 tag、digest、补丁数、源码树、基线、run 链接、升级/回滚/
 > 离线命令、自上一版的构建输入变更列表、冒烟日志与三层指纹。同一份
-> `seafile-prod.yml` / `init-prod-env.sh` / `.env.prod.example` 作为资产挂在上面，
+> `seafile-prod.yml` / `init-prod-env.sh` / `env.prod.example` 作为资产挂在上面，
 > 供新服务器从固定 URL 取。
 >
 > **为什么换掉手工台账**：原来每次发布要有人把 digest 抄进 compose 并回这里补一行。

@@ -1,6 +1,6 @@
 # Seafile 12 CE 二开生产部署（自建镜像；TLS 两种模式见 docs/007 §9）
 # 完整流程（首次部署/彩排/回滚/升级）见 docs/007-production-deployment.md。
-# 变量从 .env 读取（模板 .env.prod.example；dev 环境用 seafile-server.yml，两者独立）。
+# 变量从 .env 读取（模板 env.prod.example；dev 环境用 seafile-server.yml，两者独立）。
 #
 # 与 dev compose 的关键差异：
 #   - 镜像用自建 tag（二开代码 + 前端 + collectstatic + 运维脚本 全烘进去），
