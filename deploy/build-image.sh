@@ -110,12 +110,20 @@ PATCH_COUNT=$(ls "$PATCHES_DIR"/*.patch 2>/dev/null | wc -l | tr -d ' ')
 #
 # 所以把全部构建输入的内容哈希并进 tag，让「同 tag ⇒ 同内容」重新成立。
 # 补丁数仍然留在 tag 里，是因为它对人不言自明（第几个二开版本），便于沟通。
+#
+# ⚠️ 必须排除 __pycache__/*.pyc（2026-09-21 踩到）：它们是本机跑过
+# `python3 deploy/image/custom_bootstrap.py` 之类的**副产物**，git 忽略它们，
+# 但 `find` 不忽略——于是同一个提交在「跑过脚本的开发机」与「干净 checkout 的
+# CI」上算出【两个不同的 tag】。Dockerfile 是逐个文件 COPY，pycache 从不进镜像，
+# 所以那是**同内容、不同 tag**：本地 --print-tag 报出的 tag 在 registry 里根本不存在。
+# 若有人把它当真写进 seafile-prod.yml，服务器就会去拉一个不存在的镜像。
 build_inputs_hash() {
   {
     # 补丁内容（不只是个数）
     cat "$PATCHES_DIR"/*.patch
     # 除补丁外的构建输入：Dockerfile、nginx 模板、本脚本
     ( cd "$REPO_ROOT" && find deploy/image deploy/build-image.sh -type f \
+        ! -name '*.pyc' ! -path '*/__pycache__/*' \
         -exec sha256sum {} + | LC_ALL=C sort -k2 )
   } | sha256sum | cut -c1-8
 }
