@@ -46,19 +46,27 @@ no_quote() { case "$2" in *"'"*) die "$1 不能含单引号（会破坏 .env 解
 
 [ -f "$TEMPLATE" ] || die "找不到 ${TEMPLATE}（应在 deploy/ 下）"
 command -v openssl >/dev/null || die "缺 openssl（用来生成密钥）；Debian/Ubuntu: apt install openssl"
+# docker 不只是下一步要用：脚本末尾拿 `docker compose config -q` 当最后一道自检，
+# 那是唯一能证明「取回来的 compose 整份可用」的检查。缺了它这道检查就成了摆设。
+command -v docker >/dev/null || die "缺 docker（本脚本末尾要用 docker compose 校验部署文件）；见 docs/007 §2"
 
-# ---- 迁移提醒：.env 里不该再有镜像版本 ----
+# ---- 提醒：.env 里的 SEAFILE_PRO_IMAGE 会把这台机器钉死 ----
 #
-# 镜像版本已挪进【入库的】compose 文件（见 docs/007 §6）。.env 里若还留着这一行，
-# 它会【覆盖】compose 的默认值 —— 那正是要消灭的「改了没生效」：仓库里换了版本，
-# 服务器却按 .env 里的旧值跑，而且不报错。
+# compose 的默认值现在是【通道 tag】latest，镜像版本由 CI 搬动（docs/010 §4）。
+# .env 里若有一行没注释的 SEAFILE_PRO_IMAGE，它会【覆盖】通道默认值 ——
+# 这台机器从此不再跟随发布，固定在某个版本上，而且**不报错**。
 #
-# 这里是警告、不是拒绝：.env 含真实密钥，本脚本对已存在的文件一向不动手。
+# 这在两种场合是正当的：紧急回滚、离线导入。所以这里是提醒而不是拒绝。
+# 更推荐做成命令行内联（SEAFILE_PRO_IMAGE=... docker compose pull && ... up -d），
+# 免得留在文件里被遗忘。
+#
 # 放在覆盖保护【之前】——否则永远走不到（下一段对已存在的 .env 直接 die）。
 if [ -f "$TARGET" ] && grep -q "^SEAFILE_PRO_IMAGE=" "$TARGET"; then
-  echo "⚠️  ${TARGET} 里还有 SEAFILE_PRO_IMAGE —— 它会盖掉 ${COMPOSE} 里钉的版本。"
-  echo "    镜像版本已挪进 ${COMPOSE}。迁移：注释掉 ${TARGET} 里那一行，"
-  echo "    之后升级只要重取 deploy/ + docker compose pull && docker compose up -d。"
+  echo "⚠️  ${TARGET} 里有一行未注释的 SEAFILE_PRO_IMAGE："
+  echo "      $(grep "^SEAFILE_PRO_IMAGE=" "$TARGET")"
+  echo "    它会盖掉 ${COMPOSE} 的通道默认值（latest），这台机器将【不再跟随发布】。"
+  echo "    · 有意为之（紧急回滚 / 离线导入）→ 无视这条提示"
+  echo "    · 不是有意的 → 注释掉那一行，之后升级只要 docker compose pull && docker compose up -d"
   echo
 fi
 
@@ -131,11 +139,21 @@ grep -q "^SEAFILE_SERVER_LETSENCRYPT='false'" "$TARGET" \
   || die "SEAFILE_SERVER_LETSENCRYPT 不是 false —— 反代模式下容器必须只监听 80"
 grep -q "^SEAFILE_SERVER_PROTOCOL='https'" "$TARGET" \
   || die "SEAFILE_SERVER_PROTOCOL 不是 https —— 会导致 SERVICE_URL 生成 http 链接"
-grep -qE '^[[:space:]]+image: \$\{SEAFILE_PRO_IMAGE:-ghcr\.io/topiceyes/seafile-mc@sha256:[0-9a-f]{64}\}' "$COMPOSE" \
-  || die "${COMPOSE} 的 seafile 镜像没有钉死 digest 的默认值（\${SEAFILE_PRO_IMAGE:-ghcr.io/…@sha256:…}）——取部署文件后这一行丢了？"
+# seafile 那行必须仍是「通道 tag 默认值 + 覆盖口子」的形状
+grep -qE '^[[:space:]]+image: \$\{SEAFILE_PRO_IMAGE:-ghcr\.io/topiceyes/seafile-mc:latest\}' "$COMPOSE" \
+  || die "${COMPOSE} 的 seafile 镜像行不对（期望 image: \${SEAFILE_PRO_IMAGE:-ghcr.io/topiceyes/seafile-mc:latest}）——部署文件取回来时被弄坏了？"
+# 另两个镜像仍在：取回来的文件被截断时，先丢的总是尾部
+# （pattern 故意不锚 $ —— 那行有行尾注释，锚了就永远匹配不上）
+grep -qE '^[[:space:]]+image: ghcr\.io/topiceyes/mariadb:[0-9]'   "$COMPOSE" || die "${COMPOSE} 里少了 mariadb 镜像行"
+grep -qE '^[[:space:]]+image: ghcr\.io/topiceyes/memcached:[0-9]' "$COMPOSE" || die "${COMPOSE} 里少了 memcached 镜像行"
+grep -qE '^  seafile:$' "$COMPOSE" || die "${COMPOSE} 结构不完整（service seafile 不见了）"
 if grep -qE "^[A-Z_]+='(change-me|seafile\.example\.com|admin@example\.com)'" "$TARGET"; then
   die "还有占位符未替换：$(grep -oE "^[A-Z_]+='(change-me|seafile\.example\.com|admin@example\.com)'" "$TARGET" | tr '\n' ' ')"
 fi
+# 最强的一道：整份 compose 能被解析、且所有变量都能从刚生成的 .env 插值出来。
+# 上面几条 grep 只认形状，这条认的是「下一步 docker compose pull 真的能跑」。
+docker compose -f "$COMPOSE" config -q \
+  || die "${COMPOSE} 解析失败（上面应该有 docker 的报错）——文件不完整，或 .env 里有值写坏了"
 
 # ---- 把生成的密码留在终端上 ----
 echo

@@ -83,7 +83,8 @@ if prod:
         '\n'
         '  之后不需要再跑任何东西。幂等，每次启动都会校验一遍。\n'
         '\n'
-        '  看到这条说明你用的还是旧镜像。换成含此改动的镜像即可（tag 见 docs/010 §9）。\n'
+        '  看到这条说明你用的还是旧镜像。docker compose pull && docker compose up -d 即可\n'
+        '  （compose 跟的是通道 tag，见 docs/007 §6）。\n'
         '  若确实要手工追加（例如临时绕过），用旧版脚本：git show <旧提交>:deploy/init-conf.sh'
     )
 else:

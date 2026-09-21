@@ -15,7 +15,7 @@ services:
     # registry-1.docker.io 直接超时（2026-09-21 实测），而 ghcr.io 匿名可拉。
     # 三个镜像同源之后，服务器侧只剩一个要连通的目标，也不需要 docker login。
     # 这两个 ghcr 包由 .github/workflows/mirror-infra-images.yml 镜像而来，
-    # 上游基础镜像更新时重跑那个 workflow 刷新。digest 记在 docs/010 §9。
+    # 上游基础镜像更新时重跑那个 workflow 刷新。当前 digest 记在 docs/010 §8.1。
     image: ghcr.io/topiceyes/mariadb:10.11
     container_name: seafile-mysql
     restart: unless-stopped
@@ -50,17 +50,29 @@ services:
       - seafile-net
 
   seafile:
-    # 镜像版本钉在这里（入库），**不要**放进 .env：.env 含密钥、必须 gitignore，
-    # 版本写在那儿的话，「CI 构建出新镜像」到「服务器知道有新版本」之间就没有任何
-    # 自动通道，只能靠人改——而且忘了改是**静默**的（pull 照样报 Pulled、up 照样
-    # 报 Recreated，跑的还是旧镜像）。曾经就是这么设计的，2026-09-21 踩到。
+    # ── 镜像跟随【通道 tag】latest ──────────────────────────────────────────
+    # 它不是某个固定版本，而是一个指针：永远指向 CI 最近一次「构建 + 冒烟全绿」的
+    # 产物。指针只在前移，且前移时 CI 会断言它的 digest 与那个不可变 tag 完全相同。
     #
-    # 升级：取新的 deploy/（带来新的这一行）→ docker compose pull && up -d，
-    # 流程见 docs/007 §6。回滚同理，取旧 commit 的 tarball。
+    # 升级 = docker compose pull && docker compose up -d。服务器上【不需要改任何
+    # 文件、不需要重取仓库】：CI 在「构建 + 冒烟都通过」之后才把 latest 搬过来。
+    # 详见 docs/007 §6 与 docs/010 §4。
     #
-    # ${VAR:-默认} 保留覆盖口子：真要紧急回滚又不想动仓库，在 .env 里写一行
-    # SEAFILE_PRO_IMAGE 即可覆盖——但它属于例外，不是常规路径。
-    image: ${SEAFILE_PRO_IMAGE:-ghcr.io/topiceyes/seafile-mc@sha256:e54f6234fc9755f086706643970b84ab08b63f7602a342ca7c98faac9f89ac85}
+    # ⚠️ 通道名只能是 latest，不要"优化"成 stable 之类更好听的名字。理由可复核、
+    #    不是审美：`docker compose pull` 在服务**显式设了** pull_policy:
+    #    missing / if_not_present 时，会跳过本地已存在的非 latest tag
+    #    （docker/compose pkg/compose/pull.go：shouldPullImage → isLatestTag）。
+    #    今天没设 pull_policy，所以两个名字都能用；但哪天有人为了"别老打 registry"
+    #    加上它，latest 免疫、stable 会**静默停更**——正是本项目 2026-09-21 栽过的
+    #    那个失败类别（pull 报成功、跑的还是旧镜像）。
+    #
+    # 回滚（一条命令，不改文件、不取仓库；可用 tag 见 GitHub Releases 记录）：
+    #   SEAFILE_PRO_IMAGE=ghcr.io/topiceyes/seafile-mc:12.0.14-dingtalk.9.<hash> \
+    #     docker compose pull && docker compose up -d
+    # 把它写进 .env 也行，但那会让这台机器**从此不再跟随通道**，属于刻意 pin。
+    #
+    # 离线导入（docs/007 §2）：包里同时带了 latest，所以同样不用动 .env。
+    image: ${SEAFILE_PRO_IMAGE:-ghcr.io/topiceyes/seafile-mc:latest}
     container_name: seafile
     restart: unless-stopped
     ports:

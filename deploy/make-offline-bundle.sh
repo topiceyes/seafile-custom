@@ -2,13 +2,18 @@
 # 把生产所需镜像打成一个离线包，供「服务器连不上镜像仓库」时导入。
 #
 #   ./make-offline-bundle.sh                              # 自动取当前版本的 tag
-#   ./make-offline-bundle.sh 12.0.14-dingtalk.9.1464e1b4  # 指定 tag（示例；以 docs/010 §9 台账为准）
+#   ./make-offline-bundle.sh 12.0.14-dingtalk.9.1464e1b4  # 指定 tag（示例；可用值见 GitHub Releases 记录）
 #   OUT_DIR=/tmp ./make-offline-bundle.sh                 # 指定输出目录
 #
 # 服务器侧：
 #   gunzip -c seafile-offline-<tag>.tar.gz | docker load
 #   docker compose up -d          # ⚠️ 不要用 pull —— pull 会强制联网，本地有也照拉
 #   docker compose config | grep image:   # 确认三个镜像都解析到了
+#
+# **服务器上不需要改任何文件。** 本脚本会把 seafile 镜像同时打成两个 tag：不可变的
+# 版本 tag，以及 compose 里那个通道 tag（latest）。load 进去后 compose 按 latest
+# 直接命中本地镜像。（2026-09-21 之前 compose 钉的是 digest，那时必须在 .env 里
+# 覆盖成 tag 形式——那个坑随通道 tag 一起消失了。）
 #
 # ## 为什么需要这个脚本
 #
@@ -26,10 +31,12 @@
 # 1. **必须 --platform linux/amd64**。开发机是 Apple Silicon，本地镜像默认 arm64；
 #    不指定平台导出的包在 amd64 服务器上会报 exec format error。
 #
-# 2. **必须按 tag 拉，不能按 digest 拉**。按 digest 拉下来的镜像没有 RepoTag，
+# 2. **必须按 tag 拉/打，不能按 digest**。按 digest 拉的镜像没有 RepoTag，
 #    `docker save` 会写出 "RepoTags": null，`docker load` 之后是个**无标签的悬空
 #    镜像**——compose 按 repo@sha256:… 找不到它，于是又去联网拉。这个坑很隐蔽：
 #    load 不报错，镜像也在（docker images 里 repo 是 <none>），但就是不起作用。
+#    脚本末尾的校验会拒绝任何没有 RepoTag 的镜像，所以包本身是安全的；
+#    这条留着是为了让人别手工做这一步。
 #
 # 3. **containerd 镜像存储下 `docker image inspect` 只显示宿主架构**。所以在这台
 #    Mac 上 inspect 会看到 arm64，看着像 amd64 没拉下来——其实存了。别被骗，
@@ -79,8 +86,21 @@ EOF
 [ -n "$INFRA" ] || die "从 ${COMPOSE} 里没解析出基础镜像，检查 image: 那几行"
 
 SEAFILE_REF="${REGISTRY_IMAGE}:${TAG}"
+
+# ---- 通道 tag：从 compose 里取，别在脚本里另写一份 ----
+# compose 里那行是 image: ${SEAFILE_PRO_IMAGE:-ghcr.io/…:latest}，默认值就是通道 tag。
+# 服务器 load 之后就靠这个 tag 命中本地镜像，所以包里必须带上它。
+CHANNEL_REF=$(sed -nE 's/.*\$\{SEAFILE_PRO_IMAGE:-([^}]+)\}.*/\1/p' "$COMPOSE" | head -1)
+[ -n "$CHANNEL_REF" ] || die "从 ${COMPOSE} 里没解析出 seafile 的镜像默认值（\${SEAFILE_PRO_IMAGE:-…}）"
+case "$CHANNEL_REF" in
+  *@sha256:*) die "compose 的默认值是 digest 形式（${CHANNEL_REF}）——离线包必须按 tag（见头注坑 2）" ;;
+  *:*) ;;
+  *) die "compose 的默认值不像个 tag 引用：${CHANNEL_REF}" ;;
+esac
+
 echo "镜像清单："
-echo "  ${SEAFILE_REF}"
+echo "  ${SEAFILE_REF}   （不可变版本 tag）"
+echo "  ${CHANNEL_REF}   （通道 tag，compose 按它找镜像 ← 同一个镜像，两个 tag）"
 for i in $INFRA; do echo "  ${i}"; done
 echo
 
@@ -91,6 +111,12 @@ for i in $INFRA; do
   docker pull --platform "$PLATFORM" "$i"
 done
 
+# ---- 给同一个镜像补上通道 tag ----
+# 一个镜像挂两个 RepoTag，save 出来就是一条 manifest 条目、两个 tag。
+echo
+echo "==> 打通道 tag：${CHANNEL_REF}"
+docker tag "$SEAFILE_REF" "$CHANNEL_REF"
+
 # ---- 打包 ----
 OUT_TAR="${OUT_DIR}/seafile-offline-${TAG}.tar"
 echo
@@ -98,7 +124,7 @@ echo "==> 打包 → ${OUT_TAR}"
 rm -f "$OUT_TAR"
 # INFRA 不加引号是有意的：它是以空格分隔的镜像列表，这里需要分词
 # shellcheck disable=SC2086
-docker save --platform "$PLATFORM" -o "$OUT_TAR" "$SEAFILE_REF" $INFRA
+docker save --platform "$PLATFORM" -o "$OUT_TAR" "$SEAFILE_REF" "$CHANNEL_REF" $INFRA
 
 # ---- 校验：每个镜像都要有 tag、且都是目标架构 ----
 echo
@@ -106,24 +132,34 @@ echo "==> 校验包内容"
 VERIFY_DIR=$(mktemp -d)
 trap 'rm -rf "$VERIFY_DIR"' EXIT
 tar -xf "$OUT_TAR" -C "$VERIFY_DIR" 2>/dev/null || die "解包失败"
-python3 - "$VERIFY_DIR" "$PLATFORM" <<'PY' || exit 1
+python3 - "$VERIFY_DIR" "$PLATFORM" "$SEAFILE_REF" "$CHANNEL_REF" <<'PY' || exit 1
 import json, os, sys
-root, want = sys.argv[1], sys.argv[2]
+root, want, seafile_ref, channel_ref = sys.argv[1:5]
 want_arch, want_os = want.split('/')[::-1]      # linux/amd64 → amd64/linux
 man = json.load(open(os.path.join(root, 'manifest.json')))
 bad = 0
+seen = set()
 for m in man:
     cfg = json.load(open(os.path.join(root, m['Config'])))
     tags = m.get('RepoTags') or []
+    seen.update(tags)
     ok_tag = bool(tags)
     ok_arch = (cfg.get('architecture'), cfg.get('os')) == (want_arch, want_os)
-    mark = '✅' if (ok_tag and ok_arch) else '❌'
     if not (ok_tag and ok_arch):
         bad += 1
-    print('  %s %-55s %s/%s' % (mark, (tags or ['<无 tag — load 后会成为悬空镜像，compose 找不到它>'])[0],
-                                cfg.get('architecture'), cfg.get('os')))
+    print('  %s %s' % ('✅' if (ok_tag and ok_arch) else '❌',
+                       ', '.join(tags) if tags
+                       else '<无 tag — load 后会成为悬空镜像，compose 找不到它>'))
+    print('      %s/%s' % (cfg.get('architecture'), cfg.get('os')))
+
+# seafile 那个镜像必须【两个 tag 都带】：少了通道 tag，服务器 load 进去之后
+# compose 按 :latest 找不到它，会转去联网拉 —— 离线环境里就是直接失败。
+missing = [r for r in (seafile_ref, channel_ref) if r not in seen]
+if missing:
+    print('\n包里缺这几个 tag：%s' % '、'.join(missing))
+    bad += 1
 if bad:
-    print('\n有 %d 个镜像不合格，别用这个包。' % bad)
+    print('\n有 %d 处不合格，别用这个包。' % bad)
     sys.exit(1)
 PY
 
@@ -139,3 +175,4 @@ echo "     scp ${OUT_TAR}.gz <服务器>:/tmp/"
 echo "     # 服务器上："
 echo "     gunzip -c /tmp/$(basename "${OUT_TAR}.gz") | docker load"
 echo "     docker compose up -d        # ⚠️ 用 up，不要用 pull"
+echo "     # 不需要改 .env —— 包里同时带了通道 tag：${CHANNEL_REF}"

@@ -46,11 +46,14 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write          # 建 Release（发布记录 = 唯一台账，见 docs/010 §9）
   packages: write          # 推 ghcr.io 需要
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/seafile-mc
+  # 通道 tag：所有生产部署跟随它（compose 里 image: …:latest）。
+  # 名字只能是 latest —— 见 deploy/seafile-prod.yml 里那段注释与 docs/010 §4。
+  CHANNEL: latest
 
 jobs:
   build:
@@ -59,7 +62,10 @@ jobs:
     env:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     steps:
+      # fetch-depth: 0 —— 记录发布时要跟上一个 release tag 做 diff（构建输入变更列表）
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: 读取基线（patches/MANIFEST.md）
         id: base
@@ -161,50 +167,69 @@ jobs:
         if: ${{ github.event.inputs.force != 'true' }}
         env:
           TAG: ${{ steps.tag.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if docker buildx imagetools inspect "$IMAGE:$TAG" >/dev/null 2>&1; then
 
-            # 自动触发（push）撞上「tag 已存在」= 构建输入一字未改，本来就没什么要建的
-            # ——这是**正常结果，不是失败**。
+            # ---- tag 已存在。但「镜像发了」不等于「发布做完了」 ----
             #
-            # 之所以要在这儿分开处理：`paths` 过滤在「强推、before 不是 after 的祖先」时
-            # 判定不可靠（docs/010 §3，2026-09-20 实测两次表现相反），会让这种空转跑起来。
-            # 旧写法一律 `exit 1`，于是**每次空转都给仓库管理员发一封「构建失败」邮件**，
-            # 而实际什么都没坏——2026-09-20 那次就是这么误报的。守卫拦得对，报错报得不对。
-            if [ "${{ github.event_name }}" = "push" ]; then
-              {
-                echo "## 跳过构建：镜像已是最新"
-                echo ""
-                echo "\`$IMAGE:$TAG\` 已存在。tag 含构建输入哈希，同 tag 即同内容，"
-                echo "说明这次推送没有改动任何构建输入（\`patches/\`、\`deploy/image/\`、\`build-image.sh\`）。"
-                echo "无需重建，本次运行视为成功。"
-              } >> "$GITHUB_STEP_SUMMARY"
-              echo "::notice::$IMAGE:$TAG 已存在，自动触发无需构建，跳过（非失败）。"
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0
+            # 发布 = 推镜像 → 搬通道 tag → 建 Release。这三件事分属三个步骤，中间任何
+            # 一步失败，重跑都会撞上「tag 已存在」。若这里一律 skip 掉全部后续步骤，
+            # 重跑就**静默什么都不做**——正是本项目反复在追的那类失败。
+            # 所以先判「发布是否已完整」：通道 tag 指向本 tag 的同一个 digest，
+            # 且 Release 已存在。只有两条都成立才算完整。
+            CH=$(docker buildx imagetools inspect "$IMAGE:$CHANNEL" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
+            TG=$(docker buildx imagetools inspect "$IMAGE:$TAG"     --format '{{.Manifest.Digest}}' 2>/dev/null || true)
+            if [ -n "$CH" ] && [ "$CH" = "$TG" ] && gh release view "$TAG" >/dev/null 2>&1; then
+
+              # 自动触发（push）撞上「tag 已存在」= 构建输入一字未改，本来就没什么要建的
+              # ——这是**正常结果，不是失败**。
+              #
+              # 之所以要在这儿分开处理：`paths` 过滤在「强推、before 不是 after 的祖先」时
+              # 判定不可靠（docs/010 §3，2026-09-20 实测两次表现相反），会让这种空转跑起来。
+              # 旧写法一律 `exit 1`，于是**每次空转都给仓库管理员发一封「构建失败」邮件**，
+              # 而实际什么都没坏——2026-09-20 那次就是这么误报的。守卫拦得对，报错报得不对。
+              if [ "${{ github.event_name }}" = "push" ]; then
+                {
+                  echo "## 跳过构建：镜像已是最新"
+                  echo ""
+                  echo "\`$IMAGE:$TAG\` 已存在，通道 \`$CHANNEL\` 已指向它，Release 也已建好。"
+                  echo "tag 含构建输入哈希，同 tag 即同内容，说明这次推送没有改动任何构建输入"
+                  echo "（\`patches/\`、\`deploy/image/\`、\`build-image.sh\`）。无需重建，本次运行视为成功。"
+                } >> "$GITHUB_STEP_SUMMARY"
+                echo "::notice::$IMAGE:$TAG 已存在且发布完整，自动触发无需构建，跳过（非失败）。"
+                echo "skip=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+
+              # 手动触发则相反：是人明确要求构建的，什么都不做必须让人看见 → 保持失败。
+              echo "::error::$IMAGE:$TAG 已存在。tag 是内容寻址的（含构建输入哈希），所以同 tag 就"
+              echo "::error::意味着同内容——这次构建不会产出任何新东西。多半是你的改动没触及任何"
+              echo "::error::构建输入（例如只改了文档）。确认后无需重建。"
+              echo "::error::确实要覆盖（例如重建以拉取上游更新过的基础镜像）：-f force=true"
+              exit 1
             fi
 
-            # 手动触发则相反：是人明确要求构建的，什么都不做必须让人看见 → 保持失败。
-            echo "::error::$IMAGE:$TAG 已存在。tag 是内容寻址的（含构建输入哈希），所以同 tag 就"
-            echo "::error::意味着同内容——这次构建不会产出任何新东西。多半是你的改动没触及任何"
-            echo "::error::构建输入（例如只改了文档）。确认后无需重建。"
-            echo "::error::确实要覆盖（例如重建以拉取上游更新过的基础镜像）：-f force=true"
-            exit 1
+            # 走到这儿：镜像在，但通道或 Release 没跟上（多半是上次发布半途失败）。
+            # 只补做发布，不重建 —— 内容寻址的 tag 保证了补做的是同一份字节。
+            echo "::notice::$IMAGE:$TAG 已存在，但发布不完整（通道/Release 缺失）——跳过构建，只补做发布。"
+            echo "skip_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           echo "✅ tag 未被占用：$TAG"
 
       # Docker Hub 匿名拉取在共享 runner IP 上容易撞限流（toomanyrequests）。
       # 有凭据就用，没有就跳过——不因此让构建失败。
       - name: 登 Docker Hub（配置了凭据才跑，规避匿名拉取限流）
-        if: env.DOCKERHUB_USERNAME != '' && steps.guard.outputs.skip != 'true'
+        if: env.DOCKERHUB_USERNAME != '' && steps.guard.outputs.skip_build != 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: 构建并推送
-        if: steps.guard.outputs.skip != 'true'
+        if: steps.guard.outputs.skip_build != 'true'
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
@@ -223,7 +248,7 @@ jobs:
       # 断言本身在 deploy/smoke-test.sh —— 与开发机人工验证共用同一份，避免两处漂移
       # （这套断言曾因 workflow 与 docs 各存一份而写错了路径，见该脚本头部注释）。
       - name: 冒烟验证已推送的镜像
-        if: steps.guard.outputs.skip != 'true'
+        if: steps.guard.outputs.skip_build != 'true'
         run: |
           set -euo pipefail
           docker pull "$IMAGE:$TAG"
@@ -231,38 +256,168 @@ jobs:
             -v "$PWD/deploy/smoke-test.sh:/smoke.sh:ro" \
             "$IMAGE:$TAG" /smoke.sh 2>&1 | tee /tmp/smoke.log
 
-      - name: 记录 digest
+      # ---- 搬通道 tag：必须【在冒烟之后】 ----
+      #
+      # 顺序是有意的，不是随便放的。若把通道做成 `buildx build` 的第二个 -t，
+      # 通道会在**推送那一刻**就指过去，而冒烟只能跑在推送之后——冒烟一挂，
+      # 通道已经指向坏镜像。所以必须在这里单独搬，并且搬完立刻自证。
+      #
+      # `--prefer-index=false` 不能省：imagetools create 对**单平台 manifest** 默认会
+      # 包一层新 index（本机 dry-run 实测：源 image.manifest.v1+json → 产物
+      # image.index.v1+json），那样 :latest 的 digest 与不可变 tag 的 digest 就不再
+      # 相同，「同一份字节」这个口径断掉，回滚与离线包都会对不上号。
+      - name: 移动通道 tag
         if: steps.guard.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
-          DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$TAG")
+          docker buildx imagetools create --prefer-index=false -t "$IMAGE:$CHANNEL" "$IMAGE:$TAG"
+
+          D_CH=$(docker buildx imagetools inspect "$IMAGE:$CHANNEL" --format '{{.Manifest.Digest}}')
+          D_TG=$(docker buildx imagetools inspect "$IMAGE:$TAG"     --format '{{.Manifest.Digest}}')
+          MT=$(docker buildx imagetools inspect "$IMAGE:$CHANNEL"   --format '{{.Manifest.MediaType}}')
+
+          [ "$D_CH" = "$D_TG" ] || {
+            echo "::error::通道 tag 的 digest ($D_CH) ≠ 不可变 tag 的 digest ($D_TG)"
+            echo "::error::imagetools create 大概没走原样拷贝分支——检查 --prefer-index=false 还在不在"
+            exit 1
+          }
+          case "$MT" in
+            *image.manifest*) ;;
+            *) echo "::error::$IMAGE:$CHANNEL 不是单平台 manifest（$MT）——digest 口径与不可变 tag 不一致"; exit 1 ;;
+          esac
+
+          echo "DIGEST=$D_CH" >> "$GITHUB_ENV"
+          echo "✅ $IMAGE:$CHANNEL → $D_CH（与 $TAG 同一份字节）"
+
+      # ---- 发布记录 = 唯一的发布台账（docs/010 §9；旧的手工台账已冻结为历史） ----
+      #
+      # 替代原来「CI 打印 digest，人去改文件 + 手工补台账」的做法：那个动作在 N 个
+      # 部署的规模下是乘 N 的手工活，而且漏做是静默的（2026-09-21 的事故）。
+      #
+      # 用 view→edit/create 分支做成幂等：force 重建、以及上面那条「只补做发布」
+      # 的重跑路径都会走到这里。
+      - name: 发布记录（GitHub Release）
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # PATCHES 在上游那一步是 shell 局部变量，传不过来；这里重算一次
+          PATCHES=$(ls patches/*.patch | wc -l | tr -d ' ')
+
+          PREV=$(gh release list --limit 1 --exclude-drafts --json tagName --jq '.[0].tagName' 2>/dev/null || true)
+          if [ -n "$PREV" ] && git rev-parse -q --verify "refs/tags/$PREV" >/dev/null; then
+            CHANGES=$(git log --no-decorate --oneline "$PREV..$GITHUB_SHA" -- \
+                        patches deploy/image deploy/build-image.sh)
+          else
+            PREV=""; CHANGES="（首次发布，无对比基线）"
+          fi
+
+          # 部署文件（compose）改动是**唯一**还需要已装服务器重取文件的场景 —— 必须让人看见。
+          # 服务器不再取任何文件是设计使然，代价就是 compose 改动不会自己传播。
+          NEED_REFETCH=""
+          if [ -n "$PREV" ] && gh release download "$PREV" -p seafile-prod.yml -O /tmp/prev-compose.yml 2>/dev/null; then
+            cmp -s /tmp/prev-compose.yml deploy/seafile-prod.yml || NEED_REFETCH=yes
+          fi
+
           {
-            echo "## 镜像已发布"
+            echo "# $TAG"
+            echo ""
+            if [ "$NEED_REFETCH" = "yes" ]; then
+              echo "> ⚠️ **本版改了部署文件（\`seafile-prod.yml\`）——已装好的服务器需要重取一次**:"
+              echo ">"
+              echo "> \`\`\`"
+              echo "> curl -fL -o seafile-prod.yml https://github.com/$GITHUB_REPOSITORY/releases/latest/download/seafile-prod.yml"
+              echo "> \`\`\`"
+              echo ">"
+              echo "> 这是服务器侧**唯一**还需要取文件的场景。平时升级什么都不用取。"
+              echo ""
+            fi
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 镜像（不可变） | \`$IMAGE:$TAG\` |"
+            echo "| 通道 tag | \`$IMAGE:$CHANNEL\` → 同一个 digest |"
+            echo "| digest | \`$DIGEST\` |"
+            echo "| 补丁数 | $PATCHES |"
+            echo "| 源码树 | \`${{ steps.base.outputs.tree }}\` |"
+            echo "| 基线 | \`${{ steps.base.outputs.base }}\` |"
+            echo "| 提交 | \`$GITHUB_SHA\` |"
+            echo "| 运行 | [$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) |"
+            echo ""
+            echo "## 升级（服务器上，不取任何文件）"
+            echo '```'
+            echo "docker compose pull && docker compose up -d"
+            echo '```'
+            echo "## 回滚（一条命令，不改文件、不取仓库）"
+            echo '```'
+            echo "SEAFILE_PRO_IMAGE=$IMAGE:$TAG docker compose pull && \\"
+            echo "  SEAFILE_PRO_IMAGE=$IMAGE:$TAG docker compose up -d"
+            echo '```'
+            echo "## 离线包"
+            echo '```'
+            echo "cd deploy && ./make-offline-bundle.sh $TAG   # 包里同时带 $TAG 与 $CHANNEL"
+            echo '```'
+            echo "## 构建输入变更（自 ${PREV:-无可比基线}）"
+            echo '```'
+            echo "$CHANGES"
+            echo '```'
+            echo "<details><summary>冒烟验证与三层指纹</summary>"
+            echo ""
+            echo '```'
+            sed -n '/--- 指纹 ---/,$p' /tmp/smoke.log 2>/dev/null || echo "（本次未构建，无冒烟日志）"
+            echo '```'
+            echo "</details>"
+          } > /tmp/release-notes.md
+
+          ASSETS="deploy/seafile-prod.yml deploy/init-prod-env.sh deploy/.env.prod.example"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file /tmp/release-notes.md --latest
+            # edit 不碰资产。上一轮若在传资产时挂掉，Release 会永远缺文件——
+            # 而固定安装 URL 就指着这些文件。--clobber 让它幂等。
+            # shellcheck disable=SC2086
+            gh release upload "$TAG" --clobber $ASSETS
+          else
+            # create 是「先建 draft → 传资产 → 再 publish」，所以 latest 解析到的
+            # Release 一定资产齐全（不会下到一个半成品）。
+            # shellcheck disable=SC2086
+            gh release create "$TAG" --title "$TAG" --target "$GITHUB_SHA" \
+              --notes-file /tmp/release-notes.md --latest $ASSETS
+          fi
+
+          # 发布是否完整的判据 = 这个 tag 的 Release 三个资产都在。不完整就红，
+          # 让重跑走 skip_build 补做路径，而不是留下一个「看着发布了」的残缺记录。
+          for f in $ASSETS; do
+            gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qx "$(basename "$f")" \
+              || { echo "::error::Release $TAG 缺资产 $(basename "$f")"; exit 1; }
+          done
+          echo "已发布：https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
+
+      - name: 记录 digest
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## 已发布"
             echo ""
             echo "| 项 | 值 |"
             echo "|---|---|"
-            echo "| 镜像 | \`$IMAGE:$TAG\` |"
-            echo "| digest | \`$DIGEST\` |"
+            echo "| 不可变 tag | \`$IMAGE:$TAG\` |"
+            echo "| 通道 tag | \`$IMAGE:$CHANNEL\` |"
+            echo "| digest（两者同一份字节） | \`$DIGEST\` |"
             echo "| 基线 | \`${{ steps.base.outputs.base }}\` |"
             echo "| 源码树 | \`${{ steps.base.outputs.tree }}\` |"
+            echo "| 发布记录 | https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG |"
             echo ""
-            echo "**发布这一步**（在仓库里做，一次提交；改的不是 .env —— 它不入库，见 docs/007 §6）："
-            echo ""
-            echo "把下面这个 digest 写进 \`deploy/seafile-prod.yml\` 的 seafile \`image:\` 行，"
-            echo "也就是 \`\${SEAFILE_PRO_IMAGE:-…}\` 的默认值；并在 docs/010 §9 台账记一行。"
+            echo "**发布到此结束，没有人工步骤。** 服务器侧升级："
             echo '```'
-            echo "$DIGEST"
+            echo "docker compose pull && docker compose up -d"
             echo '```'
-            echo ""
-            echo "之后服务器侧：**重取 \`deploy/\`** → \`docker compose pull && docker compose up -d\`。"
-            echo "不需要改服务器上的任何文件。忘了重取的话 pull 会静默地什么都不做——它只是忠实执行了"
-            echo "磁盘上那份（旧的）compose 文件。"
-            echo ""
-            echo "<details><summary>冒烟验证与镜像指纹（跨架构比对用）</summary>"
-            echo ""
-            echo '```'
-            cat /tmp/smoke.log
-            echo '```'
-            echo "</details>"
+            echo "不需要重取任何文件、不需要改任何文件。"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "已发布：$DIGEST"

@@ -4,7 +4,9 @@
 
 ## 1. 概览
 
-开发机不再需要手工构建和推镜像。推代码到 GitHub，Actions 自动构建，生产机只 `docker compose pull`。
+开发机不再需要手工构建和推镜像。推代码到 GitHub，Actions 自动构建、自动发布，生产机只
+`docker compose pull && docker compose up -d` —— **发布与升级都不需要任何人工步骤，
+服务器也不需要取任何文件**。
 
 ```
 开发机                               GitHub                                    生产服务器（国内）
@@ -18,11 +20,16 @@ seahub/dev-dingtalk 提交
                                          ├ git am patches/*.patch
                                          ├ 断言源码树 == MANIFEST.tree_sha
                                          ├ deploy/build-image.sh（与开发机同一脚本）
-                                         └ push → ghcr.io/topiceyes/seafile-mc:12.0.14-dingtalk.<N>.<hash>
+                                         ├ push  → ghcr.io/topiceyes/seafile-mc:12.0.14-dingtalk.<N>.<hash>
+                                         ├ 冒烟验证【推上去的那份字节】
+                                         ├ 搬通道 tag（imagetools --prefer-index=false）
+                                         │    :latest ──→ 同一个 digest
+                                         └ gh release create <不可变 tag>   ← 发布记录（§9）
+                                             资产：seafile-prod.yml / init-prod-env.sh / .env.prod.example
                                                                                   │
-                                      codeload.github.com tarball ───────────────┤ 免代理免凭据取 deploy/
+                                      releases/latest/download/<文件> ────────────┤ 只在【首次安装】取一次
                                                                                   ↓
-                                                        docker compose pull && up -d
+                                          升级永远只要：docker compose pull && docker compose up -d
 ```
 
 **一条设计原则**：workflow 里**不写构建逻辑**。CI 只负责准备源码树，然后调用
@@ -94,6 +101,12 @@ gh workflow run build-image.yml -f force=true    # 覆盖已存在的 tag
 > 根因是 `paths` 过滤在「before 不是 after 的祖先」时判定不可靠。
 > **结论：重写历史后别指望自动触发，手动跑 `gh workflow run build-image.yml`。**
 > 顺带一提，重写补丁相关历史会让 tag 变（补丁内容进了哈希），所以本来就得走一次构建。
+>
+> **2026-09-21 补：守卫现在区分「跳过构建」与「跳过一切」。** 发布 = 推镜像 →
+> 搬通道 tag → 建 Release，分属三个步骤，中间任何一步失败，重跑都会撞上「tag 已存在」。
+> 所以守卫先判「发布是否已完整」（通道 tag 指向本 tag 的同一个 digest **且** Release
+> 已存在）：完整才 `skip=true` 跳过一切；不完整则 `skip_build=true`，**只补做发布**。
+> 否则一次半途失败的发布会永远补不回来，而重跑看起来「成功」。
 
 同一 ref 上的构建**不并发、也不互相取消**（`cancel-in-progress: false`）——
 两次构建抢同一个 tag 是最糟的失败模式。
@@ -143,12 +156,53 @@ CI 在构建前跑三条断言：
 （`seafileltd/seafile-mc:12.0.14` 是按 tag 引用的，上游若重推同一 tag，
 本仓库的输入没变而镜像内容可能变 —— 那是 tag 哈希覆盖不到的部分）。
 
-即便如此，生产上**钉 digest 仍是默认做法**：它是唯一不依赖任何命名约定的保障。
-每次构建的 digest 会写进 GitHub Actions 的 run summary，也在下节的台账里记一份。
+### 通道 tag `latest`（发布自动化的关键，2026-09-21 新增）
 
-**digest 钉在 `deploy/seafile-prod.yml` 的 `image:` 行（入库），不在服务器 `.env` 里**
-—— 这样「CI 发布了新镜像」到「服务器知道有新版」之间才有自动通道：取到新的 `deploy/`
-就等于知道有新版。理由与升级/回滚流程见 [docs/007 §6](007-production-deployment.md)。
+上面那个不可变 tag 有一个致命短板：**它不可预测**（哈希是内容算出来的），所以
+compose 文件没法引用它——只能由人把 digest 抄进去，于是「发布」和「改文件」变成了
+同一个动作。在 N 个部署的规模下，那就是每次发布乘 N 的手工活，而且漏做是静默的。
+
+所以每次成功构建**同时**推第二个 tag：
+
+| tag | 形态 | 谁来写 | 语义 |
+|---|---|---|---|
+| `12.0.14-dingtalk.<N>.<8位哈希>` | 不可变、内容寻址 | 构建 | 审计、回滚落点、离线包 |
+| `latest` | **可移动的指针** | 只有 CI | 生产通道：永远指向最近一次全绿的构建 |
+
+> **不变量**：`latest` 是**指针，永远不是构建目标**。只有 `.github/workflows/build-image.yml`
+> 能写它，只能指向同一次运行产出的不可变 tag，只能在**该次推送的字节通过冒烟之后**，
+> 且必须同时通过 `digest(:latest) == digest(:<不可变 tag>)` 断言。它指过的每一份内容
+> 都仍由不可变 tag 与 Release 记录独立寻址——**通道从来不是某段字节的唯一地址**。
+>
+> 绝不允许移动它的：开发机 `docker push`、任何 `buildx build -t …:latest`、回滚
+> （回滚是服务器侧 pin，不是搬通道）、任何没跑冒烟的 job。
+
+**为什么必须是 `imagetools create --prefer-index=false`**，不能用 `buildx build` 的第二个
+`-t`：后者会在**推送那一刻**就搬通道，而冒烟只能跑在推送之后——冒烟一挂，通道已经指向
+坏镜像。分两步之后，冒烟失败的运行不会碰到通道。
+
+`--prefer-index=false` 也不能省。本机 dry-run 实测：`seafile-mc` 是**单平台**
+`image.manifest.v1+json`，而 `imagetools create` 默认会把它**包成一层新的 index**
+（产物 mediaType 变成 `image.index.v1+json`），digest 随之改变。那样 `:latest` 与不可变
+tag 就不再是同一份字节，回滚对不上号、离线包也对不上号。加了它、且不加任何
+`--annotation`，buildx 走的是原样拷贝分支，digest 逐字节保持。
+
+> **为什么名字只能是 `latest`**（这条理由是可复核的，不是审美）：
+> `docker compose pull` 在服务**显式设了** `pull_policy: missing` / `if_not_present` 时，
+> 会跳过本地已存在的**非 `latest`** tag（docker/compose `pkg/compose/pull.go`：
+> `shouldPullImage()` → `isLatestTag()`）。
+> 今天 `seafile-prod.yml` 没设 `pull_policy`，所以叫 `stable` 也一样能工作（2026-09-21
+> 实测：两个名字都会被照拉不误）——但哪天有人为了"别老打 registry"加上 `pull_policy`，
+> `latest` 免疫、`stable` 会**静默停更**，正是本项目 2026-09-21 栽过的那个失败类别。
+> 换名字之前先读这段。
+
+生产上的 digest 仍然记录，但**记录方式不再是手工台账**：每次构建自动建一个 GitHub
+Release，见 §9。
+
+**通道 tag 写在 `deploy/seafile-prod.yml` 的 `image:` 行（入库），digest 记在 Release
+里**。两者分工：compose 引用通道（所以服务器永远不用改文件），Release 记录 digest
+（所以任何历史版本都还能被精确寻址）。理由与升级/回滚流程见
+[docs/007 §6](007-production-deployment.md)。
 
 ## 5. 漂移控制（三层）
 
@@ -177,31 +231,41 @@ cd deploy && ./export-patches.sh
 
 ## 6. 服务器侧
 
-```bash
-# 0a) 取部署文件。服务器上 git 协议到 github.com 不通，
-#     但 codeload.github.com 可直连（已实测）。仓库是 public，裸 curl 即可
-mkdir -p /opt/seafile-custom
-curl -fL --max-time 120 \
-  https://codeload.github.com/topiceyes/seafile-custom/tar.gz/refs/heads/main \
-  | tar -xz --strip-components=1 -C /opt/seafile-custom
-cd /opt/seafile-custom/deploy        # 习惯而已：生产 compose 已无宿主机相对路径，放哪都行
-cp .env.prod.example .env            # .env 不在 tarball 内，重取代码不会覆盖它
+**安装（一台新机器，一辈子只做一次）** —— 从 Release 资产取，固定 URL：
 
-# 0b) 更新
-#     版本钉在【入库的】deploy/seafile-prod.yml 里（image: 那行的 ${SEAFILE_PRO_IMAGE:-…}
-#     默认值），所以更新 = 重新取一次部署文件 + pull。服务器上【不需要改任何文件】。
+```bash
+mkdir -p /opt/seafile-custom && cd /opt/seafile-custom
+B=https://github.com/topiceyes/seafile-custom/releases/latest/download
+curl -fLO $B/seafile-prod.yml
+curl -fLO $B/.env.prod.example
+curl -fLfo init-prod-env.sh $B/init-prod-env.sh && chmod +x init-prod-env.sh
+
+./init-prod-env.sh          # 只做一件事：生成密钥、写 .env。此后 .env 是操作员的文件
+mkdir -p /data/seafile /data/seafile-mysql
 docker compose pull && docker compose up -d     # 镜像包是 public，不需要 docker login
 ```
 
+**升级（此后永久，就这一条）**：
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+不需要重取任何文件、不需要改任何文件。版本由 CI 搬动 `latest` 通道 tag（§4）——
+服务器只要重新拉一次就拿到了。
+
 几个容易踩的点：
 
-- tarball 根目录是 `<owner>-<repo>-<sha>/`，所以要 `--strip-components=1`
-- **更新时「重新取部署文件」这一步不能省。** `docker compose pull` 只执行**磁盘上那份
-  compose 文件**；文件里的版本没变，它就报 `Pulled` 然后什么都不做，`up -d` 报
-  `Recreated`，跑的还是旧镜像——全程不报错。2026-09-21 就是栽在这里，见 007 §6
-- 要可复现而非跟随 `main`，就把 URL 里的 `main` 换成具体 commit SHA，并记入台账
-- 这套命令**不需要任何凭据**。曾经需要一个 classic PAT（`repo` + `read:packages`）覆盖
-  「取 tarball + 拉镜像」，2026-09-20 仓库与镜像包转 public 后取消——详见 §2 的说明
+- Release 资产 URL 走 `github.com` → `objects.githubusercontent.com`；万一那台机器
+  不通，用 `codeload.github.com` + release 的 git tag 兜底（是一棵钉死的树）：
+  `curl -fL https://codeload.github.com/topiceyes/seafile-custom/tar.gz/refs/tags/<tag> | tar -xz --strip-components=1 -C /opt/seafile-custom`
+- 这套命令**不需要任何凭据**（仓库与镜像包都是 public）。曾经需要一个 classic PAT
+  （`repo` + `read:packages`），2026-09-20 转 public 后取消——详见 §2 的说明
+- **`docker compose pull` 只在有 `pull_policy` 时才会跳过本地已存在的镜像**；本项目
+  没设，所以每次 pull 都会去问 registry，不会静默空转。这也是通道 tag 能工作的前提（§4）
+- ⚠️ **唯一的例外**：如果本版改了 `seafile-prod.yml` 本身（新增环境变量、换挂载等），
+  已装好的服务器需要重取一次那个文件。Release notes 会自动比对上一版资产并在正文顶部
+  打出醒目提示——平时不会出现。这是「服务器不再取文件」这个设计的代价，必须让人看见
 
 ## 7. 排障
 
@@ -213,6 +277,10 @@ docker compose pull && docker compose up -d     # 镜像包是 public，不需�
 | 冒烟验证失败「缺 frontend/build 或 chunk 未落地」 | 前端产物没进镜像，或 `collectstatic` 没把它收进 `media/assets`。断言在 `deploy/smoke-test.sh`；改完断言要 `-f force=true` 重跑才验得到（改该文件不会自动触发构建） |
 | 冒烟验证报 `toomanyrequests` | Docker Hub 对共享 runner IP 的匿名限流。在仓库 secrets 里配 `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`，workflow 会自动登录 |
 | 服务器 `docker pull` 报 `denied` | 镜像包是 public 时不该出现。若出现，多半是包的可见性被改回了 private（Package settings → Change visibility），或本地有失效的 `~/.docker/config.json` 缓存旧凭据 → `docker logout ghcr.io` 再试 |
+| CI 失败于「移动通道 tag」的 digest 断言 | `imagetools create` 没走原样拷贝分支，`:latest` 变成了一个 index。检查 `--prefer-index=false` 还在不在、有没有人加了 `--annotation` |
+| CI 失败于「发布记录」 | 多半是权限。workflow 的 `permissions` 必须有 `contents: write`（`packages: write` 只管推镜像）；另外确认仓库 Settings → Actions → Workflow permissions 不是只读 |
+| 发布走到一半失败（例如 Release 建之前挂了） | 直接重跑同一个 run。守卫已区分「跳过构建」与「跳过一切」：tag 在但通道/Release 缺失时会 `skip_build=true` **只补做发布**，不会重建镜像 |
+| 服务器 `docker compose pull` 说 `Pulled` 但版本没变 | 先 `docker compose config \| grep image:` 确认 seafile 那行是 `…:latest` 而不是被 `.env` 里的 `SEAFILE_PRO_IMAGE` 钉住了。这个变量一写进 `.env` 就是**刻意 pin**，机器不再跟随通道 |
 | 生产机连不上 ghcr.io | 见 §8 的 ACR 备选 |
 
 ## 8. 基础设施镜像镜像 + ACR 备选
@@ -244,6 +312,28 @@ registry.cn-hangzhou.aliyuncs.com  401（可达）
 | 方式 | `docker buildx imagetools create`（registry→registry 复制，不落本地）|
 | 产物 | **manifest list（索引）**，含源仓库的全部平台 |
 | 刷新 | 手动 `gh workflow run mirror-infra-images.yml`（改该文件里的清单后 push 也会触发）|
+
+**当前 digest**（2026-09-21，`mirror-infra-images.yml` run 35566304802）—— 索引的 digest，
+含全部平台：
+
+| 目标 | digest（索引） | amd64 子清单 |
+|---|---|---|
+| `ghcr.io/topiceyes/mariadb:10.11` | `sha256:7f22313f…f9bc66ab` | `sha256:5ae7fc7b…9834d9e` |
+| `ghcr.io/topiceyes/memcached:1.6.29` | `sha256:56a39bd5…a16d3953b` | `sha256:486b2361…ef824c52` |
+
+> 这两个用 **tag**（不是 digest）引用，与 seafile 的通道 tag 口径一致。理由：它们是
+> 我们自己命名空间下的快照，tag 只会在**手动重跑镜像 workflow 时**移动，不存在上游
+> 悄悄重推导致漂移的问题；而 tag 形式让「刷新基础镜像」就是重跑一次 workflow 这么简单。
+> 需要钉死时可直接换成 `ghcr.io/topiceyes/mariadb@sha256:7f22313f…`。
+>
+> ⚠️ **但这也意味着「刷新了 infra 镜像」不会自动传到服务器**：`docker compose pull`
+> 对这两个非 `latest` tag 会不会跳过，取决于有没有设 `pull_policy`——本项目没设，
+> 所以会照拉。若哪天加了 `pull_policy: missing`，就得手工
+> `docker pull ghcr.io/topiceyes/mariadb:10.11` 才能拿到新的。见 §4 通道 tag 那节的同一套规则。
+>
+> ⚠️ **这两行早期记的 digest 已作废**：第一版推的是单平台 manifest
+> （`sha256:6f08d1d7…` / `sha256:c8eed037…`），因离线包路径不可用而改成了索引。
+> 单平台那版**从未被任何服务器消费过**。
 
 #### ⚠️ 为什么必须是 manifest list，不能是单平台 manifest
 
@@ -304,9 +394,20 @@ docker login registry.cn-hangzhou.aliyuncs.com
 ```
 
 切到 ACR 时，把 `deploy/seafile-prod.yml` 里 seafile 的 `image:` 换成 ACR 地址
-（连同下面那条基础设施镜像的注意事项）——版本既然已经入库，换仓库也就是改这一处、
-再走一遍「重取 deploy/ + pull」。
+（连同下面那条基础设施镜像的注意事项），已装服务器重取一次该文件即可。
 
+> ⚠️ **ACR 上没有免费午餐：`build-image.sh` 不会搬通道 tag。** 通道的搬运逻辑在
+> workflow 里（它需要 `--prefer-index=false`，见 §4），而开发机推 ACR 走的是
+> `build-image.sh`。所以推完之后要手工补一刀，否则服务器拉到的 `:latest` 还是旧的：
+> ```bash
+> TAG=$(./deploy/build-image.sh --print-tag)
+> ACR=registry.cn-hangzhou.aliyuncs.com/<命名空间>
+> docker buildx imagetools create --prefer-index=false -t "$ACR/seafile-mc:latest" "$ACR/seafile-mc:$TAG"
+> docker buildx imagetools inspect "$ACR/seafile-mc:latest" --format '{{.Manifest.Digest}}'   # 必须 == $TAG 的 digest
+> ```
+> （`build-image.sh` 本身没改是有意的：它是构建输入，改一个字就为逐字节相同的内容
+> 产出一个新 tag 并烧掉一次重建。）
+>
 > ⚠️ 走 ACR 时**别忘了基础设施镜像**：`seafile-prod.yml` 里的 `mariadb`/`memcached`
 > 现在写死指向 `ghcr.io/topiceyes/…`（§8.1）。若 ghcr 整个不可达，这两行也要换成
 > ACR 地址，否则 pull 会卡在它们上面——症状与本文档反复强调的那个坑一模一样：
@@ -317,14 +418,28 @@ docker login registry.cn-hangzhou.aliyuncs.com
 不过该政策保留变更权（变更会提前一个月通知），所以保留 ACR 这条后路是有价值的。
 本镜像实测未压缩 0.48–0.8 GB。
 
-## 9. 发布台账
+## 9. 发布记录
 
-每次发布后追加一行，便于回滚与审计。
+> **2026-09-21 起，发布记录改为 GitHub Releases，本节冻结为历史。**
+>
+> 每次构建自动建一个 Release（[全部发布](https://github.com/topiceyes/seafile-custom/releases)），
+> 正文含：不可变 tag、通道 tag、digest、补丁数、源码树、基线、run 链接、升级/回滚/
+> 离线命令、自上一版的构建输入变更列表、冒烟日志与三层指纹。同一份
+> `seafile-prod.yml` / `init-prod-env.sh` / `.env.prod.example` 作为资产挂在上面，
+> 供新服务器从固定 URL 取。
+>
+> **为什么换掉手工台账**：原来每次发布要有人把 digest 抄进 compose 并回这里补一行。
+> 在 N 个部署的规模下那是乘 N 的手工活，而且漏做是**静默**的——2026-09-21 的事故
+> 就是这个形状。现在发布零人工，记录也就不该由人写。
+>
+> 基础设施镜像（mariadb/memcached）的 digest **不是每版本产出的**，已挪到 §8.1。
+
+**历史台账（2026-09-20 ~ 2026-09-21，手工维护时期）**：
 
 | 日期 | tag | 补丁数 | 源码树 | 镜像 digest | 备注 |
 |---|---|---|---|---|---|
-| 2026-09-21 | `12.0.14-dingtalk.9.ed2042da` | 9 | `446fe9ea…c38e393f` | `sha256:bfe7bfe2…e054a7e8` | **内容与上一行逐字节等价**（三层指纹 937/269/305 全同）。换 tag 只因 `build-image.sh` 自身是构建输入：改它修「`__pycache__` 影响 tag 哈希」。**生产 pin 仍指上一行**，无需改动。run 35586728069，6m12s |
-| 2026-09-21 | `12.0.14-dingtalk.9.1464e1b4` | 9 | `446fe9ea…c38e393f` | `sha256:e54f6234…9f89ac85` | **当前生产用**（`deploy/seafile-prod.yml` 的 `image:` 钉的就是它）。**修反代模式登录 403**：补 `SECURE_PROXY_SSL_HEADER`（Django 不认 `X-Forwarded-Proto`）+ `custom_bootstrap` 幂等改逐项核对（[docs/007 §9](007-production-deployment.md)）。run 35584259460，5m50s |
+| 2026-09-21 | `12.0.14-dingtalk.9.ed2042da` | 9 | `446fe9ea…c38e393f` | `sha256:bfe7bfe2…e054a7e8` | **内容与上一行逐字节等价**（三层指纹 937/269/305 全同）。换 tag 只因 `build-image.sh` 自身是构建输入：改它修「`__pycache__` 影响 tag 哈希」。run 35586728069，6m12s。**这一版被选为通道 `latest` 的初始指向** |
+| 2026-09-21 | `12.0.14-dingtalk.9.1464e1b4` | 9 | `446fe9ea…c38e393f` | `sha256:e54f6234…9f89ac85` | **2026-09-21 时点的生产版本**。**修反代模式登录 403**：补 `SECURE_PROXY_SSL_HEADER`（Django 不认 `X-Forwarded-Proto`）+ `custom_bootstrap` 幂等改逐项核对（[docs/007 §9](007-production-deployment.md)）。run 35584259460，5m50s |
 | 2026-09-21 | `12.0.14-dingtalk.9.e3c4174f` | 9 | `446fe9ea…c38e393f` | `sha256:5cf3abfd…0f2fb9d7` | 启动链路加固：seahub 启动失败重试 + 保活循环跟着死（[docs/007 §4.2.3](007-production-deployment.md)）。run 35574442997，6m27s |
 | 2026-09-21 | `12.0.14-dingtalk.9.b7a741d8` | 9 | `446fe9ea…c38e393f` | `sha256:aa906c16…467b6e0a4` | 二开定制搬进镜像：`init-conf.sh --prod` 整个删除，部署不再有「再跑一个脚本」这一步。run 35573252750，5m38s |
 | 2026-09-20 | `12.0.14-dingtalk.9.4edcb25d` | 9 | `446fe9ea…c38e393f` | `sha256:624c439c…4469e0cb9` | 补丁 0009：站点地址 `SERVICE_URL` 挪到管理后台、免重启生效（[docs/011](011-service-url-admin-config.md)）。首次自动触发成功（run 35503681853，5m53s） |
@@ -333,30 +448,14 @@ docker login registry.cn-hangzhou.aliyuncs.com
 | 2026-09-20 | `12.0.14-dingtalk.8.4261dd78` | 8 | `a0fe6349…a65f5d25489` | `sha256:c3b12c34…d01952d2` | 含反代模式 nginx 修复；tag 规则改内容寻址后的首次发布（run 35496784127） |
 | 2026-09-20 | `12.0.14-dingtalk.8` | 8 | `a0fe6349…a65f5d25489` | `sha256:add45ed6…23665527` | 首次 CI 发布（run 35495223406），构建 8m27s。**已被覆盖且格式过时，勿用** |
 
-> **本表 `seafile-mc` 的 digest 是单平台 OCI image manifest**（`buildx --provenance=false
-> --sbom=false` + 单平台的结果），**不是**索引——与下面基础设施镜像的口径不同。2026-09-21
-> 实测确认：`docker pull ghcr.io/topiceyes/seafile-mc@sha256:5cf3abfd…` 能正常拉全（层下载
-> 完整、回显 digest 一致），即 `seafile-prod.yml` 里钉 digest 的用法成立。
+> **`seafile-mc` 的 digest 是单平台 OCI image manifest**（`buildx --provenance=false
+> --sbom=false` + 单平台的结果），**不是**索引——与基础设施镜像（§8.1）的口径不同。
+> 2026-09-21 实测确认：`docker pull ghcr.io/topiceyes/seafile-mc@sha256:5cf3abfd…`
+> 能正常拉全（层下载完整、回显 digest 一致），即按 digest 拉取这条路径成立。
 >
-> ⚠️ 但**离线导入路径不能用 digest 形式**（`docker save` 出来 `RepoTags: null`，`load` 后
-> 是无标签悬空镜像），必须用 tag 形式覆盖它——见 [docs/007 §2/§6](007-production-deployment.md)。
-
-**基础设施镜像**（`mirror-infra-images.yml`，run 35566304802，2026-09-21）——
-digest 是**索引**的 digest（含全部平台）：
-
-| 目标 | digest（索引） | amd64 子清单 |
-|---|---|---|
-| `ghcr.io/topiceyes/mariadb:10.11` | `sha256:7f22313f…f9bc66ab` | `sha256:5ae7fc7b…9834d9e` |
-| `ghcr.io/topiceyes/memcached:1.6.29` | `sha256:56a39bd5…a16d3953b` | `sha256:486b2361…ef824c52` |
-
-> ⚠️ **这两行早期记的 digest 已作废**：第一版推的是单平台 manifest
-> （`sha256:6f08d1d7…` / `sha256:c8eed037…`），因离线包路径不可用而改成了索引。
-> 单平台那版**从未被任何服务器消费过**。
-
-> 这两个用 **tag**（不是 digest）引用，与 `SEAFILE_PRO_IMAGE` 的口径不同。理由：它们是
-> 我们自己命名空间下的快照，tag 只会在**手动重跑镜像 workflow 时**移动，不存在上游悄悄
-> 重推导致漂移的问题；而 tag 形式让「刷新基础镜像」就是重跑一次 workflow 这么简单。
-> digest 记在这里，需要钉死时可直接换成 `ghcr.io/topiceyes/mariadb@sha256:7f22313f…`。
+> 这也正是 §4 那条「搬通道必须加 `--prefer-index=false`」的原因：不加的话
+> `imagetools create` 会把这份单平台 manifest 包成索引，`:latest` 的 digest 就与
+> 不可变 tag 对不上了——而回滚、离线包、「同一份字节」的口径全压在这个等式上。
 
 > **换过一次源，旧离线包因此作废。** compose 从 `mariadb:10.11` 改成
 > `ghcr.io/topiceyes/mariadb:10.11` 之后，**改源前打的那个 693MB 离线包不再可用**：

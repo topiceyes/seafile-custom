@@ -110,14 +110,15 @@ docker compose up -d
 
 ```
 开发机                                GitHub                                生产服务器
-seahub 改代码                          Actions（ubuntu-latest, amd64）        重取 deploy/ → compose pull
+seahub 改代码                          Actions（ubuntu-latest, amd64）        docker compose pull && up -d
   └ deploy/export-patches.sh   ──push──→  按 MANIFEST 的固定 SHA 浅取上游       （ghcr.io public 镜像）
        └ patches/ + MANIFEST.md            → git am patches/*.patch                  │
                                            → 断言 tree sha                          └ 云反向代理终止 TLS
                                            → deploy/build-image.sh（同一份脚本）       明文转发到本机 :80
-                                           → ghcr.io/topiceyes/seafile-mc:<tag>
+                                           → ghcr.io/…/seafile-mc:<不可变 tag>
                                                 │
-                  digest 写进 deploy/seafile-prod.yml（入库）←┘
+                    冒烟全绿 ──→ 搬通道 tag :latest（断言 digest 相等）
+                              ──→ gh release create <不可变 tag>（发布记录 + 资产）
 ```
 
 ```bash
@@ -125,13 +126,19 @@ cd deploy && ./export-patches.sh        # 1. 重导补丁 + 刷新 MANIFEST（�
 git add -A && git commit -m "..." && git push main   # 2. 推送触发构建
 gh run watch                            # 3. 看构建（约 12–18 分钟）
 
-# 4. 把 run summary 给的 digest 写进 deploy/seafile-prod.yml 的 image: 行，提交 ← 发布动作
-# 5. 生产服务器上：重取 deploy/ → docker compose pull && docker compose up -d
+# 没有第 4 步。第 2 步推完就结束了。
+# 生产服务器上（任何时候，只要想升级）：docker compose pull && docker compose up -d
 ```
 
-**版本钉在入库的 compose 文件里，不在服务器 `.env` 里。** 于是「服务器知道有新版」这件事
-就是「重取了一次 `deploy/`」，不需要有人记得改某个本地文件——而漏改是静默的：pull 照样报
-`Pulled`、up 照样报 `Recreated`，跑的却是旧镜像。2026-09-21 踩过（[docs/007 §6](docs/007-production-deployment.md)）。
+**发布没有任何人工步骤。** CI 在「构建 + 冒烟全绿」之后自己把 `latest` 通道 tag 搬到这次
+构建的镜像上（搬之前断言它与不可变 tag 是同一个 digest），并建一个 GitHub Release 作为
+发布记录。所以「发布完成」不需要通知任何服务器：**下次 `pull` 自然落到新版本**。
+
+**版本不在 `.env`，也不在任何需要人去同步的文件里。** 服务器 compose 里那行是
+`image: ${SEAFILE_PRO_IMAGE:-ghcr.io/topiceyes/seafile-mc:latest}`——`latest` 是指针，
+不是版本。这条消灭的是一整类**静默失败**：以前忘了重取 `deploy/` 时，pull 照样报 `Pulled`、
+up 照样报 `Recreated`，跑的却是旧镜像，全程没有一处报错（2026-09-21 踩过，
+见 [docs/007 §6](docs/007-production-deployment.md)）。现在这条失败路径在结构上不存在。
 
 **为什么走补丁路线而不是 fork**：决定性的理由是补丁路线带来一条更硬的性质——
 CI 每次构建都重新验证「补丁能逐字节复现二开分支」，上游漂移或补丁改坏会变成**构建失败**，
@@ -144,9 +151,11 @@ CI 每次构建都重新验证「补丁能逐字节复现二开分支」，上�
 （补丁内容 + `deploy/image/**` + `build-image.sh`），所以改模板或 Dockerfile 也会自动得到新
 tag —— **同 tag ⇒ 同内容**，正常发布不需要 `force`（只有重建以刷新上游基础镜像才需要）。
 
-即便如此，生产上仍**钉 digest**：它是唯一不依赖命名约定的保障。digest 写在入库的
-`deploy/seafile-prod.yml` 里（不是服务器 `.env`），每次构建的 digest 记在 docs/010 §9
-台账，也在 CI 的 run summary 里。
+即便如此，`latest` 也不是任何一段字节的唯一地址：它只会被 CI 搬到**同一次运行产出的不可变
+tag** 上，且搬完必须通过 `digest(:latest) == digest(:<不可变 tag>)` 断言才继续。每个版本
+的 tag、digest、构建输入指纹都记在 [GitHub Releases](https://github.com/topiceyes/seafile-custom/releases)
+里——那是唯一的发布记录。回滚就是把这台机器的镜像换成一个旧 tag，一条命令，见
+[docs/007 §6](docs/007-production-deployment.md)。
 
 ## 分支约定
 
