@@ -42,15 +42,24 @@ server {
     set $seafile_fwd_proto $scheme;
 {%- else %}
     # ---- 反向代理模式（TLS 在上游云代理终止，本容器 nginx 只监听 80）----
-    # 此时 $scheme 恒为 http，不能透传给 Django。也不【采信】上游传来的
-    # X-Forwarded-Proto，直发 https：本产品形态里浏览器侧协议就是 https，
-    # 这由部署形态决定，不该依赖每一跳代理都配对。
-    # （2026-09-22 生产实测教训：链路上的代理可能把它【自己到后端这段】的协议写进
-    # 头里——X-Forwarded-Proto: http，或多级代理拼出 "https, http"——而 Django 的
-    # SECURE_PROXY_SSL_HEADER 要求头值与配置【逐字相等】，任何偏差（含大小写、
-    # 逗号串）都会让 is_secure() 为假 → 表单登录 403。头缺失的旧兜底「假定 https」
-    # 也因此不再需要：这里恒为 https。）
-    set $seafile_fwd_proto https;
+    # 协议判定按【访问入口】分流（2026-09-22 定稿；同日教训：上一版「恒判 https」
+    # 掐死了 IP 直连——上游原版镜像直连能用，二开不能比原版少）：
+    #   1) Host 是本 server 配置的域名（$server_name，来自 SEAFILE_DOMAIN）→
+    #      正式入口（云代理后面）→ 恒为 https。不看上游 X-Forwarded-Proto：
+    #      代理可能把它自己到后端这段的协议写进头（http / 多级逗号串），而 Django
+    #      要求头值与 SECURE_PROXY_SSL_HEADER 配置逐字相等，任何偏差都是 403。
+    #   2) 其它 Host（IP 直连、内部名字）→ 原版行为：有转发头按转发头，没有按
+    #      $scheme（明文 http）。Django 如实按 http 处理，http Origin 对得上 →
+    #      直连能登录、能访问。上传下载等绝对链接仍按 SERVICE_URL（域名）生成。
+    # 边界：改域名要同步 .env 的 SEAFILE_DOMAIN（server_name 首启渲染一次，
+    # 见 docs/007 §4.2.1）；代理若改写 Host 不保留域名，属于代理侧配置问题（§9）。
+    set $seafile_fwd_proto $http_x_forwarded_proto;
+    if ($seafile_fwd_proto = "") {
+        set $seafile_fwd_proto $scheme;
+    }
+    if ($http_host = $server_name) {
+        set $seafile_fwd_proto https;
+    }
 {%- endif %}
 
     client_max_body_size 10m;

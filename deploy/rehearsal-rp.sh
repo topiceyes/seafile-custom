@@ -331,9 +331,10 @@ cmp -s "$J/payload.txt" "$J/back.txt" || die "下载回来的内容与上传的�
 ok "下载内容与上传逐字节一致"
 
 # ---------------------------------------------------------------- 9. 对照探针
-step "9. 对照探针：上游转发头无论怎么发，登录都不再 403"
-# 三个探针的 Host / Referer / Origin 完全相同（都是浏览器在反代模式下真实会发的值），
-# 唯一变量是有没有 X-Forwarded-Proto、以及它的值。直连容器 80，绕过代理。
+step "9. 对照探针：域名入口怎么转发都通；IP 直连是原版行为"
+# P1-P3 的 Host / Referer / Origin 完全相同（都是浏览器经云代理访问时真实会发的值），
+# 唯一变量是 X-Forwarded-Proto 有无、及其值。直连容器 80，绕过代理。
+# P4 另走一条：Host/Origin 全是 IP——局域网直连用户的真实形态。
 C="http://127.0.0.1:$HOST_PORT"
 probe() {  # $1 = X-Forwarded-Proto 的值；空串 = 不发这个头
   local j; j=$(mktemp -d)
@@ -351,14 +352,30 @@ probe() {  # $1 = X-Forwarded-Proto 的值；空串 = 不发这个头
     --data-urlencode "next=/" "$C/accounts/login/"
   rm -rf "$j"
 }
-# 2026-09-22 起容器不再采信上游转发头（反代模式下恒判 https），P2 的含义从
-# 「复现事故」变成「免疫证明」：代理把它自己到后端这段的协议写进头里
-# （X-Forwarded-Proto: http，或多级代理拼出的 "https, http"）也不再有 403
-# ——这正是生产环境实测撞过的那条（Django 要求头值与配置逐字相等）。
+# 2026-09-22 定稿的规则按【访问入口】分流：Host=域名 → 恒 https（P1/P2/P3 验这条，
+# 转发头对错都不影响）；Host=其它（IP 直连）→ 原版行为，按明文 http 如实处理（P4）。
+# P4 是生产实测撞出来的需求：上游原版镜像 IP 直连能登录，「恒判 https」那版把它
+# 掐死了（403），用户原话「不配域名就不让访问了吗」——对，不能。这条断言钉住它。
 P1=$(probe https); P2=$(probe http); P3=$(probe '')
-assert_eq "$P1" "302" "P1 带头 https → 302（链路本身健康）"
-assert_eq "$P2" "302" "P2 带头 http  → 302（**代理乱发 X-Forwarded-Proto 也不再有 403**：反代模式恒判 https，2026-09-22 生产那类误配免疫）"
-assert_eq "$P3" "302" "P3 不发该头   → 302（没有头同样按 https 处理）"
+assert_eq "$P1" "302" "P1 带头 https → 302（域名入口链路健康）"
+assert_eq "$P2" "302" "P2 带头 http  → 302（**域名入口免疫乱发转发头**：Host=域名时恒判 https，不看 X-Forwarded-Proto 的值）"
+assert_eq "$P3" "302" "P3 不发该头   → 302（域名入口同样免疫缺头：代理不配转发头也不 403）"
+
+probe_ip() {  # 原版直连行为：无转发头、Host/Referer/Origin 全是 IP（http）
+  local j; j=$(mktemp -d)
+  local B="http://127.0.0.1:$HOST_PORT"
+  curl -s --noproxy '*' -c "$j/cj" -o "$j/l.html" "$B/accounts/login/"
+  local t; t=$(sed -n 's/.*name="csrfmiddlewaretoken" value="\([^"]*\)".*/\1/p' "$j/l.html" | head -1)
+  curl -s --noproxy '*' -b "$j/cj" -o /dev/null -w '%{http_code}' \
+    -H "Referer: $B/accounts/login/" -H "Origin: $B" \
+    --data-urlencode "csrfmiddlewaretoken=$t" \
+    --data-urlencode "login=$ADMIN_EMAIL" \
+    --data-urlencode "password=$ADMIN_PW" \
+    --data-urlencode "next=/" "$B/accounts/login/"
+  rm -rf "$j"
+}
+P4=$(probe_ip)
+assert_eq "$P4" "302" "P4 IP 直连（无转发头）→ 302（**原版行为**：按明文 http 如实处理，不配域名也能登录）"
 
 # ---------------------------------------------------------------- 10. 升级 / 回滚
 step "10. 升级路径（通道没动 → 应当是无操作）"
