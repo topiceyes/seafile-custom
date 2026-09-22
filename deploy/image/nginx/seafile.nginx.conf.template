@@ -42,14 +42,15 @@ server {
     set $seafile_fwd_proto $scheme;
 {%- else %}
     # ---- 反向代理模式（TLS 在上游云代理终止，本容器 nginx 只监听 80）----
-    # 此时 $scheme 恒为 http，不能直接透传给 Django：那会让 request.is_secure()
-    # 为假，CSRF 校验、Secure cookie、重定向都会出问题，且症状零散难查。
-    # 优先采用上游代理传来的 X-Forwarded-Proto；缺失时假定 https
-    # （本模式下容器只应通过那个 https 代理被访问，不对公网直连）。
-    set $seafile_fwd_proto $http_x_forwarded_proto;
-    if ($seafile_fwd_proto = "") {
-        set $seafile_fwd_proto https;
-    }
+    # 此时 $scheme 恒为 http，不能透传给 Django。也不【采信】上游传来的
+    # X-Forwarded-Proto，直发 https：本产品形态里浏览器侧协议就是 https，
+    # 这由部署形态决定，不该依赖每一跳代理都配对。
+    # （2026-09-22 生产实测教训：链路上的代理可能把它【自己到后端这段】的协议写进
+    # 头里——X-Forwarded-Proto: http，或多级代理拼出 "https, http"——而 Django 的
+    # SECURE_PROXY_SSL_HEADER 要求头值与配置【逐字相等】，任何偏差（含大小写、
+    # 逗号串）都会让 is_secure() 为假 → 表单登录 403。头缺失的旧兜底「假定 https」
+    # 也因此不再需要：这里恒为 https。）
+    set $seafile_fwd_proto https;
 {%- endif %}
 
     client_max_body_size 10m;

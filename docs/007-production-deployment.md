@@ -711,11 +711,14 @@ cd deploy && ./rehearsal-rp.sh
 
 | 探针 | 输入 | 期望 | 证明了什么 |
 |---|---|---|---|
-| P1 | `X-Forwarded-Proto: https` | 302 | `SECURE_PROXY_SSL_HEADER` 真的被 Django 读到（没有它这个头会被无视） |
-| P2 | `X-Forwarded-Proto: http` | 403 | `is_secure()` 由这个头驱动，不是由连接明暗驱动——**精确复现 2026-09-21 生产事故** |
-| P3 | 不发该头 | 302 | 容器 nginx 的兜底分支（缺头时假定 https）还活着，代理忘配不至于二次事故 |
+| P1 | `X-Forwarded-Proto: https` | 302 | 链路本身健康（`SECURE_PROXY_SSL_HEADER` 生效） |
+| P2 | `X-Forwarded-Proto: http` | 302 | **代理乱发头也免疫**：反代模式下容器恒判 https，不再采信上游值（2026-09-22 生产实测有代理会把它「自己到后端这段」的协议写进头里 → 403，遂改） |
+| P3 | 不发该头 | 302 | 没有头同样按 https 处理 |
 
-P2 的 403 由 CSRF 中间件在进视图之前拒掉，**不会**累加登录失败计数，可放心反复跑。
+> P2 的历史：2026-09-21 版本采信上游转发头（缺失才兜底 https），当时 P2 期望是 403，
+> 用于精确复现首起生产事故；2026-09-22 生产又撞到「头被写成 http / 多级逗号串」
+> 这一形态（Django 要求头值与配置**逐字相等**，任何偏差都回到 403），改为恒判 https，
+> P2 随之翻成免疫证明。
 
 开发机注意两点（脚本失败时会把这两条也打出来）：
 - 取 Release 资产需要 `HTTPS_PROXY=…`（开发机直连 `github.com` 超时，§2）；**服务器上不需要**。
@@ -794,7 +797,12 @@ https」，需要**两个条件同时成立**：
 第 1 条：模板在 server 块顶部定义一次 `$seafile_fwd_proto`
 
 - `https=true` → `$scheme`（容器内终止，就是真实协议）
-- `https=false` → 取上游代理传来的 `$http_x_forwarded_proto`，**缺失时假定 https**
+- `https=false` → **恒为 `https`**。浏览器侧协议由部署形态决定，不采信上游转发头——
+  2026-09-22 生产实测：链路上的代理可能把它「自己到后端这段」的协议写进头里
+  （`X-Forwarded-Proto: http`），或多级代理拼出 `"https, http"`；而 Django 的
+  `SECURE_PROXY_SSL_HEADER` 要求头值与配置**逐字相等**，任何偏差（含大小写、
+  逗号串）都让 `is_secure()` 为假 → 表单登录 403。与其要求每一跳代理都配对，
+  不如容器自己给出唯一正确的答案。
 
 第 2 条由镜像内的 `custom_bootstrap.py` 写入（§4.2.2）。上游从没设过它——`settings.py`、
 `bootstrap.py`、`setup-seafile-mysql.py` 逐个查过，全镜像只有 Django 自己的默认值 `None`。
