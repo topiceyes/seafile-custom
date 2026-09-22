@@ -53,23 +53,39 @@ command -v openssl >/dev/null || die "缺 openssl（用来生成密钥）；Debi
 # docker 不只是下一步要用：脚本末尾拿 `docker compose config -q` 当最后一道自检，
 # 那是唯一能证明「取回来的 compose 整份可用」的检查。缺了它这道检查就成了摆设。
 command -v docker >/dev/null || die "缺 docker（本脚本末尾要用 docker compose 校验部署文件）；见 docs/007 §2"
-# compose 子命令必须真的能用。老 docker（20.10 时代）没装 v2 插件时，`docker compose …`
-# 的报错极具误导性——"unknown shorthand flag: 'f' in -f" 加一整页 docker help，
-# 看着像脚本或 yml 坏了，其实是缺插件（2026-09-21 在生产服务器上撞的）。
-# 这里提前拦下并把安装命令原样给出：装的是独立插件二进制，不动 docker 引擎、
-# 不用重启 docker、不影响同机其它容器。
-if ! docker compose version >/dev/null 2>&1; then
-  die "这台机器的 docker 没有 compose 子命令（compose v2 插件没装）。
-  特征就是 \"unknown shorthand flag: 'f' in -f\" —— 不是部署文件坏了，也不是 .env 写坏了。
-  装一下（root 下照抄即可，架构已按本机算好）：
+# ---- compose 入口探测：机器上有什么用什么，不要求用户先装别的 ----
+#   优先 `docker compose`（v2 插件）；没有则用 `docker-compose`（v1，要求 ≥1.27 ——
+#   我们的 compose 文件是无 version 键的 compose-spec 格式，且依赖 depends_on 的
+#   service_healthy 条件，1.27 起两者都支持；1.29.2 实测解析 exit 0、条件保留，
+#   生产服务器 2026-09-21 起就是这么跑的）。
+# 为什么要显式探测：老 docker（20.10 时代）没装 v2 插件时，`docker compose …`
+# 会报 "unknown shorthand flag: 'f' in -f" 加一整页 docker help，看着像 yml 坏了
+# （2026-09-21 生产服务器上就这么误判过一次）。在这里把入口选对，那类报错就轮不到出现。
+DC=''
+if docker compose version >/dev/null 2>&1; then
+  DC='docker compose'
+elif command -v docker-compose >/dev/null 2>&1; then
+  v=$(docker-compose --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
+  if awk 'BEGIN{split(ARGV[1],a,"."); exit !(a[1]>=2 || (a[1]==1 && a[2]>=27))}' "${v:-0}"; then
+    DC='docker-compose'
+  else
+    die "docker-compose 是 ${v:-未知} 版，低于 1.27 —— 认不了本项目无 version 键的 compose 文件。
+  升级它，或装 compose v2 插件（独立二进制，不动 docker 引擎、不用重启）：
+    mkdir -p /usr/local/lib/docker/cli-plugins
+    curl -fsSL --max-time 180 \\
+      \"https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)\" \\
+      -o /usr/local/lib/docker/cli-plugins/docker-compose && \\
+      chmod +x /usr/local/lib/docker/cli-plugins/docker-compose"
+  fi
+else
+  die "这台机器上既没有 \`docker compose\`（v2 插件）也没有 \`docker-compose\`（v1）。装哪个都行：
+  · compose v2 插件（独立二进制，不动 docker 引擎、不用重启）：
     mkdir -p /usr/local/lib/docker/cli-plugins
     curl -fsSL --max-time 180 \\
       \"https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)\" \\
       -o /usr/local/lib/docker/cli-plugins/docker-compose && \\
       chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-  装完先验（应出 v2.x 版本号）：docker compose version，然后重跑本脚本。
-  github.com 不通时的替代：Ubuntu 24.04 可 apt-get install -y docker-compose-v2；
-  其它发行版先配 docker-ce 软件源，再装 docker-compose-plugin。"
+  · 或 docker-compose v1（必须 ≥1.27）：pip3 install docker-compose==1.29.2"
 fi
 
 # ---- 提醒：.env 里的 SEAFILE_PRO_IMAGE 会把这台机器钉死 ----
@@ -173,9 +189,11 @@ if grep -qE "^[A-Z_]+='(change-me|seafile\.example\.com|admin@example\.com)'" "$
   die "还有占位符未替换：$(grep -oE "^[A-Z_]+='(change-me|seafile\.example\.com|admin@example\.com)'" "$TARGET" | tr '\n' ' ')"
 fi
 # 最强的一道：整份 compose 能被解析、且所有变量都能从刚生成的 .env 插值出来。
-# 上面几条 grep 只认形状，这条认的是「下一步 docker compose pull 真的能跑」。
-docker compose -f "$COMPOSE" config -q \
-  || die "${COMPOSE} 解析失败（上面应该有 docker 的报错）——文件不完整，或 .env 里有值写坏了"
+# 上面几条 grep 只认形状，这条认的是「下一步 pull 真的能跑」。
+# DC 不加引号是刻意的：它是 'docker compose'（两个词）或 'docker-compose'（一个词）。
+# shellcheck disable=SC2086
+$DC -f "$COMPOSE" config -q \
+  || die "${COMPOSE} 解析失败（上面应该有 compose 的报错）——文件不完整，或 .env 里有值写坏了"
 
 # ---- 把生成的密码留在终端上 ----
 echo
@@ -218,7 +236,7 @@ for v in SEAFILE_VOLUME SEAFILE_MYSQL_VOLUME; do
   fi
 done
 echo
-echo "下一步（照抄）："
-echo "  docker compose pull"
-echo "  docker compose up -d           # 一条命令起全部；db 的 healthcheck 会自动排好顺序"
+echo "下一步（照抄；本机探测到的 compose 入口是 \`${DC}\`）："
+echo "  ${DC} pull"
+echo "  ${DC} up -d                     # 一条命令起全部；db 的 healthcheck 会自动排好顺序"
 echo "                                 # 二开定制的追加由镜像内自动完成，没有下一步了"

@@ -26,12 +26,16 @@ TLS 由云上反向代理终止（本项目的实际形态，见 §9）；容器
 
 ## 2. 前置条件（上线检查清单）
 
-- [ ] **Docker + compose v2 插件**：`docker compose version` 能出版本号。
-  老版 docker（20.10 时代）没有 compose 子命令，跑 `docker compose` 会报
+- [ ] **docker（≥20.10）+ 任一 compose 实现**：v2 插件（`docker compose`）或
+  v1（`docker-compose`，**≥1.27** —— 本项目的 compose 文件是无 `version:` 键的
+  compose-spec 格式、且依赖 `depends_on` 的 `service_healthy` 条件，v1 从 1.27 起
+  两者都支持；1.29.2 实测解析 exit 0、条件保留，生产服务器就是这么跑的）。
+  **机器上有什么用什么**：`init-prod-env.sh` 自动探测入口（v2 优先），末尾自检与
+  打印的「下一步」命令都按同一形态；两种都没有才报错，报错里两种装法都给。
+  老版 docker 没装 v2 插件时，`docker compose` 会报
   `unknown shorthand flag: 'f' in -f` 外加一整页 docker help——**极具误导性，
-  看着像部署文件坏了**（2026-09-21 在生产服务器上撞过：`init-prod-env.sh` 的
-  末尾自检就这么炸的）。脚本会自检这一条并直接给出安装命令（独立插件二进制，
-  不动 docker 引擎、不用重启 docker、不影响同机其它容器）。
+  看着像部署文件坏了**（2026-09-21 在生产服务器上撞过），探测就是为了
+  让这类报错根本轮不到出现。
 - [ ] **（上线时才需要，不是部署前提）** 域名 DNS 已指向**云反向代理**（不是本机）：
   `dig +short <域名>` 确认解析到代理的 IP
   - 反代模式下本机不需要公网 DNS；`SEAFILE_DOMAIN` 填的就是这个域名
@@ -270,6 +274,10 @@ docker compose up -d               # db + memcached + seafile 一起起，按依
 #   → 起 seafile/seahub/seafdav
 # （LETSENCRYPT=true 时中间还会签发证书；本项目是反代模式，不签）
 ```
+
+> 机器上只有 `docker-compose`（v1）的：把文中 `docker compose` 原样换成
+> `docker-compose` 即可，两者对本项目的文件等效（§2）。`init-prod-env.sh`
+> 打印的「下一步」已按本机探测到的入口写好，照抄它就行。
 
 **装完就完了。** 二开定制的追加已在镜像内完成（见 §4.2.2），生产上**没有**"再跑一个脚本"
 这一步；仓库里的 `init-conf.sh` 现在只剩 dev 用途，`--prod` 会直接报错退出。
@@ -547,6 +555,8 @@ docker exec seafile grep -iE "Forbidden|csrf" /shared/seafile/logs/seahub.log | 
 cd /opt/seafile-custom/deploy
 docker compose pull && docker compose up -d
 ```
+
+> 只有 `docker-compose`（v1）的机器：把 `docker compose` 换成 `docker-compose` 照抄，等效（§2）。
 
 为什么不用改文件：compose 里那行是
 
@@ -843,7 +853,7 @@ https」，需要**两个条件同时成立**：
 | `init-prod-env.sh` 零提问 | ✅ 无参数直接跑通，密钥全自动生成；自检「反代两开关未被改动」通过 |
 | 域名改到管理后台 | 见 [docs/011](011-service-url-admin-config.md) §6 的完整验证矩阵（含跨进程即时生效与 HTTP 端到端） |
 | 脚本报错路径 | ✅ 容器不存在 / 容器没在跑 / 环境文件缺失，三种都给明确提示而非堆栈 |
-| compose 缺失自检（2026-09-21 生产服务器撞出：老 docker 报 `unknown shorthand flag: 'f' in -f`，被误当成文件损坏） | ✅ 用 docker 垫片模拟「无 compose 插件」→ 脚本在生成 `.env` **之前**就 die，报错里直接给出可照抄的插件安装命令（架构按本机展开）；装好后干净目录复跑全通 |
+| compose 双形态支持（2026-09-21：老 docker 报 `unknown shorthand flag: 'f' in -f` 一度被误判成文件损坏；生产服务器实为老 docker + `docker-compose` v1，**且就这么跑起来了**） | ✅ `init-prod-env.sh` 探测入口：v2 插件 → `docker-compose` ≥1.27（awk 校验版本）→ 皆无才 die（两种装法都给）；末尾自检与「下一步」按探测结果打印。三路径实测：本机 v2 全通；垫片模拟用户服务器（真实 1.29.2 二进制）全通、打印 `docker-compose …`；皆无 → die 报错可照抄。v1 对 `seafile-prod.yml` 解析 **exit 0**、`service_healthy` 条件保留、三镜像全部解析 |
 
 **安装步骤精简（2026-09-21）——把「装的人该做的」和「脚本该做的」分开：**
 

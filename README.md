@@ -130,6 +130,7 @@ gh run watch                            # 3. 看构建（约 12–18 分钟）
 
 # 没有第 4 步。第 2 步推完就结束了。
 # 生产服务器上（任何时候，只要想升级）：docker compose pull && docker compose up -d
+# （机器上只有 docker-compose v1 的，换成 docker-compose 即可，等效）
 ```
 
 **发布没有任何人工步骤。** CI 在「构建 + 冒烟全绿」之后自己把 `latest` 通道 tag 搬到这次
