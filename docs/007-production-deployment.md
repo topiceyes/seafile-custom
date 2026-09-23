@@ -46,6 +46,8 @@ TLS 由云上反向代理终止（本项目的实际形态，见 §9）；容器
   - 反代模式下**不需要**本机 443 公网可达，也不需要 DNS 指向本机——证书和 DNS 都在云代理侧
   - （只有在用 `SEAFILE_SERVER_LETSENCRYPT=true` 时才需要 80 公网可达 + DNS 指向本机，
     因为那是容器自己跑 acme.sh webroot 验证）
+  - **宿主机自己跑 nginx/面板（如宝塔）做反代时**：80/443 归宿主 nginx，容器端口用
+    `.env` 的 `SEAFILE_HTTP_LISTEN` 挪开（如 `127.0.0.1:8080`）——见 §9.1
 - [x] **不需要任何凭据**：仓库与镜像包都是 public，取部署文件和拉镜像都免登录
   （曾是 classic PAT，2026-09-20 转 public 后取消）。CI 推镜像用内置 `GITHUB_TOKEN`
 - [x] **服务器网络可达两个域名**（免凭据，但都必须是通的）——**2026-09-21 已在生产服务器上
@@ -793,6 +795,7 @@ cd deploy && ./rehearsal-rp.sh
 | 域名经代理 https | 生产主路径 | 彩排登录 302、P1–P3 |
 | IP 直连 http | 内网/调试（原版能力） | 彩排 P4 |
 | WebDAV /seafdav | 文件协议 | smoke（enabled=true） |
+| 域名经宿主反代（宝塔等面板）https | 生产主路径（m-disc 形态） | 容器侧与云反代**同字节**（明文 http + Host 头 + host 分流兜底），P1–P4 覆盖；面板改写 Host 的坑见 §9.1 与 §10 第四形态 |
 | 桌面客户端 SSO / 钉钉回调 | 外部入口 | **未覆盖**——上线后用真域名复验（§7.2 边界表） |
 
 
@@ -854,7 +857,8 @@ https」，需要**两个条件同时成立**：
     域名也能登录访问**（绝对链接仍按 `SERVICE_URL` 生成）。上游原版镜像 IP 直连
     能用，二开不能比原版少。
   - 边界：改域名要同步 `.env` 的 `SEAFILE_DOMAIN`（`server_name` 首启渲染一次，
-    §4.2.1）；代理改写 Host 不保留域名，属于代理侧配置问题（本表「转发头」行）。
+    §4.2.1）；代理改写 Host 不保留域名，属于代理侧配置问题（本表「转发头」行；
+    真实案例：宝塔面板把 Host 写死成 IP → 全 POST 403，见 §9.1 与 §10 第四形态）。
 
 第 2 条由镜像内的 `custom_bootstrap.py` 写入（§4.2.2）。上游从没设过它——`settings.py`、
 `bootstrap.py`、`setup-seafile-mysql.py` 逐个查过，全镜像只有 Django 自己的默认值 `None`。
@@ -888,6 +892,67 @@ https」，需要**两个条件同时成立**：
 | **超时** | 大文件上传/下载走 `/seafhttp`，容器侧给了 36000s，代理侧的 `proxy_read_timeout` 要跟上 |
 | **WebSocket** | `/notification` 需要 `Upgrade`/`Connection` 透传，否则通知不实时（功能不致命） |
 | **不要只转 80** | `/media` 是容器 nginx 直接从磁盘发的，`/seafhttp` 走 8082，都由容器 nginx 内部分流。代理只要把**整个域名**转给容器 80 即可，不用按路径拆 |
+
+### 9.1 宿主机反代（宝塔面板等）：80/443 归宿主 nginx 时
+
+TLS 不在云上、就在跑 docker 的这台机器上终止的形态（2026-09-23 生产实例：
+`https://m-disc.moresec.cn`，宝塔面板管的宿主 nginx）：
+
+```
+浏览器 ──https://域名──→ 宿主 nginx:443（宝塔管，证书在这，TLS 终止）
+                           │ proxy_pass http://127.0.0.1:8080（明文）
+浏览器 ──http://IP────→ 宿主 nginx:80（可选：IP 透传，或 301 到 https）
+                           ▼
+                    seafile 容器 :80（.env 里 SEAFILE_HTTP_LISTEN='127.0.0.1:8080'，
+                                     容器端口只绑本机回环，外部流量必经反代）
+```
+
+**`.env` 三要素：**
+
+```bash
+SEAFILE_DOMAIN='m-disc.moresec.cn'            # 真域名——host 分流兜底规则上膛，
+                                              # 以后代理头再被写歪也不会 403（§9 XFP 节）
+SEAFILE_HTTP_LISTEN='127.0.0.1:8080'          # 把容器挪出 80，只绑回环
+# SEAFILE_SERVER_LETSENCRYPT='false' 与 SEAFILE_SERVER_PROTOCOL='https' 保持不动
+```
+
+改完 `docker-compose pull && docker-compose up -d`：容器 conf 由 `sync_nginx_conf`
+自动重渲染（指纹含域名），**不用碰数据卷里的任何文件**。
+
+**⚠️ 宝塔面板的坑（2026-09-23 生产实证，§10 第四形态）：** 宝塔「反向代理」默认生成
+
+```nginx
+proxy_set_header Host 192.168.11.141;    # ← Host 被写死成 IP
+```
+
+后果：容器看到的 Host 永远是 IP，Django 算出的合法来源是 `https://<IP>`，而浏览器
+`Origin` 是 `https://<域名>`——**所有 POST 一律 403（网页登录、客户端 SSO 同死），
+GET 却全通**，极具迷惑性。修法：面板 → 网站 → 该域名 → **配置文件**，把这行改成
+`proxy_set_header Host $host;` 保存（面板会自动 `nginx -t` + reload）。其余
+`X-Forwarded-Proto $scheme` 等行宝塔默认就是对的，别动。
+**注意**：之后在面板「反向代理」设置页重新保存，会把这行覆盖回 IP——要再改一次。
+
+服务器侧完整步骤（装过宝塔、证书已挂到网站的前提下）：
+
+```bash
+# 1) 宝塔面板：网站 → <域名> → 设置 → 配置文件
+#    proxy_set_header Host <IP>;  →  proxy_set_header Host $host;
+# 2) 对齐仓库与 .env
+cd /opt/seafile-custom/deploy && git pull
+sed -i "s/^SEAFILE_DOMAIN=.*/SEAFILE_DOMAIN='<你的域名>'/" .env
+grep -q '^SEAFILE_HTTP_LISTEN=' .env || echo "SEAFILE_HTTP_LISTEN='127.0.0.1:8080'" >> .env
+docker-compose pull && docker-compose up -d
+docker exec seafile grep server_name /shared/nginx/conf/seafile.nginx.conf   # 期望：你的域名
+```
+
+（`git pull` 若撞上手改过的 compose：`git checkout -- deploy/seafile-prod.yml` 后重新
+pull——端口已由 `SEAFILE_HTTP_LISTEN` 接管，手工映射不再需要。）
+
+**钉钉收尾**（域名 + https 就位后）：Seafile 后台 → 系统设置 → Site URL 改为
+`https://<域名>`；钉钉开发者后台 → 登录与分享 → 回调域名填
+`https://<域名>/dingtalk/callback/`；扫码一律从 `https://<域名>` 登录页发起
+（state 绑会话 cookie，跨地址必掉 `invalid state`）。钉钉回调域名接受 IP 与内网
+域名——匹配是纯字符串比对，回跳由浏览器发起，不要求钉钉服务器能访问该地址。
 
 ## 10. 验证记录
 
@@ -989,6 +1054,23 @@ P1/P2/P3（域名入口：带头 https / 带头 http / 无头）全 302，**P4�
 > 于是 `set -u` 下报 `ENV_FILE?: unbound variable` —— 而且**全都在错误提示分支里**，
 > 平时不执行，一旦触发就是「报错时报不出错」。已全部改为 `${VAR}`。
 > （复现：`bash -c 'set -u; V=abc; echo "x/$V，y"'`）
+
+**403 第四形态：宿主反代改写 Host（宝塔面板）（2026-09-23 定位，与镜像无关）**
+
+| 项 | 实测 |
+|---|---|
+| 症状 | 客户端单点登录 + 网页登录 POST 一律 403，GET 全通（登录页、静态资源正常）——「页面能开、表单全死」组合与第三形态不同源 |
+| 定位手法（开发机远程探针，零登录服务器） | ✅ 443 有效证书 `*.moresec.cn`；容器被挪到 `8080`；任意 Host 的 GET 都 200（反代是 catch-all）；完整 CSRF 流程（cookie+token 配对）POST **18 组 Origin/Referer 组合全 403**；同流程容器直连 `IP:8080` → **200**。结论：容器健康，反代把容器看到的 Host 改成了一个猜不到/对不上的值 |
+| 根因（配置现行） | ✅ 宝塔面板「反向代理」默认配方 `proxy_set_header Host 192.168.11.141;`（写死成 IP；`X-Forwarded-Proto $scheme` 是对的）。Django secure 下 `good_origin=https://192.168.11.141` ≠ 浏览器 `https://m-disc.moresec.cn` → 全 POST 403 |
+| 容器 conf 侧因 | `.env` 的 `SEAFILE_DOMAIN` 仍是占位 `seafile.local`，host 分流兜底规则对真域名不生效（命中条件是 `Host == server_name`，§9） |
+| 修复 | ① 宝塔配置文件把 Host 改回 `$host`（用户侧，一行）；② `.env` 设真域名 + `up -d`（sync 自动重渲染 conf，兜底上膛）。两条独立成立，合做是双保险 |
+| 结构性收尾 | ✅ compose ports 改为 `${SEAFILE_HTTP_LISTEN:-80}:80`——把用户手工改的 `8080:80`（和顺手加的 `8443:443` 摆设映射）吸收成正式配置，消除 git pull 冲突与「手改文件失飘」类别；`env.prod.example` 与 §9.1 成文 |
+| 端到端复验 | 待用户执行 §9.1 server 步骤后远程回填（GET 域名 200 / POST 域名 非403 / IP 直连不破） |
+
+> 教训与前三形态同源但各补一块：这次容器、镜像、模板全部无辜，**环境组件（宝塔）的
+> 默认配方**是根因。「迎合环境」原则的具体化——宝塔用户一定会撞上这行，所以把它写成
+> §9.1 的醒目警告，而不是等下一个用户再踩。定位上再次验证：远程探针（Origin/Referer
+> 反推容器视角）在不碰服务器的情况下把嫌疑从 18 维空间收敛到「Host 被改写」一件事上。
 
 > **那一步已经删掉了（2026-09-21）。** 上面那条「还能再少一步」的笔记当时判为「暂缓，
 > 等下次有别的理由出镜像时一并带上」——**这个判断是错的**。用户随后直接问「为什么我二开
