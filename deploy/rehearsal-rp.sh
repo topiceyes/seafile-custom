@@ -24,8 +24,12 @@ REPO_DEPLOY=$(pwd)
 cd ..
 
 DOMAIN=seafile.localhost          # 本机解析（配合 curl --resolve，不改 /etc/hosts）
-HOST_PORT=18080                   # 容器 80 直连口（P1/P2/P3 对照探针用）
-PROXY_PORT=18443                  # 代理 443
+HOST_PORT="${SEAFILE_RP_HTTP_PORT:-18080}"   # 容器 80 直连口（P1-P4 对照探针用）。
+PROXY_PORT="${SEAFILE_RP_TLS_PORT:-18443}"   # 代理 443。两个都可用环境变量覆盖：
+                                             # 宿主端口被别的东西占着时（比如本机临时起
+                                             # 的服务），不用杀它——换口即可：
+                                             #   SEAFILE_RP_HTTP_PORT=18081 ./rehearsal-rp.sh
+export SEAFILE_RP_HTTP_PORT SEAFILE_RP_TLS_PORT   # 让 override 里的端口插值拿到同一组值
 PROJECT=seafile-rp
 WD="$REPO_DEPLOY/rehearsal-rp"
 ADMIN_EMAIL="admin@$DOMAIN"
@@ -75,7 +79,10 @@ command -v docker >/dev/null || die "缺 docker"
 command -v openssl >/dev/null || die "缺 openssl"
 for p in "$HOST_PORT" "$PROXY_PORT"; do
   if lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; then
-    die "宿主端口 $p 已被占用——本脚本靠这两个端口与 dev 栈隔离，先腾出来"
+    die "宿主端口 $p 已被占用——本脚本靠这两个端口与 dev 栈隔离。
+  占用者多半是本机临时起的服务，不用杀它，换口重跑即可：
+    SEAFILE_RP_HTTP_PORT=18081 ./rehearsal-rp.sh        （http 探针口）
+    SEAFILE_RP_TLS_PORT=18444  ...                       （本地代理 TLS 口）"
   fi
 done
 ok "端口 $HOST_PORT / $PROXY_PORT 空闲（dev 栈的 80/443/8180 不参与）"

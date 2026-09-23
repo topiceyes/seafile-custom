@@ -29,7 +29,8 @@ services:
       # 443 那条本来就不该有：反代模式下容器根本不监听 443（模板 https=false 分支
       # 只渲染 `listen 80`），生产 compose 里也已删掉。
       # 绑 127.0.0.1 而不是 0.0.0.0：彩排不该在局域网上开个口子。
-      - "127.0.0.1:18080:80"
+      # 端口可覆盖：宿主被占时 SEAFILE_RP_HTTP_PORT=18081 ./rehearsal-rp.sh 即换口
+      - "127.0.0.1:${SEAFILE_RP_HTTP_PORT:-18080}:80"
 
   # ---- 本机扮演「云反向代理」：终止 TLS + 明文转发到 seafile 容器的 80 ----
   # 存在的意义就是 §7.2 要验的那条链路：TLS 在【代理】侧终止，容器只收明文，
@@ -39,7 +40,7 @@ services:
     container_name: seafile-rp-proxy
     restart: unless-stopped
     ports:
-      - "127.0.0.1:18443:443"
+      - "127.0.0.1:${SEAFILE_RP_TLS_PORT:-18443}:443"
     volumes:
       # 复用 deploy/gen-ssl-cert.sh 的产物（它写 <数据卷>/ssl/<域名>.crt|key）。
       # 反代模式下容器不看这个目录，证书纯粹归代理用 —— 这正是「证书在代理侧」的形态，
