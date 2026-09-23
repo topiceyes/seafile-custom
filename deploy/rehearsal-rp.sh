@@ -392,6 +392,30 @@ BEFORE=$("${DC[@]}" ps --format '{{.Image}}' seafile 2>/dev/null || echo '')
 AFTER=$("${DC[@]}" ps --format '{{.Image}}' seafile 2>/dev/null || echo '')
 assert_eq "$AFTER" "$BEFORE" "pull && up -d 之后镜像没变（通道未动 = 无操作）"
 
+# ---- 10b. 已有数据卷 + 模板更新：滞留的旧 conf 必须被自动重渲染 ----
+# 数据卷里的 nginx conf 是首启渲染的一次性产物，上游只在文件缺失时渲染——镜像
+# 模板更新后旧 conf 无限滞留。2026-09-22 生产 403 第三形态正撞在这里：用户拉了
+# 三版新镜像，容器里跑的仍是首启那版规则（远程探针实证 XFP=http→302 / 无头→403）。
+# 彩排每次都是全新卷，结构上测不到这条路径——所以这里手工制造「滞留」再重启钉死它。
+step "10b. 已有卷 + 模板更新：旧 conf 自动重渲染（2026-09-22 生产 403 第三形态）"
+printf '# 旧模板渲染的滞留件（模拟 2026-09-22 那台生产机）\nset $seafile_fwd_proto https;\n' \
+  > "$WD/data/nginx/conf/seafile.nginx.conf"
+rm -f "$WD/data/nginx/conf/.render-inputs.sha"
+"${DC[@]}" restart seafile >/dev/null 2>&1
+CODE=000
+for i in $(seq 1 60); do
+  CODE=$(curl -sk --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 10 \
+           --resolve "$DOMAIN:$PROXY_PORT:127.0.0.1" "https://$DOMAIN:$PROXY_PORT/accounts/login/" || true)
+  [ "$CODE" = "200" ] && break
+  sleep 10
+done
+assert_eq "$CODE" "200" "restart 后容器回来了（登录页 200）"
+assert_has "$WD/data/nginx/conf/seafile.nginx.conf" 'if ($http_host = $server_name)' \
+  "滞留的旧 conf 被 sync_nginx_conf 自动重渲染（新规则已生效）"
+ls "$WD/data/nginx/conf/" | grep -q '^seafile\.nginx\.conf\.bak-' \
+  || die "旧 conf 没有被挪走为 .bak（sync_nginx_conf 没跑？）"
+ok "旧 conf 已备份为 .bak-*，重渲染完成"
+
 step "11. 回滚机制（内联一个不可变 tag，不改任何文件）"
 # 确定性断言：内联变量确实能盖住 compose 里的通道默认值。
 # 这条是回滚能工作的全部机制 —— 它成立，回滚就成立。

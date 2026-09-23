@@ -55,6 +55,8 @@ import os
 import re
 import sys
 import time
+import hashlib
+import tempfile
 
 # setup 写配置的目录。优先用 /opt/seafile/conf（upstream 的 central_config_dir，
 # create_data_links.sh 把它软链到 /shared/seafile/conf）；软链没建起来时退回真实路径。
@@ -225,6 +227,87 @@ def init_custom_settings():
     apply_settings(confdir)
     apply_webdav(confdir)
     log('完成 —— 此时 seafile/seahub 尚未启动，无需重启即已生效')
+
+
+# ---------------------------------------------------------------------------
+# nginx conf 的模板同步（由 start.py 在 generate_local_nginx_conf() 之前调用，
+# 见 patch-upstream.py 第 4 处补丁）
+# ---------------------------------------------------------------------------
+
+NGINX_TEMPLATE = '/templates/seafile.nginx.conf.template'
+NGINX_CONF = '/shared/nginx/conf/seafile.nginx.conf'
+
+
+def sync_nginx_conf(conf_file=NGINX_CONF, template=NGINX_TEMPLATE):
+    """模板变更自动传播到已有部署（2026-09-23 加入）。
+
+    上游 `generate_local_nginx_conf()` 只在 conf【不存在】时渲染——conf 是首启时
+    渲染进数据卷的一次性产物。此后镜像换了新模板，已有机器的 conf 会**无限滞留**
+    在旧版：升级了镜像、行为却不变（2026-09-22 生产 403 第三形态。用户拉了三版
+    新镜像，容器里跑的仍是首启那版的「缺失兜底 https」；远程探针实证
+    XFP=http→302 / 无头→403，与新模板行为完全不符。彩排每次都是全新卷，
+    结构上测不到这条升级路径）。
+
+    本函数在上游渲染**之前**跑：
+      · sidecar（conf 同目录 `.render-inputs.sha`）记「模板字节 + 渲染输入」指纹；
+        指纹一致 → 不做任何事（幂等快路径，正常启动零开销）。
+      · 指纹缺失/不一致 → 用上游同一个 `render_template`、同一份 context 渲染期望
+        内容做**逐字节**比对：一致 → 只补 sidecar；不一致 → 旧 conf 挪走为
+        `*.bak-<时间戳>`，随后上游 renderer 本轮就会用当前模板重渲染。
+    任何异常只记日志、不中断启动——同步是增强不是前提，失败退化为上游现状。
+    """
+    sidecar = os.path.join(os.path.dirname(conf_file), '.render-inputs.sha')
+    try:
+        if not os.path.isfile(template):
+            log('sync_nginx_conf: 模板 %s 不存在，跳过（无法评估）' % template)
+            return
+
+        # context 与上游 bootstrap.generate_local_nginx_conf() 完全一致，
+        # 并借道同一个 render_template（写临时文件再读回），保证逐字节同源。
+        from bootstrap import is_https
+        from utils import get_conf, render_template
+
+        context = {
+            'https': is_https(),
+            'domain': get_conf('SEAFILE_SERVER_HOSTNAME', 'seafile.example.com'),
+            'is_tmp': False,
+        }
+        with open(template, 'rb') as fp:
+            fingerprint = hashlib.sha256(
+                fp.read() + b'\0' + repr(sorted(context.items())).encode('utf-8')
+            ).hexdigest()
+
+        if os.path.isfile(sidecar):
+            with open(sidecar, 'r', encoding='utf-8') as fp:
+                if fp.read().strip() == fingerprint:
+                    return  # conf 与当前模板同源，无需动作
+
+        tmp = tempfile.NamedTemporaryFile('r', suffix='.nginx-expected', delete=False)
+        try:
+            render_template(template, tmp.name, dict(context))
+            with open(tmp.name, 'r', encoding='utf-8') as fp:
+                expected = fp.read()
+        finally:
+            os.unlink(tmp.name)
+
+        if os.path.isfile(conf_file):
+            with open(conf_file, 'r', encoding='utf-8') as fp:
+                current = fp.read()
+            if current == expected:
+                log('sync_nginx_conf: conf 与当前模板一致，补记指纹')
+            else:
+                bak = '%s.bak-%s' % (conf_file, time.strftime('%Y%m%d-%H%M%S'))
+                os.rename(conf_file, bak)
+                log('sync_nginx_conf: conf 是旧模板渲染的滞留件，已挪走 %s（本轮启动会重渲染）'
+                    % bak)
+        else:
+            log('sync_nginx_conf: conf 不存在（全新卷），上游将首次渲染')
+
+        os.makedirs(os.path.dirname(sidecar), exist_ok=True)
+        with open(sidecar, 'w', encoding='utf-8') as fp:
+            fp.write(fingerprint + '\n')
+    except Exception as e:  # 同步是增强，不是启动的前提；失败退化为上游行为
+        log('sync_nginx_conf 跳过（%s）——退化为上游行为：只在 conf 缺失时渲染' % e)
 
 
 if __name__ == '__main__':

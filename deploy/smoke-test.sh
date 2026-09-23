@@ -203,6 +203,57 @@ for k in ('CLIENT_SSO_VIA_LOCAL_BROWSER', 'ENABLE_DINGTALK', 'ENABLE_DELETE_ACCO
 PY
 ok "二开定制钩子已接入 start.py；行为、幂等性、升级路径均验证通过"
 
+# ---- 升级路径二：数据卷里的 nginx conf 必须随模板自动更新（sync_nginx_conf）----
+#
+# 上游 generate_local_nginx_conf() 只在 conf 不存在时渲染——conf 是首启渲染进
+# 数据卷的一次性产物，镜像模板更新后旧 conf 无限滞留。2026-09-22 生产 403
+# 第三形态：用户拉了三版新镜像，容器里跑的仍是首启那版模板的规则（远程探针
+# 实证 XFP=http→302 / 无头→403，与新模板行为不符）。彩排全新卷测不到这条路径，
+# 由这里的单测钉住：陈旧→挪走、一致→保留、缺模板→不崩。
+grep -q 'sync_nginx_conf()' /scripts/start.py \
+  || fail "start.py 没有在 generate_local_nginx_conf() 之前调 sync_nginx_conf()（模板滞留的洞又开了）"
+# 顺序断言：sync 必须在渲染之前（晚了上游不重渲染）
+python3 - <<'PY' || fail "start.py 里 sync_nginx_conf 不在 generate_local_nginx_conf 之前"
+src = open('/scripts/start.py').read()
+assert src.index('sync_nginx_conf()') < src.index('generate_local_nginx_conf()'), \
+    'sync_nginx_conf 必须跑在渲染之前'
+PY
+python3 - <<'PY' || fail "sync_nginx_conf 三条路径单测失败"
+import os, sys, shutil
+sys.path.insert(0, '/scripts')
+import importlib.util
+spec = importlib.util.spec_from_file_location('cb', '/scripts/custom_bootstrap.py')
+cb = importlib.util.module_from_spec(spec); spec.loader.exec_module(cb)
+
+base = '/tmp/synctest'; shutil.rmtree(base, ignore_errors=True); os.makedirs(base)
+conf = base + '/seafile.nginx.conf'
+
+open(conf, 'w').write('OLD RULE: set $seafile_fwd_proto https;')
+cb.sync_nginx_conf(conf_file=conf)
+assert not os.path.exists(conf), '陈旧 conf 没被挪走'
+assert any(f.startswith('seafile.nginx.conf.bak-') for f in os.listdir(base)), '没有 .bak'
+assert os.path.exists(base + '/.render-inputs.sha'), 'sidecar 没写'
+
+from utils import render_template, get_conf
+from bootstrap import is_https
+ctx = {'https': is_https(), 'domain': get_conf('SEAFILE_SERVER_HOSTNAME','seafile.example.com'), 'is_tmp': False}
+render_template('/templates/seafile.nginx.conf.template', conf, dict(ctx))
+os.remove(base + '/.render-inputs.sha')
+cb.sync_nginx_conf(conf_file=conf)
+assert os.path.exists(conf), '一致的 conf 被误挪'
+assert os.path.exists(base + '/.render-inputs.sha'), 'sidecar 没补'
+
+before = sorted(os.listdir(base))
+cb.sync_nginx_conf(conf_file=conf)
+assert sorted(os.listdir(base)) == before, '指纹一致的快路径动了文件'
+
+cb.sync_nginx_conf(conf_file=conf, template='/nope/template')
+assert os.path.exists(conf), '模板缺失时动了 conf'
+shutil.rmtree(base)
+print('sync paths OK')
+PY
+ok "sync_nginx_conf：陈旧→挪走、一致→保留、快路径零动作、缺模板不崩"
+
 # 清掉假配置目录：/opt/seafile/conf 若残留在镜像层，首启 setup 会有意外行为
 rm -rf /opt/seafile/conf
 
