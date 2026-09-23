@@ -756,6 +756,45 @@ cd deploy && ./rehearsal-rp.sh
 
 ## 9. 反代模式：TLS 在上游终止（本项目生产实际形态）
 
+### 9.0 全链路分叉图（动协议/配置/链路层的修复，先核这张表再动手）
+
+2026-09-21~23 的四轮 403 复盘结论：四轮不是四个 bug，是**一张没画的图**。每层的修复
+各自都对，但没人先把完整路径与配置生命周期铺开——铺开的话，下表 nginx conf 那行的
+空格（首启渲染后无人再管）第一天就可见。
+
+**请求全链路（每一层都可能让 scheme/Host 分叉）：**
+
+```
+浏览器
+ └─(https,域名)→ 云代理：终止 TLS → 明文 http → 本机:80      ← Host、XFP 在这里成形
+     └─→ 容器 nginx :80（conf 是【数据卷】里的首启渲染件，sync_nginx_conf 保证随模板刷新）
+          ├─ /media    → 静态文件直发
+          ├─ /seafhttp → fileserver :8082（上传下载；绝对链接来自 SERVICE_URL）
+          └─ 其余      → gunicorn :8000 → Django
+               ├─ 协议判定：SECURE_PROXY_SSL_HEADER + XFP（Host=域名→恒 https；其它→原版行为）
+               ├─ CSRF 信任源 = 协议 × get_host()（Host 头）
+               └─ 绝对链接 = SERVICE_URL（constance/数据库，后台改、免重启）
+```
+
+**配置生命周期（谁写、何时写、升级镜像后会不会自己跟上）：**
+
+| 配置 | 首启谁写 | 之后谁改 | 升级镜像后 |
+|---|---|---|---|
+| `.env` | init-prod-env.sh | 人（域名可只在后台改） | 不变（设计如此） |
+| `seahub_settings.py` | setup 无条件重写 | custom_bootstrap **每次启动逐项补** | ✅ 自动 |
+| `seafdav.conf` | setup | custom_bootstrap 每次启动 | ✅ 自动 |
+| `nginx conf` | 首启渲染进数据卷 | **曾长期：无人（403 第三形态病根）** | ✅ sync_nginx_conf（2026-09-23 补） |
+| constance（SERVICE_URL/钉钉） | 首启默认值 | 管理后台，免重启 | 不受影响 |
+
+**访问方式矩阵（每行必须有断言，或显式标注未覆盖）：**
+
+| 入口 | 用途 | 断言 |
+|---|---|---|
+| 域名经代理 https | 生产主路径 | 彩排登录 302、P1–P3 |
+| IP 直连 http | 内网/调试（原版能力） | 彩排 P4 |
+| WebDAV /seafdav | 文件协议 | smoke（enabled=true） |
+| 桌面客户端 SSO / 钉钉回调 | 外部入口 | **未覆盖**——上线后用真域名复验（§7.2 边界表） |
+
 
 生产不是「容器自己签 LE 证书」，而是：**docker 跑在本地，公网服务由云上的反向代理提供**。
 代理持有证书并终止 TLS，用明文 http 转发到本机的 80 端口。
