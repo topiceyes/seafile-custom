@@ -316,8 +316,13 @@ jobs:
       # 验证【真正推上去的那份字节】，而不是本地构建结果（runner 是 amd64，native 执行）。
       # 断言本身在 deploy/smoke-test.sh —— 与开发机人工验证共用同一份，避免两处漂移
       # （这套断言曾因 workflow 与 docs 各存一份而写错了路径，见该脚本头部注释）。
+      #
+      # ⚠️ publish 模式【也要跑冒烟】（2026-09-23 补）：构建先推 tag、冒烟后跑——
+      #    冒烟失败时 tag 已在 registry 里但从未被验证。若 publish 跳过冒烟，下一次
+      #    撞上这个 tag 的运行会判 mode=publish 直接搬通道，坏镜像就上了通道。
+      #    「tag 已存在」只证明【推过】，不证明【验证过】；唯一例外是 none（什么都不做）。
       - name: 冒烟验证已推送的镜像
-        if: steps.guard.outputs.mode != 'publish' && steps.guard.outputs.mode != 'none'
+        if: steps.guard.outputs.mode != 'none'
         run: |
           set -euo pipefail
           docker pull "$IMAGE:$TAG"
@@ -414,7 +419,7 @@ jobs:
             # 若上一版本记录里的 digest 与本条不同，那是同一个 tag 被重建覆盖过 ——
             # 这种事必须留在正文里，不能只活在 run 日志里（2026-09-21 就这么出过一次）。
             if [ "${{ steps.guard.outputs.mode }}" = "publish" ]; then
-              echo "> ℹ️ **本次只做了发布，没有重新构建。** 该 tag 的字节由此前某次运行产出并冒烟。"
+              echo "> ℹ️ **本次只做了发布，没有重新构建。** 冒烟仍在本轮对该 tag 重跑并通过（publish 不再跳过冒烟）。"
               echo "> 若你记得上一版记录里的 digest 与本条**不同**，那是这个不可变 tag 被重建覆盖过——"
               echo "> 排查见 [docs/010 §7](https://github.com/$GITHUB_REPOSITORY/blob/main/docs/010-ci-release-pipeline.md)。"
               echo ""

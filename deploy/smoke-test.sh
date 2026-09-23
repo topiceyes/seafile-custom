@@ -124,7 +124,7 @@ rm -f /etc/nginx/sites-enabled/seafile.nginx.conf
 # 光检查文件存在不够——所以下面在一个假配置目录上真跑一遍，验实际行为。
 test -f /scripts/custom_bootstrap.py || fail "缺 /scripts/custom_bootstrap.py"
 test -x /scripts/custom_bootstrap.py || fail "/scripts/custom_bootstrap.py 不可执行"
-grep -q '^from custom_bootstrap import init_custom_settings, start_service_retry$' /scripts/start.py \
+grep -q '^from custom_bootstrap import init_custom_settings, start_service_retry, sync_nginx_conf$' /scripts/start.py \
   || fail "start.py 缺 custom_bootstrap 的 import（patch-upstream.py 没生效？）"
 # 调用点必须在 init_seafile_server() 之后、seafile.sh 启动之前——顺序错了就白搭：
 # 早了会被 setup 的 open('w') 覆盖，晚了 seahub 已经起来、settings.py 改不生效。
