@@ -943,6 +943,7 @@ P1/P2/P3（域名入口：带头 https / 带头 http / 无头）全 302，**P4�
 | 根因 | ✅ nginx conf 是首启渲染进数据卷的一次性产物，上游 `generate_local_nginx_conf()` 只在文件缺失时渲染。用户机首启于 09-22 中午（ed2042da 时代），此后拉的三版新镜像都不触碰旧 conf。**彩排每次都是全新数据卷，结构上测不到「已有卷 + 模板更新」**——盲区 |
 | 修复：`custom_bootstrap.sync_nginx_conf()`，start.py 在渲染**之前**调用 | ✅ sidecar 指纹快路径 + 逐字节比对（借道上游同一 `render_template`）；旧滞留件自动挪 `.bak-*` 重渲染。dev 容器内真跑四条路径（陈旧→挪走、一致→保留、快路径零动作、缺模板不崩）；固化进 smoke 第 6 项；彩排新增步骤 10b（手工制造滞留 → restart → 自动重渲染断言） |
 | 用户机解锁 | ✅ `pull && up -d` + 挪走旧 conf + `restart seafile`；带 sync 的新镜像落地后，同类升级纯 `pull && up -d` 即自动完成 |
+| 端到端验证（tag `8976cc65` = `latest`，digest `a302a2db…`） | ✅ 彩排 **38 断言全绿**，含新增 10b：手工把旧规则 conf 写进数据卷 → `restart seafile` → sync 自动挪 `.bak` 并用当前模板重渲染、登录页 200。CI 侧同日堵住管线洞：**publish 模式此前跳过冒烟**——「tag 已存在」只证明推过不证明验证过（8976cc65 首次构建就冒烟红、重跑本会无验证发布）；现除 `none` 外所有模式都对 tag 冒烟 |
 
 > 顺带查出一个**潜伏 bug**：`init-conf.sh`、`init-prod-env.sh`、`smoke-test.sh` 里共 5 处
 > `$VAR` 后面直接跟中文标点（如 `$ENV_FILE，`）。bash 会把多字节字符并进变量名，
