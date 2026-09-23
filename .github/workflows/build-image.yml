@@ -323,6 +323,9 @@ jobs:
       #    「tag 已存在」只证明【推过】，不证明【验证过】；唯一例外是 none（什么都不做）。
       - name: 冒烟验证已推送的镜像
         if: steps.guard.outputs.mode != 'none'
+        env:
+          # publish 模式不走构建步骤，拿不到它写的 GITHUB_ENV；这里直接从 tag 步骤取
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
           docker pull "$IMAGE:$TAG"
