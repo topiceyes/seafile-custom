@@ -618,10 +618,17 @@ unreleased 的 tag、digest、构建输入指纹都在里面。数据卷全程�
 
 
 
-**升级 Seafile 版本**（如 12.0.14 → 12.1.x）时四处要同步：仓库根 `VERSION` 的
+**升级 Seafile 版本**（如 12.0.14 → 13.0.x）时要同步的点：仓库根 `VERSION` 的
 `seafile_version`、`deploy/image/Dockerfile` 的 BASE_IMAGE 与 INSTALLPATH、
 seahub 仓库基线（patches 重放）。CI 断言 `seafile_version` == BASE_IMAGE，
 只改一半会在发布前被拦下。官方镜像可能改 bootstrap 行为，升级前**必须重跑本地彩排**。
+12.0→13.0 这一跳的完整差异分析与实撞记录见 docs/012（环境变量改名、缓存换
+Redis、LE 移除、nginx conf 静态化都在那一跳里发生；13.x 内部的小版本升级不涉及这些）。
+
+**预演构建**（升级分支上先跑 CI 验证再合并）：push 分支后
+`gh workflow run build-image.yml --ref <分支>` —— 构建 + 冒烟 + 推送不可变 tag，
+但**不搬 latest、不发 Release**（分支门禁，2026-09-24 起）。用
+`./rehearsal-rp.sh --from-tree --tag ghcr.io/topiceyes/seafile-mc:<tag>` 彩排。
 
 **发新版**（产品版本，如 1.0.0 → 1.1.0）：改 `VERSION` 的 `product_version` → 提交到
 main → 切 `release/<版本>` 分支锚住发布点 → push，CI 自动构建发布。日常开发在 main；
@@ -629,7 +636,8 @@ main → 切 `release/<版本>` 分支锚住发布点 → push，CI 自动构建
 
 ## 7. 本地彩排
 
-两个模式，**覆盖的东西不一样，别只跑一个**：
+两个模式，**覆盖的东西不一样，别只跑一个**（⚠️ 模式 A 仅适用于 ≤1.0.0 / 12.0 镜像，
+13.0 起容器不再终止 TLS，见 §7.1 头注）：
 
 | | §7.1 模式 A：容器自签 TLS | §7.2 模式 B：反代模式 |
 |---|---|---|
@@ -639,6 +647,13 @@ main → 切 `release/<版本>` 分支锚住发布点 → push，CI 自动构建
 | 用途 | 改 nginx 模板 / settings 时的快速回归 | **上线前必跑** |
 
 ### 7.1 模式 A：容器自签 TLS（快速回归，**不覆盖反代模式**）
+
+> ⚠️ **13.0 起本节整个模式不存在了**（镜像 ≥1.1.0 / seafile-mc:13.0.28）：
+> 上游移除了容器内 TLS（Let's Encrypt 与 `init_letsencrypt()` 都没有了，
+> 静态 conf 只 `listen 80`），`SEAFILE_SERVER_LETSENCRYPT` 变量不复存在。
+> 本节仅适用于 ≤1.0.0（12.0 镜像）的历史彩排记录。
+> 13.0 下的快速回归：本地 `./build-image.sh --local` + 用 §7.2 反代彩排
+> （dev 环境的自签 HTTPS 由 bind-mount 的 dev conf 提供，见 docs/006）。
 
 利用 `init_letsencrypt()` 的特性——证书有效期 >30 天就跳过签发只装续期 cron——在 Mac 上完整走一遍生产首启链路（唯一差异：证书是自签而非 LE）。
 
