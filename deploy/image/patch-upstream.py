@@ -81,7 +81,7 @@ def patch_start_py():
     patch(
         START_PY,
         'from bootstrap import ',
-        'from custom_bootstrap import init_custom_settings, start_service_retry, sync_nginx_conf\n'
+        'from custom_bootstrap import init_custom_settings, start_service_retry\n'
         'from bootstrap import ',
         'start.py: 插入 custom_bootstrap 的 import',
     )
@@ -94,17 +94,16 @@ def patch_start_py():
         'start.py: 在 init_seafile_server() 之后插入定制追加调用',
     )
 
-    # ---- 1b) 模板变更自动传播 ----
-    # 上游 generate_local_nginx_conf() 只在 conf 不存在时渲染，数据卷里的旧 conf
-    # 会无限滞留（2026-09-22 生产 403 第三形态：拉了三版新镜像，跑的还是首启模板
-    # 的规则）。必须插在它【之前】——晚了就轮不到上游重渲染。
+    # ---- 1b) 静态 nginx conf 的域名占位符（13.0 起）----
+    # 13.0 废除了 /templates/ 模板渲染（generate_local_nginx_conf 删除），conf 构建期
+    # 静态烘入 /etc/nginx/sites-enabled/。我们的定制 conf 里 server_name 是占位符
+    # __SEAFILE_SERVER_NAME__（构建期还不知道域名），首启时由 custom_bootstrap
+    # 用真实 SEAFILE_DOMAIN 重写。这里只验证占位符确实进了镜像（防 COPY 错文件）。
     patch(
-        START_PY,
-        '    generate_local_nginx_conf()\n',
-        '    # 本地改动（image/patch-upstream.py）：模板指纹同步，见 custom_bootstrap.sync_nginx_conf\n'
-        '    sync_nginx_conf()\n'
-        '    generate_local_nginx_conf()\n',
-        'start.py: 渲染 nginx conf 之前做模板指纹同步',
+        '/etc/nginx/sites-enabled/seafile.nginx.conf',
+        'server_name __SEAFILE_SERVER_NAME__;',
+        'server_name __SEAFILE_SERVER_NAME__;',
+        '静态 nginx conf 含域名占位符（custom_bootstrap 首启替换）',
     )
 
     # ---- 2) 起 seahub 失败要重试 ----
