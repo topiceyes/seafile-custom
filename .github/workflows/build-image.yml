@@ -351,8 +351,13 @@ jobs:
       # 包一层新 index（本机 dry-run 实测：源 image.manifest.v1+json → 产物
       # image.index.v1+json），那样 :latest 的 digest 与不可变 tag 的 digest 就不再
       # 相同，「同一份字节」这个口径断掉，回滚与离线包都会对不上号。
+      # 分支门禁（github.ref == main）：生产 compose 跟的是 latest，而
+      # workflow_dispatch 可以在任意分支上跑（例如升级分支的预演构建——2026-09 的
+      # 13.0 升级就是这么干的，分支上 VERSION 还没翻牌，产出的 tag 前缀还是旧
+      # 版本号）。若没有这道门禁，分支构建一绿，生产下次 `docker compose pull`
+      # 就静默吃下一个没打算发布的镜像。发布记录与 digest 摘要同理，见下面两步。
       - name: 移动通道 tag
-        if: steps.guard.outputs.mode != 'none'
+        if: steps.guard.outputs.mode != 'none' && github.ref == 'refs/heads/main'
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
@@ -384,7 +389,7 @@ jobs:
       # 用 view→edit/create 分支做成幂等：force 重建、以及上面那条「只补做发布」
       # 的重跑路径都会走到这里。
       - name: 发布记录（GitHub Release）
-        if: steps.guard.outputs.mode != 'none'
+        if: steps.guard.outputs.mode != 'none' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.tag.outputs.tag }}
@@ -529,7 +534,7 @@ jobs:
           echo "已发布：https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
 
       - name: 记录 digest
-        if: steps.guard.outputs.mode != 'none'
+        if: steps.guard.outputs.mode != 'none' && github.ref == 'refs/heads/main'
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
@@ -553,3 +558,26 @@ jobs:
             echo "不需要重取任何文件、不需要改任何文件。"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "已发布：$DIGEST"
+
+      # 分支构建（workflow_dispatch --ref <分支>，典型场景：上游升级的预演构建）。
+      # 镜像已推送、冒烟已绿，但【不搬通道、不发 Release】——那是 main 的专利，
+      # 见「移动通道 tag」步骤头注。
+      - name: 分支构建摘要（不搬通道、不发布）
+        if: steps.guard.outputs.mode != 'none' && github.ref != 'refs/heads/main'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## 分支构建完成（${{ github.ref }}）"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 不可变 tag | \`$IMAGE:$TAG\` |"
+            echo "| 基线 | \`${{ steps.base.outputs.base }}\` |"
+            echo "| 源码树 | \`${{ steps.base.outputs.tree }}\` |"
+            echo ""
+            echo "⚠️ 通道 tag \`$IMAGE:$CHANNEL\` **未搬动**、未建 Release——分支构建只做"
+            echo "「构建 + 冒烟」验证。合并进 main 后由 main 的构建发布。"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "分支构建完成：$IMAGE:$TAG（未搬通道）"
