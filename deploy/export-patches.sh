@@ -17,16 +17,20 @@ DEFAULT_BASE=0877ad70251d50fcb43e2b15026f086bcfc4f815
 
 [[ -d "$SEAHUB_DIR/.git" ]] || { echo "错误：找不到 seahub 仓库（${SEAHUB_DIR}）" >&2; exit 1; }
 
-# 基线：优先沿用现有 MANIFEST 里的值（保证基线不会因为重导而悄悄改变）
-BASE_FULL="$DEFAULT_BASE"
-if [[ -f "$MANIFEST" ]]; then
-  from_manifest=$(awk '$1=="base_commit"{print $3; exit}' "$MANIFEST")
-  [[ -n "$from_manifest" ]] && BASE_FULL="$from_manifest"
+# 基线：环境变量 BASE_FULL 显式指定时优先（升级上游大版本换基线用，是有意的、
+# 一次性的动作，不该藏在默认值里——见 docs/007 §6 升级流程）；
+# 否则沿用现有 MANIFEST 里的值（保证日常重导不会悄悄改变基线）。
+if [[ -z "${BASE_FULL:-}" && -f "$MANIFEST" ]]; then
+  BASE_FULL=$(awk '$1=="base_commit"{print $3; exit}' "$MANIFEST")
 fi
+BASE_FULL="${BASE_FULL:-$DEFAULT_BASE}"
 git -C "$SEAHUB_DIR" cat-file -e "${BASE_FULL}^{commit}" \
   || { echo "错误：基线 $BASE_FULL 不在本地仓库中（浅克隆可能不含它）" >&2; exit 1; }
 
-BASE_BRANCH=$(awk '$1=="base_branch"{print $3; exit}' "$MANIFEST" 2>/dev/null || true)
+# base_branch 同理：环境变量优先，否则沿用 MANIFEST，最后兜底 12.0
+if [[ -z "${BASE_BRANCH:-}" && -f "$MANIFEST" ]]; then
+  BASE_BRANCH=$(awk '$1=="base_branch"{print $3; exit}' "$MANIFEST" 2>/dev/null || true)
+fi
 BASE_BRANCH="${BASE_BRANCH:-12.0}"
 
 # 工作区必须干净：导出的补丁要与分支内容一致

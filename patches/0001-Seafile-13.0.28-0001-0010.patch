@@ -1,0 +1,1086 @@
+From 204aea5e24d99e6499f46bd7569eb03b74cfbd84 Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
+Date: Thu, 24 Sep 2026 15:08:21 +0800
+Subject: [PATCH] =?UTF-8?q?Seafile=2013.0.28=20=E5=9F=BA=E7=BA=BF=20+=20?=
+ =?UTF-8?q?=E4=BA=8C=E5=BC=80=E8=A1=A5=E4=B8=81=E9=87=8D=E6=94=BE=EF=BC=88?=
+ =?UTF-8?q?0001-0010=20=E8=AF=AD=E4=B9=89=E5=85=A8=E9=87=8F=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- 基线：v13.0.28-server 的源码 commit 03d185f（dist tag 的 parent;
+  dist 顶层与源码的 seahub/ 子树逐字节一致，差的 37 个 .mo 由构建期
+  collectstatic 重新生成）
+- 重放方式：git apply -3 全量 + 手工补回三方合并丢掉的语义
+  （0009 的 get_fileserver_root/get_service_url/CONSTANCE 注册、
+  0003 的 is_dingtalk_enabled)
+- 已通过 8 项补丁语义特征检查
+- Django 4.2→5.2、SERVICE_URL 即时计算上游化——0009 实际优先级待实测
+---
+ .../sys-admin/web-settings/web-settings.js    |  27 ++++
+ seahub/api2/endpoints/admin/dingtalk.py       |  35 ++--
+ seahub/api2/endpoints/admin/web_settings.py   |  10 +-
+ seahub/auth/forms.py                          |  11 ++
+ seahub/base/accounts.py                       |   7 +
+ seahub/base/context_processors.py             |  12 +-
+ .../commands/deactivate_departed_users.py     | 149 ++++++++++++++++++
+ .../commands/fix_dingtalk_departments_sync.py |   4 +-
+ seahub/dingtalk/settings.py                   |  19 ++-
+ seahub/dingtalk/utils.py                      |   6 +-
+ seahub/dingtalk/views.py                      |  76 ++++++---
+ .../commands/send_dingtalk_notifications.py   |  28 ++--
+ .../send_notices_to_social_account.py         |  12 +-
+ seahub/oauth/backends.py                      |  24 +--
+ seahub/profile/views.py                       |   5 +-
+ seahub/settings.py                            |  26 +++
+ seahub/templates/registration/login.html      |   3 +
+ seahub/utils/__init__.py                      |  28 +++-
+ seahub/views/sso.py                           |   4 +-
+ seahub/views/sysadmin.py                      |   4 +-
+ 20 files changed, 399 insertions(+), 91 deletions(-)
+ create mode 100644 seahub/dingtalk/management/commands/deactivate_departed_users.py
+
+diff --git a/frontend/src/pages/sys-admin/web-settings/web-settings.js b/frontend/src/pages/sys-admin/web-settings/web-settings.js
+index 630f047b..081be717 100644
+--- a/frontend/src/pages/sys-admin/web-settings/web-settings.js
++++ b/frontend/src/pages/sys-admin/web-settings/web-settings.js
+@@ -318,6 +318,33 @@ class WebSettings extends Component {
+                   />
+                 </Section>
+ 
++                <Section headingText={gettext('DingTalk Login')}>
++                  <Fragment>
++                    <CheckboxItem
++                      saveSetting={this.saveSetting}
++                      displayName={gettext('Enable DingTalk login')}
++                      keyText='ENABLE_DINGTALK'
++                      value={config_dict['ENABLE_DINGTALK']}
++                      helpTip={gettext('Allow users to log in by scanning DingTalk QR code.')}
++                    />
++                    <InputItem
++                      saveSetting={this.saveSetting}
++                      displayName={gettext('DingTalk AppKey')}
++                      keyText='DINGTALK_APP_KEY'
++                      value={config_dict['DINGTALK_APP_KEY']}
++                      helpTip={gettext('AppKey of the DingTalk enterprise internal app')}
++                    />
++                    <InputItem
++                      inputType="password"
++                      saveSetting={this.saveSetting}
++                      displayName={gettext('DingTalk AppSecret')}
++                      keyText='DINGTALK_APP_SECRET'
++                      value={config_dict['DINGTALK_APP_SECRET']}
++                      helpTip={gettext('AppSecret of the DingTalk enterprise internal app')}
++                    />
++                  </Fragment>
++                </Section>
++
+                 {isPro &&
+                 <Section headingText={gettext('Terms')}>
+                   <CheckboxItem
+diff --git a/seahub/api2/endpoints/admin/dingtalk.py b/seahub/api2/endpoints/admin/dingtalk.py
+index 3c018988..98bdc036 100644
+--- a/seahub/api2/endpoints/admin/dingtalk.py
++++ b/seahub/api2/endpoints/admin/dingtalk.py
+@@ -27,7 +27,8 @@ from seahub.avatar.models import Avatar
+ from seahub.group.utils import validate_group_name
+ from seahub.auth.models import ExternalDepartment
+ 
+-from seahub.dingtalk.settings import ENABLE_DINGTALK, \
++from seahub.dingtalk.settings import is_dingtalk_enabled, \
++        get_dingtalk_app_key, get_dingtalk_app_secret, \
+         DINGTALK_DEPARTMENT_LIST_DEPARTMENT_URL, \
+         DINGTALK_DEPARTMENT_GET_DEPARTMENT_URL, \
+         DINGTALK_DEPARTMENT_GET_DEPARTMENT_USER_LIST_URL, \
+@@ -35,15 +36,14 @@ from seahub.dingtalk.settings import ENABLE_DINGTALK, \
+         USER_ACTIVATE_AFTER_DINGTALK_IMPORT
+ 
+ 
+-# for 10.0 or later
+-from seahub.dingtalk.settings import DINGTALK_APP_KEY, \
+-        DINGTALK_APP_SECRET
+-
+-if DINGTALK_APP_KEY and DINGTALK_APP_SECRET:
+-    from seahub.dingtalk.utils import \
+-            dingtalk_get_orgapp_token as dingtalk_get_access_token
+-else:
+-    from seahub.dingtalk.utils import dingtalk_get_access_token
++def dingtalk_get_access_token(*args, **kwargs):
++    # [dev] AppKey 已 constance 化，token 函数改为运行时选择
++    if get_dingtalk_app_key() and get_dingtalk_app_secret():
++        from seahub.dingtalk.utils import dingtalk_get_orgapp_token
++        return dingtalk_get_orgapp_token()
++    else:
++        from seahub.dingtalk.utils import dingtalk_get_access_token
++        return dingtalk_get_access_token(*args, **kwargs)
+ 
+ 
+ 
+@@ -93,7 +93,7 @@ class AdminDingtalkDepartments(APIView):
+ 
+     def get(self, request):
+ 
+-        if not ENABLE_DINGTALK:
++        if not is_dingtalk_enabled():
+             error_msg = 'Feature is not enabled.'
+             return api_error(status.HTTP_403_FORBIDDEN, error_msg)
+ 
+@@ -130,7 +130,7 @@ class AdminDingtalkDepartmentMembers(APIView):
+ 
+     def get(self, request, department_id):
+ 
+-        if not ENABLE_DINGTALK:
++        if not is_dingtalk_enabled():
+             error_msg = 'Feature is not enabled.'
+             return api_error(status.HTTP_403_FORBIDDEN, error_msg)
+ 
+@@ -150,6 +150,13 @@ class AdminDingtalkDepartmentMembers(APIView):
+         }
+         resp_json = requests.get(DINGTALK_DEPARTMENT_GET_DEPARTMENT_USER_LIST_URL, params=data).json()
+ 
++        # [dev] 钉钉侧失败时（如应用未开通通讯录部门成员读权限，errcode 60011），
++        # 响应中没有 userlist，直接取键会 KeyError 500。原样返回错误信息给前端。
++        if 'userlist' not in resp_json:
++            error_msg = resp_json.get('errmsg', '获取钉钉部门成员失败')
++            logger.warning('dingtalk user/listbypage failed: %s' % resp_json)
++            return api_error(status.HTTP_404_NOT_FOUND, error_msg)
++
+         user_id_name_dict = {}
+         auth_users = SocialAuthUser.objects.filter(provider='dingtalk')
+         for user in auth_users:
+@@ -184,7 +191,7 @@ class AdminDingtalkUsersBatch(APIView):
+             return api_error(status.HTTP_400_BAD_REQUEST, error_msg)
+ 
+         # permission check
+-        if not ENABLE_DINGTALK:
++        if not is_dingtalk_enabled():
+             error_msg = 'Feature is not enabled.'
+             return api_error(status.HTTP_403_FORBIDDEN, error_msg)
+ 
+@@ -284,7 +291,7 @@ class AdminDingtalkDepartmentsImport(APIView):
+         """import department from dingtalk
+         """
+ 
+-        if not ENABLE_DINGTALK:
++        if not is_dingtalk_enabled():
+             error_msg = 'Feature is not enabled.'
+             return api_error(status.HTTP_403_FORBIDDEN, error_msg)
+ 
+diff --git a/seahub/api2/endpoints/admin/web_settings.py b/seahub/api2/endpoints/admin/web_settings.py
+index 331faac9..98eef056 100644
+--- a/seahub/api2/endpoints/admin/web_settings.py
++++ b/seahub/api2/endpoints/admin/web_settings.py
+@@ -29,10 +29,14 @@ DIGIT_WEB_SETTINGS = [
+     'LOGIN_ATTEMPT_LIMIT', 'FREEZE_USER_ON_LOGIN_FAILED',
+     'ENABLE_SHARE_TO_ALL_GROUPS', 'ENABLE_TWO_FACTOR_AUTH',
+     'ENABLE_BRANDING_CSS', 'ENABLE_TERMS_AND_CONDITIONS',
+-    'ENABLE_USER_CLEAN_TRASH', 'SHARE_LINK_TOKEN_LENGTH'
++    'ENABLE_USER_CLEAN_TRASH', 'SHARE_LINK_TOKEN_LENGTH',
++    'ENABLE_DINGTALK'  # [dev] 钉钉登录开关
+ ]
+ 
+-STRING_WEB_SETTINGS = ('TEXT_PREVIEW_EXT', 'SITE_NAME', 'SITE_TITLE', 'CUSTOM_CSS')
++# 允许保存为空字符串的字符串项（密钥类配置需要可清空）
++STRING_WEB_SETTINGS_ALLOW_EMPTY = ('CUSTOM_CSS', 'DINGTALK_APP_KEY', 'DINGTALK_APP_SECRET')
++
++STRING_WEB_SETTINGS = ('TEXT_PREVIEW_EXT', 'SITE_NAME', 'SITE_TITLE') + STRING_WEB_SETTINGS_ALLOW_EMPTY
+ 
+ 
+ class AdminWebSettings(APIView):
+@@ -86,7 +90,7 @@ class AdminWebSettings(APIView):
+                     error_msg = 'value invalid.'
+                     return api_error(status.HTTP_400_BAD_REQUEST, error_msg)
+ 
+-            if (key in STRING_WEB_SETTINGS and key != 'CUSTOM_CSS') and not value:
++            if (key in STRING_WEB_SETTINGS and key not in STRING_WEB_SETTINGS_ALLOW_EMPTY) and not value:
+                 error_msg = 'value invalid.'
+                 return api_error(status.HTTP_400_BAD_REQUEST, error_msg)
+ 
+diff --git a/seahub/auth/forms.py b/seahub/auth/forms.py
+index 0dd5123e..463c04e9 100644
+--- a/seahub/auth/forms.py
++++ b/seahub/auth/forms.py
+@@ -25,6 +25,9 @@ from seahub.utils.auth import is_force_user_sso, can_user_update_password
+ from seahub.utils.password import get_password_strength_requirements, \
+         is_password_strength_valid
+ 
++# [dev] 0008: 普通用户密码登录被禁用时的提示（钉钉 SSO 是唯一入口）
++PASSWORD_LOGIN_BLOCKED_MSG = '账号密码登录仅对管理员开放，请使用钉钉扫码登录。'
++
+ 
+ class AuthenticationForm(forms.Form):
+     """
+@@ -72,6 +75,14 @@ class AuthenticationForm(forms.Form):
+                     if not is_first_login or not settings.ACTIVATE_AFTER_FIRST_LOGIN:
+                         self.errors['inactive'] = _("This account is inactive.")
+                         raise forms.ValidationError(_("This account is inactive."))
++                # [dev] 0008: 密码登录仅限管理员，普通用户唯一入口是钉钉 SSO。
++                # 在密码校验前拦截，给出明确提示；backend 层另有兜底，见
++                # seahub/base/accounts.py 的 AuthBackend.authenticate。
++                # db_record=False：策略拒绝不算登录失败记录（不触发验证码/冻结）。
++                if settings.PASSWORD_LOGIN_ADMIN_ONLY and not user.is_staff:
++                    self.db_record = False
++                    self.errors['password_login_admin_only'] = PASSWORD_LOGIN_BLOCKED_MSG
++                    raise forms.ValidationError(PASSWORD_LOGIN_BLOCKED_MSG)
+             except User.DoesNotExist:
+                 pass
+ 
+diff --git a/seahub/base/accounts.py b/seahub/base/accounts.py
+index cd218032..3f0078de 100644
+--- a/seahub/base/accounts.py
++++ b/seahub/base/accounts.py
+@@ -830,6 +830,13 @@ class AuthBackend(object):
+             return None
+ 
+         if user.check_password(password):
++            # [dev] 0008: 密码认证仅限管理员。表单层（seahub/auth/forms.py）
++            # 已给出中文提示；这里兜底拦住 /api2/auth-token/ 等绕过表单
++            # 直接调用 authenticate 的密码路径。放在 check_password 之后：
++            # 不改变密码错误时的行为与报错时序。
++            if settings.PASSWORD_LOGIN_ADMIN_ONLY and not user.is_staff:
++                logger.warning('Blocked password login of non-admin user: %s', username)
++                return None
+             return user
+ 
+ 
+diff --git a/seahub/base/context_processors.py b/seahub/base/context_processors.py
+index d404bdb9..8f5ab83c 100644
+--- a/seahub/base/context_processors.py
++++ b/seahub/base/context_processors.py
+@@ -25,10 +25,12 @@ from seahub.settings import SEAFILE_VERSION, SITE_DESCRIPTION, \
+     LOGIN_BG_IMAGE_PATH, THUMBNAIL_DEFAULT_SIZE, \
+     CUSTOM_LOGIN_BG_PATH, ENABLE_SHARE_LINK_REPORT_ABUSE, \
+     PRIVACY_POLICY_LINK, TERMS_OF_SERVICE_LINK, ENABLE_SEADOC, THUMBNAIL_SIZE_FOR_GRID, \
+-    FILE_SERVER_ROOT, NOTIFICATION_SERVER_URL, \
++    NOTIFICATION_SERVER_URL, \
+     ENABLE_METADATA_MANAGEMENT, BAIDU_MAP_KEY, GOOGLE_MAP_KEY, GOOGLE_MAP_ID, \
+     ENABLE_SEAFILE_AI, ENABLE_NOTIFICATION_SERVER, OFFICE_SUITE_ENABLED_EDIT_FILE_TYPES, \
+     ENABLE_FACE_RECOGNITION
++# [dev] FILE_SERVER_ROOT 不再从这里 import——它是启动期绑定，后台改了不生效。
++# 改走 seahub.utils.get_fileserver_root()，该项由 SERVICE_URL 推导（补丁 0009）。
+ from seahub.organizations.models import OrgAdminSettings
+ from seahub.organizations.settings import ORG_ENABLE_ADMIN_CUSTOM_LOGO
+ from seahub.onlyoffice.settings import ENABLE_ONLYOFFICE, \
+@@ -36,7 +38,7 @@ from seahub.onlyoffice.settings import ENABLE_ONLYOFFICE, \
+ from seahub.wopi.settings import ENABLE_OFFICE_WEB_APP, \
+         OFFICE_WEB_APP_EDIT_FILE_EXTENSION
+ from seahub.constants import DEFAULT_ADMIN
+-from seahub.utils import get_site_name, get_service_url
++from seahub.utils import get_site_name, get_service_url, get_fileserver_root
+ from seahub.avatar.templatetags.avatar_tags import api_avatar_url
+ 
+ 
+@@ -53,7 +55,7 @@ except ImportError:
+     ENABLE_FILE_SCAN = False
+ from seahub.work_weixin.settings import ENABLE_WORK_WEIXIN
+ from seahub.weixin.settings import ENABLE_WEIXIN
+-from seahub.dingtalk.settings import ENABLE_DINGTALK
++from seahub.dingtalk.settings import is_dingtalk_enabled
+ 
+ from seahub.settings import HELP_LINK
+ try:
+@@ -81,7 +83,7 @@ def base(request):
+     repo_id_patt = r".*/([a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})/.*"
+     m = re.match(repo_id_patt, request.get_full_path())
+     search_repo_id = m.group(1) if m is not None else None
+-    file_server_root = FILE_SERVER_ROOT
++    file_server_root = get_fileserver_root()
+     if not file_server_root.endswith('/'):
+         file_server_root += '/'
+ 
+@@ -138,7 +140,7 @@ def base(request):
+         'enable_signup': config.ENABLE_SIGNUP,
+         'enable_weixin': ENABLE_WEIXIN,
+         'enable_work_weixin': ENABLE_WORK_WEIXIN,
+-        'enable_dingtalk': ENABLE_DINGTALK,
++        'enable_dingtalk': is_dingtalk_enabled(),
+         'max_file_name': MAX_FILE_NAME,
+         'has_file_search': HAS_FILE_SEARCH,
+         'show_repo_download_button': SHOW_REPO_DOWNLOAD_BUTTON,
+diff --git a/seahub/dingtalk/management/commands/deactivate_departed_users.py b/seahub/dingtalk/management/commands/deactivate_departed_users.py
+new file mode 100644
+index 00000000..f1ea63cf
+--- /dev/null
++++ b/seahub/dingtalk/management/commands/deactivate_departed_users.py
+@@ -0,0 +1,149 @@
++# Copyright (c) 2012-2026 Seafile Ltd.
++# encoding: utf-8
++#
++# [dev] 离职员工账号自动禁用（方案 A：定时比对同步）
++#
++# 从钉钉企业通讯录拉取在职成员的 unionId 全集，与 Seafile 中 provider=dingtalk
++# 的绑定记录比对；绑定已不在通讯录的账号视为离职，置 is_active=False（数据保留）。
++#
++# 用法：
++#   docker exec seafile /opt/seafile/seafile-server-latest/seahub.sh python-env \
++#     python3 manage.py deactivate_departed_users [--dry-run]
++#
++# 安全阀：
++#   - 钉钉侧拉取结果为空（token 失效、权限被回收等）时直接中止，不动任何账号
++#   - 跳过管理员（is_staff）
++#   - 已禁用账号不重复处理
++# 需要钉钉应用开通「通讯录部门成员读权限」（qyapi_get_department_member）。
++
++import logging
++
++import requests
++from django.core.management.base import BaseCommand
++
++from seahub.auth.models import SocialAuthUser
++from seahub.base.accounts import User
++from seahub.dingtalk.settings import (get_dingtalk_app_key,
++                                      get_dingtalk_app_secret,
++                                      is_dingtalk_enabled)
++from seahub.utils import inactive_user
++
++logger = logging.getLogger(__name__)
++
++# 钉钉服务端 API（新版 topapi v2，返回 unionid）
++DEPARTMENT_LIST_SUB_URL = 'https://oapi.dingtalk.com/topapi/v2/department/listsub'
++USER_LIST_URL = 'https://oapi.dingtalk.com/topapi/v2/user/list'
++ROOT_DEPT_ID = 1
++PAGE_SIZE = 100
++
++
++def _get_orgapp_token():
++    from seahub.dingtalk.utils import dingtalk_get_orgapp_token
++    return dingtalk_get_orgapp_token()
++
++
++def _all_department_ids(token):
++    """广度遍历全部子部门（根部门 id=1 本身也计入）。"""
++    ids = [ROOT_DEPT_ID]
++    stack = [ROOT_DEPT_ID]
++    while stack:
++        dept_id = stack.pop()
++        resp = requests.post(DEPARTMENT_LIST_SUB_URL,
++                             params={'access_token': token},
++                             json={'dept_id': dept_id}).json()
++        if resp.get('errcode') != 0:
++            raise RuntimeError('department/listsub failed: %s' % resp)
++        for dept in resp.get('result', []):
++            ids.append(dept['dept_id'])
++            stack.append(dept['dept_id'])
++    return ids
++
++
++def _active_union_ids(token, dept_ids):
++    """按部门分页拉取在职成员 unionId 全集。"""
++    union_ids = set()
++    for dept_id in dept_ids:
++        cursor = 0
++        while True:
++            resp = requests.post(USER_LIST_URL,
++                                 params={'access_token': token},
++                                 json={'dept_id': dept_id, 'cursor': cursor,
++                                       'size': PAGE_SIZE}).json()
++            if resp.get('errcode') != 0:
++                raise RuntimeError('user/list failed (dept %s): %s' % (dept_id, resp))
++            result = resp.get('result', {})
++            for member in result.get('list', []):
++                union_id = member.get('unionid', '')
++                if union_id:
++                    union_ids.add(union_id)
++            if not result.get('has_more'):
++                break
++            cursor = result.get('next_cursor', cursor + PAGE_SIZE)
++    return union_ids
++
++
++class Command(BaseCommand):
++
++    help = 'Deactivate Seafile accounts whose DingTalk binding has left the corp contact list.'
++
++    def add_arguments(self, parser):
++        parser.add_argument('--dry-run', action='store_true',
++                            help='Only print what would be deactivated.')
++
++    def handle(self, *args, **options):
++        dry_run = bool(options['dry_run'])
++
++        if not is_dingtalk_enabled():
++            self.stderr.write('DingTalk login is not enabled, skip.')
++            return
++        if not (get_dingtalk_app_key() and get_dingtalk_app_secret()):
++            self.stderr.write('DingTalk AppKey/Secret not configured, skip.')
++            return
++
++        token = _get_orgapp_token()
++        if not token:
++            self.stderr.write('Failed to get DingTalk orgapp token, abort.')
++            return
++
++        try:
++            dept_ids = _all_department_ids(token)
++            active_union_ids = _active_union_ids(token, dept_ids)
++        except Exception as e:
++            logger.error(e)
++            self.stderr.write('Failed to fetch corp members, abort: %s' % e)
++            return
++
++        self.stdout.write('Departments: %d, active members: %d' % (len(dept_ids), len(active_union_ids)))
++
++        # 安全阀：拉到空集合大概率是钉钉侧异常（token/权限），绝不能把所有人禁了
++        if not active_union_ids:
++            logger.error('Empty active member set from DingTalk, abort.')
++            self.stderr.write('Empty active member set from DingTalk, abort.')
++            return
++
++        deactivated = 0
++        for binding in SocialAuthUser.objects.filter(provider='dingtalk'):
++            if binding.uid in active_union_ids:
++                continue
++            try:
++                user = User.objects.get(email=binding.username)
++            except User.DoesNotExist:
++                logger.warning('Bound user %s not found in Seafile.' % binding.username)
++                continue
++
++            if user.is_staff:
++                logger.info('Skip admin user %s (not in corp list).' % binding.username)
++                continue
++            if not user.is_active:
++                continue
++
++            self.stdout.write('%s departed: %s' % ('WOULD deactivate' if dry_run else 'Deactivating', binding.username))
++            logger.info('Deactivating departed user %s (unionId %s...)' % (binding.username, binding.uid[:8]))
++            if not dry_run:
++                user.is_active = False
++                inactive_user(binding.username)
++                user.save()
++            deactivated += 1
++
++        self.stdout.write('Done. Deactivated %d user(s)%s.'
++                          % (deactivated, ' (dry-run)' if dry_run else ''))
+diff --git a/seahub/dingtalk/management/commands/fix_dingtalk_departments_sync.py b/seahub/dingtalk/management/commands/fix_dingtalk_departments_sync.py
+index 747c3d38..6fae52d8 100644
+--- a/seahub/dingtalk/management/commands/fix_dingtalk_departments_sync.py
++++ b/seahub/dingtalk/management/commands/fix_dingtalk_departments_sync.py
+@@ -7,7 +7,7 @@ from django.core.management.base import BaseCommand
+ 
+ from seaserv import ccnet_api
+ from seahub.dingtalk.utils import dingtalk_get_access_token
+-from seahub.dingtalk.settings import ENABLE_DINGTALK, \
++from seahub.dingtalk.settings import is_dingtalk_enabled, \
+     DINGTALK_DEPARTMENT_LIST_DEPARTMENT_URL, DINGTALK_PROVIDER
+ from seahub.auth.models import ExternalDepartment
+ 
+@@ -69,7 +69,7 @@ class Command(BaseCommand):
+ 
+     def do_action(self):
+        # dingtalk check
+-        if not ENABLE_DINGTALK:
++        if not is_dingtalk_enabled():
+             self.log_error('Feature is not enabled.')
+             return
+ 
+diff --git a/seahub/dingtalk/settings.py b/seahub/dingtalk/settings.py
+index afdff673..b7e57fca 100644
+--- a/seahub/dingtalk/settings.py
++++ b/seahub/dingtalk/settings.py
+@@ -1,18 +1,25 @@
+ import seahub.settings as settings
+-from seahub.utils import is_pro_version
++from constance import config
+ 
+ # constants
+ DINGTALK_PROVIDER = 'dingtalk'
+ 
+-ENABLE_DINGTALK = getattr(settings, 'ENABLE_DINGTALK', False) and is_pro_version()
++# [dev] 钉钉开关/密钥已 constance 化（管理员后台可改、免重启生效）。
++# 默认值取自 seahub_settings.py 文件，后台保存后覆盖。
++# 旧代码若模块级 `from .settings import ENABLE_DINGTALK` 会在启动期固化值，必须改为调用函数。
++def is_dingtalk_enabled():
++    return bool(config.ENABLE_DINGTALK)
++
++def get_dingtalk_app_key():
++    return config.DINGTALK_APP_KEY
++
++def get_dingtalk_app_secret():
++    return config.DINGTALK_APP_SECRET
++
+ DINGTALK_AGENT_ID = getattr(settings, 'DINGTALK_AGENT_ID', '')
+ USER_ACTIVATE_AFTER_DINGTALK_IMPORT = getattr(settings, 'USER_ACTIVATE_AFTER_DINGTALK_IMPORT', True)
+ # for 10.0 or later
+ 
+-# base setting
+-DINGTALK_APP_KEY = getattr(settings, 'DINGTALK_APP_KEY', '')
+-DINGTALK_APP_SECRET = getattr(settings, 'DINGTALK_APP_SECRET', '')
+-
+ # oauth login
+ DINGTALK_OAUTH_RESPONSE_TYPE = getattr(settings, 'DINGTALK_OAUTH_RESPONSE_TYPE', 'code')
+ DINGTALK_OAUTH_SCOPE = getattr(settings, 'DINGTALK_OAUTH_SCOPE', 'openid')
+diff --git a/seahub/dingtalk/utils.py b/seahub/dingtalk/utils.py
+index 4e8225c2..c71c8348 100644
+--- a/seahub/dingtalk/utils.py
++++ b/seahub/dingtalk/utils.py
+@@ -6,7 +6,7 @@ from django.core.cache import cache
+ from seahub.utils import normalize_cache_key
+ 
+ # for 10.0 or later
+-from seahub.dingtalk.settings import DINGTALK_APP_KEY, DINGTALK_APP_SECRET, \
++from seahub.dingtalk.settings import get_dingtalk_app_key, get_dingtalk_app_secret, \
+         DINGTALK_GET_ORGAPP_TOKEN_URL, \
+         DINGTALK_TOPAPI_GET_USERID_BY_UNIONID_URL, \
+         DINGTALK_TOPAPI_GET_DETAILED_USER_INFO_URL
+@@ -32,8 +32,8 @@ def dingtalk_get_orgapp_token():
+         return access_token
+ 
+     data = {
+-        'appkey': DINGTALK_APP_KEY,
+-        'appsecret': DINGTALK_APP_SECRET,
++        'appkey': get_dingtalk_app_key(),
++        'appsecret': get_dingtalk_app_secret(),
+     }
+     resp_json = requests.get(DINGTALK_GET_ORGAPP_TOKEN_URL,
+                              params=data).json()
+diff --git a/seahub/dingtalk/views.py b/seahub/dingtalk/views.py
+index c96601ec..cd371e7d 100644
+--- a/seahub/dingtalk/views.py
++++ b/seahub/dingtalk/views.py
+@@ -18,7 +18,7 @@ from django.utils.translation import gettext as _
+ from seahub.api2.utils import get_api_token
+ from seahub import auth
+ from seahub.profile.models import Profile
+-from seahub.utils import render_error, get_site_scheme_and_netloc
++from seahub.utils import render_error
+ from seahub.utils.auth import VIRTUAL_ID_EMAIL_DOMAIN
+ from seahub.base.accounts import User
+ from seahub.auth.models import SocialAuthUser
+@@ -28,11 +28,11 @@ from seahub.dingtalk.utils import dingtalk_get_detailed_user_info, \
+         dingtalk_get_detailed_user_info_new
+ 
+ from seahub.settings import SITE_ROOT
+-from seahub.dingtalk.settings import ENABLE_DINGTALK
++from seahub.dingtalk.settings import is_dingtalk_enabled, \
++        get_dingtalk_app_key, get_dingtalk_app_secret
+ 
+ # for 10.0 or later
+-from seahub.dingtalk.settings import DINGTALK_APP_KEY, DINGTALK_APP_SECRET, \
+-        DINGTALK_OAUTH_RESPONSE_TYPE, DINGTALK_OAUTH_SCOPE, \
++from seahub.dingtalk.settings import DINGTALK_OAUTH_RESPONSE_TYPE, DINGTALK_OAUTH_SCOPE, \
+         DINGTALK_OAUTH_PROMPT, DINGTALK_OAUTH_AUTH_URL, \
+         DINGTALK_OAUTH_GRANT_TYPE, DINGTALK_OAUTH_USER_ACCESS_TOKEN_URL, \
+         DINGTALK_GET_USER_INFO_URL
+@@ -46,13 +46,33 @@ from seahub.dingtalk.settings import DINGTALK_QR_CONNECT_APP_ID, \
+ logger = logging.getLogger(__name__)
+ 
+ 
++def get_request_scheme_and_netloc(request):
++    """[dev] Return scheme+netloc of the *requesting* host, for OAuth redirect_uri.
++
++    多入口部署（同一系统经多个域名访问，如内网域名 + 外网经云反代的域名）时，
++    OAuth 的 state 存在会话 cookie 里、按 host 隔离。redirect_uri 若固定取
++    SERVICE_URL（单值），从其它入口发起的用户会被回调到 SERVICE_URL 的域名，
++    那个域名下没有发起时的会话 → invalid state。
++
++    改为跟随发起请求的 host 后：回调与发起在同一域名，state 可读；登录后的
++    跳转本来就是相对路径，用户全程留在原入口。钉钉后台「登录与分享」的回调
++    域名支持配多个（逗号分隔），把每个入口的回调地址都登记上即可通过钉钉
++    侧的匹配校验。
++
++    host 已被 Django 的 ALLOWED_HOSTS 校验过，取它构造 redirect_uri 不会
++    引入开放重定向；scheme 由 SECURE_PROXY_SSL_HEADER 链路决定（经反代时
++    上游需传对 X-Forwarded-Proto）。
++    """
++    return request.scheme + '://' + request.get_host()
++
++
+ def dingtalk_login(request):
+ 
+-    if not ENABLE_DINGTALK:
++    if not is_dingtalk_enabled():
+         return render_error(request, _('Error, please contact administrator.'))
+ 
+     # for 10.0 or later
+-    if DINGTALK_APP_KEY and DINGTALK_APP_SECRET:
++    if get_dingtalk_app_key() and get_dingtalk_app_secret():
+         return dingtalk_login_new(request)
+ 
+     state = str(uuid.uuid4())
+@@ -63,7 +83,7 @@ def dingtalk_login(request):
+         'appid': DINGTALK_QR_CONNECT_APP_ID,
+         'response_type': DINGTALK_QR_CONNECT_RESPONSE_TYPE,
+         'scope': DINGTALK_QR_CONNECT_SCOPE,
+-        'redirect_uri': get_site_scheme_and_netloc() + reverse('dingtalk_callback'),
++        'redirect_uri': get_request_scheme_and_netloc(request) + reverse('dingtalk_callback'),
+         'state': state,
+     }
+     url = DINGTALK_QR_CONNECT_AUTHORIZATION_URL + '?' + urllib.parse.urlencode(data)
+@@ -72,11 +92,11 @@ def dingtalk_login(request):
+ 
+ def dingtalk_callback(request):
+ 
+-    if not ENABLE_DINGTALK:
++    if not is_dingtalk_enabled():
+         return render_error(request, _('Error, please contact administrator.'))
+ 
+     # for 10.0 or later
+-    if DINGTALK_APP_KEY and DINGTALK_APP_SECRET:
++    if get_dingtalk_app_key() and get_dingtalk_app_secret():
+         return dingtalk_callback_new(request)
+ 
+     state = request.GET.get('state', '')
+@@ -164,11 +184,11 @@ def dingtalk_callback(request):
+ @login_required
+ def dingtalk_connect(request):
+ 
+-    if not ENABLE_DINGTALK:
++    if not is_dingtalk_enabled():
+         return render_error(request, _('Error, please contact administrator.'))
+ 
+     # for 10.0 or later
+-    if DINGTALK_APP_KEY and DINGTALK_APP_SECRET:
++    if get_dingtalk_app_key() and get_dingtalk_app_secret():
+         return dingtalk_connect_new(request)
+ 
+     state = str(uuid.uuid4())
+@@ -179,7 +199,7 @@ def dingtalk_connect(request):
+         'appid': DINGTALK_QR_CONNECT_APP_ID,
+         'response_type': DINGTALK_QR_CONNECT_RESPONSE_TYPE,
+         'scope': DINGTALK_QR_CONNECT_SCOPE,
+-        'redirect_uri': get_site_scheme_and_netloc() + reverse('dingtalk_connect_callback'),
++        'redirect_uri': get_request_scheme_and_netloc(request) + reverse('dingtalk_connect_callback'),
+         'state': state,
+     }
+     url = DINGTALK_QR_CONNECT_AUTHORIZATION_URL + '?' + urllib.parse.urlencode(data)
+@@ -189,11 +209,11 @@ def dingtalk_connect(request):
+ @login_required
+ def dingtalk_connect_callback(request):
+ 
+-    if not ENABLE_DINGTALK:
++    if not is_dingtalk_enabled():
+         return render_error(request, _('Error, please contact administrator.'))
+ 
+     # for 10.0 or later
+-    if DINGTALK_APP_KEY and DINGTALK_APP_SECRET:
++    if get_dingtalk_app_key() and get_dingtalk_app_secret():
+         return dingtalk_connect_callback_new(request)
+ 
+     state = request.GET.get('state', '')
+@@ -257,7 +277,7 @@ def dingtalk_connect_callback(request):
+ @login_required
+ def dingtalk_disconnect(request):
+ 
+-    if not ENABLE_DINGTALK:
++    if not is_dingtalk_enabled():
+         return render_error(request, _('Error, please contact administrator.'))
+ 
+     username = request.user.username
+@@ -283,9 +303,9 @@ def dingtalk_login_new(request):
+     request.session['dingtalk_login_redirect'] = request.GET.get(auth.REDIRECT_FIELD_NAME, '/')
+ 
+     data = {
+-        'redirect_uri': get_site_scheme_and_netloc() + reverse('dingtalk_callback'),
++        'redirect_uri': get_request_scheme_and_netloc(request) + reverse('dingtalk_callback'),
+         'response_type': DINGTALK_OAUTH_RESPONSE_TYPE,
+-        'client_id': DINGTALK_APP_KEY,
++        'client_id': get_dingtalk_app_key(),
+         'scope': DINGTALK_OAUTH_SCOPE,
+         'state': state,
+         'prompt': DINGTALK_OAUTH_PROMPT,
+@@ -300,17 +320,23 @@ def dingtalk_callback_new(request):
+ 
+     state = request.GET.get('state', '')
+     if not state or state != request.session.get('dingtalk_login_state', ''):
+-        logger.error('invalid state')
+-        return render_error(request, _('Error, please contact administrator.'))
++        # [dev] 回调已改为跟随发起请求的域名（get_request_scheme_and_netloc），
++        # host 不一致不再会导致 state 丢失。仍走到这里一般是：会话/cookie 丢失
++        # （无痕窗口、浏览器禁 cookie、会话过期）或同一流程换了浏览器。
++        logger.error('invalid dingtalk login state: got=%s expected=%s host=%s',
++                     state or '<empty>',
++                     request.session.get('dingtalk_login_state', '<none in session>'),
++                     request.get_host())
++        return render_error(request, _('Login session expired. Please go back to the login page and try again.'))
+ 
+     def get_oauth_access_token(code):
+         """
+         https://open.dingtalk.com/document/orgapp/sso-overview
+         """
+         data = {
+-            "clientId": DINGTALK_APP_KEY,
++            "clientId": get_dingtalk_app_key(),
+             "code": code,
+-            "clientSecret": DINGTALK_APP_SECRET,
++            "clientSecret": get_dingtalk_app_secret(),
+             "grantType": DINGTALK_OAUTH_GRANT_TYPE,
+         }
+         headers = {'Content-Type': 'application/json'}
+@@ -422,9 +448,9 @@ def dingtalk_connect_new(request):
+     
+ 
+     data = {
+-        'redirect_uri': get_site_scheme_and_netloc() + reverse('dingtalk_connect_callback'),
++        'redirect_uri': get_request_scheme_and_netloc(request) + reverse('dingtalk_connect_callback'),
+         'response_type': DINGTALK_OAUTH_RESPONSE_TYPE,
+-        'client_id': DINGTALK_APP_KEY,
++        'client_id': get_dingtalk_app_key(),
+         'scope': DINGTALK_OAUTH_SCOPE,
+         'state': state,
+         'prompt': DINGTALK_OAUTH_PROMPT,
+@@ -448,9 +474,9 @@ def dingtalk_connect_callback_new(request):
+         https://open.dingtalk.com/document/orgapp/sso-overview
+         """
+         data = {
+-            "clientId": DINGTALK_APP_KEY,
++            "clientId": get_dingtalk_app_key(),
+             "code": code,
+-            "clientSecret": DINGTALK_APP_SECRET,
++            "clientSecret": get_dingtalk_app_secret(),
+             "grantType": DINGTALK_OAUTH_GRANT_TYPE,
+         }
+         headers = {'Content-Type': 'application/json'}
+diff --git a/seahub/notifications/management/commands/send_dingtalk_notifications.py b/seahub/notifications/management/commands/send_dingtalk_notifications.py
+index 61911df8..805f7a06 100644
+--- a/seahub/notifications/management/commands/send_dingtalk_notifications.py
++++ b/seahub/notifications/management/commands/send_dingtalk_notifications.py
+@@ -17,17 +17,27 @@ from seahub.utils import get_site_name, get_service_url
+ from seahub.auth.models import SocialAuthUser
+ 
+ from seahub.dingtalk.settings import DINGTALK_MESSAGE_SEND_TO_CONVERSATION_URL, \
+-        DINGTALK_AGENT_ID
++        DINGTALK_AGENT_ID, get_dingtalk_app_key, get_dingtalk_app_secret
+ 
+-# for 10.0 or later
+-from seahub.dingtalk.settings import DINGTALK_APP_KEY, \
+-        DINGTALK_APP_SECRET
++from seahub.dingtalk.utils import dingtalk_get_access_token as _dingtalk_get_access_token_legacy
++from seahub.dingtalk.utils import dingtalk_get_userid_by_unionid as _dingtalk_get_userid_by_unionid_legacy
+ 
+-if DINGTALK_APP_KEY and DINGTALK_APP_SECRET:
+-    from seahub.dingtalk.utils import dingtalk_get_orgapp_token as dingtalk_get_access_token
+-    from seahub.dingtalk.utils import dingtalk_get_userid_by_unionid_new as dingtalk_get_userid_by_unionid
+-else:
+-    from seahub.dingtalk.utils import dingtalk_get_access_token, dingtalk_get_userid_by_unionid
++
++def dingtalk_get_access_token(*args, **kwargs):
++    # [dev] AppKey 已 constance 化，token 函数改为运行时选择
++    if get_dingtalk_app_key() and get_dingtalk_app_secret():
++        from seahub.dingtalk.utils import dingtalk_get_orgapp_token
++        return dingtalk_get_orgapp_token()
++    else:
++        return _dingtalk_get_access_token_legacy(*args, **kwargs)
++
++
++def dingtalk_get_userid_by_unionid(*args, **kwargs):
++    if get_dingtalk_app_key() and get_dingtalk_app_secret():
++        from seahub.dingtalk.utils import dingtalk_get_userid_by_unionid_new
++        return dingtalk_get_userid_by_unionid_new(*args, **kwargs)
++    else:
++        return _dingtalk_get_userid_by_unionid_legacy(*args, **kwargs)
+ 
+ 
+ # Get an instance of a logger
+diff --git a/seahub/notifications/management/commands/send_notices_to_social_account.py b/seahub/notifications/management/commands/send_notices_to_social_account.py
+index ce5ffc20..9c5cf89b 100644
+--- a/seahub/notifications/management/commands/send_notices_to_social_account.py
++++ b/seahub/notifications/management/commands/send_notices_to_social_account.py
+@@ -20,7 +20,7 @@ from seahub.notifications.utils import format_sdoc_notice, gen_sdoc_smart_link
+ 
+ from seahub.dingtalk.utils import dingtalk_get_orgapp_token, dingtalk_get_userid_by_unionid_new
+ from seahub.dingtalk.settings import DINGTALK_MESSAGE_SEND_TO_CONVERSATION_URL, \
+-        DINGTALK_AGENT_ID, ENABLE_DINGTALK
++        DINGTALK_AGENT_ID, is_dingtalk_enabled
+ 
+ from seahub.work_weixin.utils import get_work_weixin_access_token, handler_work_weixin_api_response
+ from seahub.work_weixin.settings import WORK_WEIXIN_NOTIFICATIONS_URL, \
+@@ -83,14 +83,14 @@ class Command(BaseCommand, CommandLogMixin):
+ 
+     def handle(self, *args, **options):
+ 
+-        if ENABLE_DINGTALK:
++        if is_dingtalk_enabled():
+             self.log_debug('Start sending dingtalk msg...')
+         if ENABLE_WORK_WEIXIN:
+             self.log_debug('Start sending work weixin msg...')
+ 
+         self.do_action()
+ 
+-        if ENABLE_DINGTALK:
++        if is_dingtalk_enabled():
+             self.log_debug('Finish sending dingtalk msg.\n')
+         if ENABLE_WORK_WEIXIN:
+             self.log_debug('Finish sending work weixin msg.\n')
+@@ -138,14 +138,14 @@ class Command(BaseCommand, CommandLogMixin):
+ 
+     def do_action(self):
+ 
+-        if not ENABLE_DINGTALK and not ENABLE_WORK_WEIXIN:
++        if not is_dingtalk_enabled() and not ENABLE_WORK_WEIXIN:
+             self.log_info('No social account enabled')
+             return
+ 
+         dingtalk_access_token = ''
+         work_weixin_access_token = ''
+ 
+-        if ENABLE_DINGTALK:
++        if is_dingtalk_enabled():
+ 
+             dingtalk_access_token = dingtalk_get_orgapp_token()
+             if not dingtalk_access_token:
+@@ -254,7 +254,7 @@ class Command(BaseCommand, CommandLogMixin):
+ 
+             has_sent = False
+ 
+-            if not has_sent and email in dingtalk_email_list and ENABLE_DINGTALK:
++            if not has_sent and email in dingtalk_email_list and is_dingtalk_enabled():
+                 content = '  \n  '.join([remove_html_a_element_for_dingtalk(x.format_msg()) for x in should_send])
+                 sdoc_content = '  \n  '.join([remove_html_a_element_for_dingtalk(format_sdoc_notice(sdoc_queryset, item)) for item in sdoc_should_send])
+                 content = '  \n  '.join([content, sdoc_content])
+diff --git a/seahub/oauth/backends.py b/seahub/oauth/backends.py
+index bf819ea3..daf65d4b 100644
+--- a/seahub/oauth/backends.py
++++ b/seahub/oauth/backends.py
+@@ -6,7 +6,7 @@ from registration.models import (notify_admins_on_activate_request,
+                                  notify_admins_on_register_complete)
+ from seahub.work_weixin.settings import ENABLE_WORK_WEIXIN
+ from seahub.weixin.settings import ENABLE_WEIXIN
+-from seahub.dingtalk.settings import ENABLE_DINGTALK
++from seahub.dingtalk.settings import is_dingtalk_enabled
+ 
+ 
+ class OauthRemoteUserBackend(RemoteUserBackend):
+@@ -36,11 +36,7 @@ class OauthRemoteUserBackend(RemoteUserBackend):
+         create_unknown_user = WEIXIN_OAUTH_CREATE_UNKNOWN_USER
+         activate_after_creation = WEIXIN_OAUTH_ACTIVATE_USER_AFTER_CREATION
+ 
+-    if ENABLE_DINGTALK:
+-        from seahub.dingtalk.settings import DINGTALK_OAUTH_CREATE_UNKNOWN_USER, \
+-                DINGTALK_OAUTH_ACTIVATE_USER_AFTER_CREATION
+-        create_unknown_user = DINGTALK_OAUTH_CREATE_UNKNOWN_USER
+-        activate_after_creation = DINGTALK_OAUTH_ACTIVATE_USER_AFTER_CREATION
++    # [dev] 钉钉的开关已 constance 化，无法在类定义期判断，移到 authenticate() 内运行时处理
+ 
+     def get_user(self, username):
+         try:
+@@ -58,15 +54,25 @@ class OauthRemoteUserBackend(RemoteUserBackend):
+         Returns None if ``create_unknown_user`` is ``False`` and a ``User``
+         object with the given username is not found in the database.
+         """
++        create_unknown_user = self.create_unknown_user
++        activate_after_creation = self.activate_after_creation
++
++        # [dev] 钉钉登录时使用钉钉专属的用户创建配置（constance 动态开关）
++        if is_dingtalk_enabled():
++            from seahub.dingtalk.settings import DINGTALK_OAUTH_CREATE_UNKNOWN_USER, \
++                    DINGTALK_OAUTH_ACTIVATE_USER_AFTER_CREATION
++            create_unknown_user = DINGTALK_OAUTH_CREATE_UNKNOWN_USER
++            activate_after_creation = DINGTALK_OAUTH_ACTIVATE_USER_AFTER_CREATION
++
+         if remote_user:
+             username = self.clean_username(remote_user)
+             user = self.get_user(username)
+         else:
+             user = None
+ 
+-        if not user and self.create_unknown_user:
+-            user = User.objects.create_oauth_user(is_active=self.activate_after_creation)
+-            if not self.activate_after_creation:
++        if not user and create_unknown_user:
++            user = User.objects.create_oauth_user(is_active=activate_after_creation)
++            if not activate_after_creation:
+                 notify_admins_on_activate_request(user.username)
+             elif settings.NOTIFY_ADMIN_AFTER_REGISTRATION:
+                 notify_admins_on_register_complete(user.username)
+diff --git a/seahub/profile/views.py b/seahub/profile/views.py
+index 28a61936..850d0efc 100644
+--- a/seahub/profile/views.py
++++ b/seahub/profile/views.py
+@@ -26,7 +26,8 @@ from seahub.utils import is_org_context, is_pro_version, is_valid_username, \
+ from seahub.utils.two_factor_auth import has_two_factor_auth
+ from seahub.views import get_owned_repo_list
+ from seahub.work_weixin.utils import work_weixin_oauth_check
+-from seahub.dingtalk.settings import ENABLE_DINGTALK
++from seahub.settings import ENABLE_DELETE_ACCOUNT, ENABLE_UPDATE_USER_INFO, ENABLE_ADFS_LOGIN, ENABLE_MULTI_ADFS
++from seahub.dingtalk.settings import is_dingtalk_enabled
+ from seahub.weixin.settings import ENABLE_WEIXIN
+ from seahub.organizations.models import OrgSAMLConfig
+ 
+@@ -105,7 +106,7 @@ def edit_profile(request):
+         enable_wechat_work = False
+         social_connected = False
+ 
+-    if ENABLE_DINGTALK:
++    if is_dingtalk_enabled():
+         enable_dingtalk = True
+         social_connected_dingtalk = SocialAuthUser.objects.filter(
+             username=request.user.username, provider='dingtalk').count() > 0
+diff --git a/seahub/settings.py b/seahub/settings.py
+index 8606d306..6930b851 100644
+--- a/seahub/settings.py
++++ b/seahub/settings.py
+@@ -324,6 +324,14 @@ ENABLE_MULTI_ADFS = False
+ 
+ DISABLE_ADFS_USER_PWD_LOGIN = False
+ 
++# [dev] 0008: 除管理员（is_staff）外禁止密码登录——钉钉 SSO 是普通用户唯一入口。
++# 影响面：web 登录表单、/api2/auth-token/（见 seahub/auth/forms.py、
++# seahub/base/accounts.py 的拦截点）。
++# 不影响：钉钉 SSO（OauthRemoteUserBackend，remote_user 签名）、API token、
++# mobile-login/client-login、WebDAV（seafdav 走 ccnet RPC，不经 Django backend）。
++# 紧急放开：seahub_settings.py 里设 PASSWORD_LOGIN_ADMIN_ONLY = False 后重启。
++PASSWORD_LOGIN_ADMIN_ONLY = True
++
+ ENABLE_OAUTH = False
+ ENABLE_WATERMARK = False
+ 
+@@ -340,6 +348,8 @@ ENABLE_WEIXIN = False
+ 
+ # enable dingtalk
+ ENABLE_DINGTALK = False
++DINGTALK_APP_KEY = ''
++DINGTALK_APP_SECRET = ''
+ 
+ # enable ldap
+ ENABLE_LDAP = False
+@@ -1315,6 +1325,10 @@ IS_PRO_VERSION = os.environ.get('IS_PRO_VERSION', 'false').lower() == 'true'
+ 
+ CONSTANCE_ENABLED = ENABLE_SETTINGS_VIA_WEB
+ CONSTANCE_CONFIG = {
++    # [dev] 站点公开地址。默认值来自 seahub_settings.py / SEAFILE_SERVER_* 环境变量，
++    # 后台「系统管理 → 设置」保存后覆盖。FILE_SERVER_ROOT 不单独注册——由它推导
++    # （见 utils.get_fileserver_root），避免同一个域名要填两处。
++    'SERVICE_URL': (SERVICE_URL, ''),
+     'DISABLE_SYNC_WITH_ANY_FOLDER': (DISABLE_SYNC_WITH_ANY_FOLDER, ''),
+ 
+     'ENABLE_SIGNUP': (ENABLE_SIGNUP, ''),
+@@ -1351,6 +1365,11 @@ CONSTANCE_CONFIG = {
+ 
+     'CLIENT_SSO_VIA_LOCAL_BROWSER': (CLIENT_SSO_VIA_LOCAL_BROWSER, ''),
+     'CLIENT_SSO_TOKEN_EXPIRATION': (CLIENT_SSO_TOKEN_EXPIRATION, ''),
++
++    # [dev] 钉钉登录配置（默认值取自 seahub_settings.py 文件，后台保存后覆盖）
++    'ENABLE_DINGTALK': (ENABLE_DINGTALK, ''),
++    'DINGTALK_APP_KEY': (DINGTALK_APP_KEY, ''),
++    'DINGTALK_APP_SECRET': (DINGTALK_APP_SECRET, ''),
+ }
+ 
+ # if Seafile admin enable remote user authentication in conf/seahub_settings.py
+@@ -1362,6 +1381,10 @@ if ENABLE_REMOTE_USER_AUTHENTICATION:
+ 
+ if ENABLE_OAUTH or ENABLE_CUSTOM_OAUTH or ENABLE_WORK_WEIXIN or ENABLE_WEIXIN or ENABLE_DINGTALK:
+     AUTHENTICATION_BACKENDS += ('seahub.oauth.backends.OauthRemoteUserBackend',)
++else:
++    # [dev] 钉钉开关已 constance 化（免重启），启动期无法预判；backend 常驻无害，
++    # 仅在 authenticate(remote_user=...) 时被调用，密码登录不经过。运行期由视图层开关拦截。
++    AUTHENTICATION_BACKENDS += ('seahub.oauth.backends.OauthRemoteUserBackend',)
+ 
+ if ENABLE_CAS:
+     AUTHENTICATION_BACKENDS += ('seahub.django_cas_ng.backends.CASBackend',)
+@@ -1387,4 +1410,7 @@ if ENABLE_LDAP:
+ 
+ # settings.py
+ 
++# [dev] 发布构建时会在打包阶段注入此变量；源码运行（挂载进容器）时需手动提供，
++# 否则 seahub.base.context_processors 的 import 会失败
++SEAFILE_VERSION = "12.0.14-dev"
+ 
+diff --git a/seahub/templates/registration/login.html b/seahub/templates/registration/login.html
+index b59673d8..991af4a4 100644
+--- a/seahub/templates/registration/login.html
++++ b/seahub/templates/registration/login.html
+@@ -74,6 +74,9 @@ html, body, #wrapper { height:100%; }
+         <p class="error mt-2">{{ form.errors.not_found }}</p>
+         {% elif form.errors.disable_pwd_login %}
+         <p class="error mt-2">{% trans "Please use Single Sign-On to login." %}</p>
++        {% elif form.errors.password_login_admin_only %}
++        {# [dev] 0008: 非管理员密码登录被策略拒绝，提示走钉钉扫码（消息文本在 seahub/auth/forms.py）#}
++        <p class="error mt-2">{{ form.errors.password_login_admin_only }}</p>
+         {% else %}
+         <p class="error mt-2">{% trans "Incorrect email or password" %}</p>
+         {% endif %}
+diff --git a/seahub/utils/__init__.py b/seahub/utils/__init__.py
+index 4ddf7bf5..07bd0dfb 100644
+--- a/seahub/utils/__init__.py
++++ b/seahub/utils/__init__.py
+@@ -184,10 +184,17 @@ def list_to_string(l):
+ def get_fileserver_root():
+     """ Construct seafile fileserver address and port.
+ 
++    [dev] 不再单独配置，由 SERVICE_URL 的 scheme+netloc 推导（+ /seafhttp）。
++    上游让 SERVICE_URL 与 FILE_SERVER_ROOT 分开填是冗余，多一处能填错的地方：
++    改了域名只改一处，另一处忘了就成了「页面能开、上传下载坏」的隐蔽故障。
++    推导与上游语义一致——上游 settings.py 里 FILE_SERVER_ROOT 取的就是
++    host_url（不带 SITE_ROOT），而 SERVICE_URL 在 SITE_ROOT 场景下才带路径。
++    容器内部访问走 get_inner_fileserver_root()（127.0.0.1:8082），不受影响。
++
+     Returns:
+     	Constructed fileserver root.
+     """
+-    return seahub.settings.FILE_SERVER_ROOT
++    return get_site_scheme_and_netloc() + '/seafhttp'
+ 
+ def get_inner_fileserver_root():
+     """Construct inner seafile fileserver address and port.
+@@ -905,9 +912,24 @@ def calc_file_path_hash(path, bits=12):
+     return path_hash
+ 
+ def get_service_url():
+-    """Get service url from seaserv.
++    """站点公开地址（SERVICE_URL）。
++    [dev] 已 constance 化：管理员在「系统管理 → 设置」页填，免重启生效。
++    默认值来自 seahub_settings.py / 环境变量，后台保存后覆盖；后台清空则回落默认。
++    读这个值必须走本函数，不要在模块级 `from seahub.settings import SERVICE_URL`
++    ——那样会在启动期固化，后台改了不生效（context_processors 与 OCM 都踩过）。
++    所有派生地址都跟着它走：分享链接、下载链接、邮件里的链接，以及钉钉回调
++    地址（get_site_scheme_and_netloc() 从这里取 scheme+netloc）。
+     """
+-    return seahub.settings.SERVICE_URL
++    try:
++        from constance import config
++        url = config.SERVICE_URL or ''
++    except Exception:
++        # constance 不可用（数据库未就绪 / 表未迁移 / 独立脚本）时静默回落，
++        # 不能让它把启动期或迁移期打断
++        url = ''
++    if not url:
++        url = seahub.settings.SERVICE_URL
++    return url.rstrip('/')
+ 
+ def get_webdav_url():
+     """Get webdav url.
+diff --git a/seahub/views/sso.py b/seahub/views/sso.py
+index 8f77442b..a95ee16e 100644
+--- a/seahub/views/sso.py
++++ b/seahub/views/sso.py
+@@ -22,7 +22,7 @@ from seahub.api2.utils import get_token_v1, get_token_v2
+ from seahub.settings import CLIENT_SSO_VIA_LOCAL_BROWSER, CLIENT_SSO_TOKEN_EXPIRATION, LOGIN_URL
+ from seahub.base.models import ClientSSOToken
+ from seahub.work_weixin.settings import ENABLE_WORK_WEIXIN
+-from seahub.dingtalk.settings import ENABLE_DINGTALK
++from seahub.dingtalk.settings import is_dingtalk_enabled
+ 
+ # Get an instance of a logger
+ logger = logging.getLogger(__name__)
+@@ -97,7 +97,7 @@ def work_weixin_sso(request):
+ 
+ def dingtalk_sso(request):
+ 
+-    if not ENABLE_DINGTALK:
++    if not is_dingtalk_enabled():
+         error_msg = '钉钉单点登录功能未开启'
+         return render_error(request, error_msg)
+ 
+diff --git a/seahub/views/sysadmin.py b/seahub/views/sysadmin.py
+index 2e815973..e7ff5437 100644
+--- a/seahub/views/sysadmin.py
++++ b/seahub/views/sysadmin.py
+@@ -65,7 +65,7 @@ try:
+ except ImportError:
+     ENABLE_FILE_SCAN = False
+ from seahub.work_weixin.settings import ENABLE_WORK_WEIXIN
+-from seahub.dingtalk.settings import ENABLE_DINGTALK
++from seahub.dingtalk.settings import is_dingtalk_enabled
+ 
+ 
+ logger = logging.getLogger(__name__)
+@@ -96,7 +96,7 @@ def sysadmin_react_fake_view(request, **kwargs):
+         'enable_terms_and_conditions': config.ENABLE_TERMS_AND_CONDITIONS,
+         'enable_file_scan': ENABLE_FILE_SCAN,
+         'enable_work_weixin': ENABLE_WORK_WEIXIN,
+-        'enable_dingtalk': ENABLE_DINGTALK,
++        'enable_dingtalk': is_dingtalk_enabled(),
+         'enable_sys_admin_view_repo': ENABLE_SYS_ADMIN_VIEW_REPO,
+         'trash_repos_expire_days': expire_days if expire_days > 0 else 30,
+         'available_roles': get_available_roles(),

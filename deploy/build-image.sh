@@ -55,8 +55,10 @@ EXTRA_ARGS="${EXTRA_ARGS:-}"
 [[ -d "$SEAHUB_DIR/.git" ]] || { echo "错误：找不到 seahub 仓库（${SEAHUB_DIR}）" >&2; exit 1; }
 
 # ---- 基线：以 patches/MANIFEST.md 为唯一事实来源（与 CI 共用同一份）----
-BASE_FULL=""
-if [[ -f "$MANIFEST" ]]; then
+# 环境变量 BASE_FULL 优先（升级上游大版本换基线时，export-patches.sh 在 MANIFEST
+# 刷新【之前】调本脚本做树校验，必须显式传新基线；日常构建不传，读 MANIFEST）。
+BASE_FULL="${BASE_FULL:-}"
+if [[ -z "$BASE_FULL" && -f "$MANIFEST" ]]; then
   BASE_FULL=$(awk '$1=="base_commit"{print $3; exit}' "$MANIFEST" || true)
 fi
 if [[ -z "$BASE_FULL" ]]; then
