@@ -18,8 +18,8 @@
 # ## 为什么需要这个脚本
 #
 # compose 里三个镜像**现在同源**（都走 ghcr.io）：seafile 由本项目 CI 构建，
-# mariadb/memcached 由 .github/workflows/mirror-infra-images.yml 镜像过去。
-# 2026-09-21 之前 db 与 memcached 直接引 Docker Hub，而国内网络常只有那一条不通。
+# mariadb/redis 由 .github/workflows/mirror-infra-images.yml 镜像过去。
+# 2026-09-21 之前 db 等直接引 Docker Hub，而国内网络常只有那一条不通。
 #
 # 离线导入是**保底**手段：能救急，但每次更新都要手工搬一次 690MB，所以不是常态。
 # 先确认服务器到底连不连得上 ghcr.io（两分钟）：
@@ -66,7 +66,7 @@ case "$TAG" in
 esac
 
 # ---- 从 compose 里取基础设施镜像，别在脚本里另写一份 ----
-# 只取写死的基础镜像（mariadb/memcached）；${SEAFILE_PRO_IMAGE} 那行由本脚本自己处理。
+# 只取写死的基础镜像（mariadb/redis）；${SEAFILE_PRO_IMAGE} 那行由本脚本自己处理。
 #
 # ⚠️ 必须先剥掉行尾注释再收。compose 里给 image: 行写行内注释是合法的，而这里的
 # 解析是纯文本的——不剥注释就会把「# 说明文字」当成镜像名的一部分，

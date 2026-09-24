@@ -13,7 +13,7 @@
 # 所以这个脚本问都不用问，跑完直接起服务。
 #
 # 它顺手防掉手抄 .env 的三类坑：密钥生成命令记错、改错行（比如动了不该动的
-# SEAFILE_SERVER_LETSENCRYPT）、把单引号写进 '值' 里导致解析错乱。
+# SEAFILE_SERVER_PROTOCOL）、把单引号写进 '值' 里导致解析错乱。
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -172,9 +172,9 @@ set_env SEAFILE_ADMIN_PASSWORD      "$ADMIN_PASSWORD"
 set_env SEAHUB_DINGTALK_APP_KEY     "$DT_KEY"
 set_env SEAHUB_DINGTALK_APP_SECRET  "$DT_SECRET"
 
-# ---- 自检：反代模式的两个开关必须没被动过；值不能被写坏 ----
-grep -q "^SEAFILE_SERVER_LETSENCRYPT='false'" "$TARGET" \
-  || die "SEAFILE_SERVER_LETSENCRYPT 不是 false —— 反代模式下容器必须只监听 80"
+# ---- 自检：反代模式的开关必须没被动过；值不能被写坏 ----
+# （13.0 起容器内 Let's Encrypt 已移除，SEAFILE_SERVER_LETSENCRYPT 不复存在，
+#   剩下的硬要求只有 PROTOCOL=https —— 13.0 的 SERVICE_URL 由它+域名即时计算）
 grep -q "^SEAFILE_SERVER_PROTOCOL='https'" "$TARGET" \
   || die "SEAFILE_SERVER_PROTOCOL 不是 https —— 会导致 SERVICE_URL 生成 http 链接"
 # seafile 那行必须仍是「通道 tag 默认值 + 覆盖口子」的形状
@@ -183,7 +183,7 @@ grep -qE '^[[:space:]]+image: \$\{SEAFILE_PRO_IMAGE:-ghcr\.io/topiceyes/seafile-
 # 另两个镜像仍在：取回来的文件被截断时，先丢的总是尾部
 # （pattern 故意不锚 $ —— 那行有行尾注释，锚了就永远匹配不上）
 grep -qE '^[[:space:]]+image: ghcr\.io/topiceyes/mariadb:[0-9]'   "$COMPOSE" || die "${COMPOSE} 里少了 mariadb 镜像行"
-grep -qE '^[[:space:]]+image: ghcr\.io/topiceyes/memcached:[0-9]' "$COMPOSE" || die "${COMPOSE} 里少了 memcached 镜像行"
+grep -qE '^[[:space:]]+image: ghcr\.io/topiceyes/redis:[0-9]'     "$COMPOSE" || die "${COMPOSE} 里少了 redis 镜像行（13.0 起缓存换 redis）"
 grep -qE '^  seafile:$' "$COMPOSE" || die "${COMPOSE} 结构不完整（service seafile 不见了）"
 if grep -qE "^[A-Z_]+='(change-me|seafile\.example\.com|admin@example\.com)'" "$TARGET"; then
   die "还有占位符未替换：$(grep -oE "^[A-Z_]+='(change-me|seafile\.example\.com|admin@example\.com)'" "$TARGET" | tr '\n' ' ')"

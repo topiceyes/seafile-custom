@@ -142,7 +142,8 @@ rm -f "$WD/env.prod.example.bak"
     --admin-password "$ADMIN_PW" ) > "$WD/init.log" 2>&1 \
   || { cat "$WD/init.log"; die "init-prod-env.sh 失败（完整输出见上）"; }
 assert_has "$WD/init.log" "数据目录就绪" "脚本自己把数据目录建好了（没人手抄 mkdir）"
-assert_has "$WD/.env" "SEAFILE_SERVER_LETSENCRYPT='false'" "反代模式开关是 false（不是 §7.1 那个 true）"
+# 13.0 起容器内 Let's Encrypt 已移除，SEAFILE_SERVER_LETSENCRYPT 不复存在；
+# 反代形态的硬要求只剩 PROTOCOL=https（SERVICE_URL 由它+域名运行期即时计算）
 assert_has "$WD/.env" "SEAFILE_SERVER_PROTOCOL='https'"    "生成的链接用 https"
 if grep -q '^SEAFILE_PRO_IMAGE=' "$WD/.env"; then
   die ".env 里出现了生效的 SEAFILE_PRO_IMAGE —— 这台机器会被钉死，不再跟随通道 tag"
@@ -212,20 +213,31 @@ ok "代理 → 容器 → seahub 链路通了，登录页 200"
 
 # ---------------------------------------------------------------- 6. 配置层断言
 step "6. 配置层断言（不依赖网络，失败时先看这里）"
-assert_not "$WD/data/nginx/conf/seafile.nginx.conf" "listen 443" \
-  "容器只监听 80、不监听 443（反代模式下 443 在代理侧）"
-assert_has "$WD/data/nginx/conf/seafile.nginx.conf" "seafile_fwd_proto" \
-  "模板走了 https=false 分支（恒判 https，而不是 \$scheme）"
-assert_not "$WD/data/nginx/conf/seafile.nginx.conf" 'X-Forwarded-Proto $scheme' \
-  "容器侧没有直接透传 \$scheme（那恒为 http，Django 会以为请求是明文）"
+# 13.0 起 nginx conf 构建期静态烘入镜像（/etc/nginx/sites-enabled/），不再渲染进
+# 数据卷 —— 断言对象从数据卷文件换成容器内那份本身（数据卷里的同名文件已无人读取，
+# 那条路径的「滞留」问题见 10b）。
+CTR_CONF=/etc/nginx/sites-enabled/seafile.nginx.conf
+if "${DC[@]}" exec -T seafile grep -q 'listen 443' "$CTR_CONF" 2>/dev/null; then
+  die "容器监听 443（反代模式下 443 在代理侧，容器只该听 80）"
+fi
+ok "容器只监听 80、不监听 443（反代模式下 443 在代理侧）"
+"${DC[@]}" exec -T seafile grep -q 'seafile_fwd_proto' "$CTR_CONF" \
+  || die "容器 conf 缺 seafile_fwd_proto 分流逻辑"
+ok "协议判定走 \$seafile_fwd_proto 分流（域名入口恒 https，非直接透传 \$scheme）"
+if "${DC[@]}" exec -T seafile grep -qF 'X-Forwarded-Proto $scheme' "$CTR_CONF" 2>/dev/null; then
+  die "容器侧直接透传 \$scheme（那恒为 http，Django 会以为请求是明文 → 登录 403）"
+fi
+ok "容器侧没有直接透传 \$scheme"
+# 静态 conf 的域名占位符必须已被 custom_bootstrap 换成彩排域名（首启动作）
+"${DC[@]}" exec -T seafile grep -q "server_name $DOMAIN;" "$CTR_CONF" \
+  || die "容器 conf 的 server_name 不是 $DOMAIN（apply_nginx_server_name 没跑？）"
+ok "静态 conf 的域名占位符已替换为 $DOMAIN"
 assert_has "$WD/data/seafile/conf/seahub_settings.py" "SECURE_PROXY_SSL_HEADER" \
   "SECURE_PROXY_SSL_HEADER 已写进 seahub_settings.py"
-# setup-seafile-mysql.py 写 SERVICE_URL 用【双引号】、bootstrap.py 写 FILE_SERVER_ROOT 用
-# 【单引号】（上游两处代码风格不同）—— 断言里的 . 是通配符，两种引号都认。
-assert_has "$WD/data/seafile/conf/seahub_settings.py" "^SERVICE_URL = .https://$DOMAIN" \
-  "SERVICE_URL 用的是 https（constance 的初始默认值）"
-assert_has "$WD/data/seafile/conf/seahub_settings.py" "^FILE_SERVER_ROOT = .https://$DOMAIN/seafhttp" \
-  "FILE_SERVER_ROOT 同样是 https"
+# 13.0 起 bootstrap.py 不再往 seahub_settings.py 写 SERVICE_URL / FILE_SERVER_ROOT
+# （只写 TIME_ZONE）；SERVICE_URL 由 settings.py 按 SEAFILE_SERVER_PROTOCOL+HOSTNAME
+# 运行期即时计算（补丁 0009 又把它 constance 化）。链接协议对不对，由第 8 步
+# 「上传/下载地址必须是 https://域名/seafhttp/」的断言兜底——那才是用户感知的症状。
 assert_has "$WD/data/seafile/conf/seafdav.conf" "enabled = true" \
   "二开定制自动落地（WebDAV 已开）"
 
@@ -263,7 +275,7 @@ esac
 assert_eq "$LOC" "/" "302 的目标是首页（next=/），不是登录页"
 grep -qi '^set-cookie: sessionid=' "$J/h.txt" \
   || { sed -n '1,15p' "$J/h.txt"; die "302 了但没有 sessionid cookie —— 会话没立起来"; }
-ok "拿到 sessionid 会话 cookie（Seafile 12 用 Django 标准会话，不是老版的 seahub_auth）"
+ok "拿到 sessionid 会话 cookie（Seafile 用 Django 标准会话，不是更老版本的 seahub_auth）"
 
 # 会话有效性的硬证据：带 cookie 调 API，未登录这里是 401/403。
 INFO=$(curl -sk --noproxy '*' "${R[@]}" -b "$J/cj2" "$P/api2/account/info/")
@@ -413,15 +425,16 @@ BEFORE=$("${DC[@]}" ps --format '{{.Image}}' seafile 2>/dev/null || echo '')
 AFTER=$("${DC[@]}" ps --format '{{.Image}}' seafile 2>/dev/null || echo '')
 assert_eq "$AFTER" "$BEFORE" "pull && up -d 之后镜像没变（通道未动 = 无操作）"
 
-# ---- 10b. 已有数据卷 + 模板更新：滞留的旧 conf 必须被自动重渲染 ----
-# 数据卷里的 nginx conf 是首启渲染的一次性产物，上游只在文件缺失时渲染——镜像
-# 模板更新后旧 conf 无限滞留。2026-09-22 生产 403 第三形态正撞在这里：用户拉了
-# 三版新镜像，容器里跑的仍是首启那版规则（远程探针实证 XFP=http→302 / 无头→403）。
-# 彩排每次都是全新卷，结构上测不到这条路径——所以这里手工制造「滞留」再重启钉死它。
-step "10b. 已有卷 + 模板更新：旧 conf 自动重渲染（2026-09-22 生产 403 第三形态）"
-printf '# 旧模板渲染的滞留件（模拟 2026-09-22 那台生产机）\nset $seafile_fwd_proto https;\n' \
+# ---- 10b. 已有卷 + 滞留 conf：行为不受影响（conf 随镜像走，13.0 起）----
+# 12.0 的病根：nginx conf 是首启渲染进数据卷的一次性产物，镜像模板更新后旧 conf
+# 无限滞留——2026-09-22 生产 403 第三形态正撞在这里（用户拉了三版新镜像，容器里
+# 跑的仍是首启那版规则）。13.0 起 conf 构建期静态烘入镜像，数据卷里就算留着旧
+# conf 也【没有任何读者】——「滞留」这个失败类别结构性消失，sync_nginx_conf 退役。
+# 这里手工制造一份 12.0 形态的滞留件，重启后断言行为不受影响，把这条保证钉死。
+step "10b. 已有卷 + 滞留 conf：行为不受影响（403 第三形态的结构性消除）"
+mkdir -p "$WD/data/nginx/conf"
+printf '# 12.0 时代渲染进数据卷的滞留件（模拟老卷升级上来）\nset $seafile_fwd_proto https;\n' \
   > "$WD/data/nginx/conf/seafile.nginx.conf"
-rm -f "$WD/data/nginx/conf/.render-inputs.sha"
 "${DC[@]}" restart seafile >/dev/null 2>&1
 CODE=000
 for i in $(seq 1 60); do
@@ -431,16 +444,17 @@ for i in $(seq 1 60); do
   sleep 10
 done
 assert_eq "$CODE" "200" "restart 后容器回来了（登录页 200）"
-assert_has "$WD/data/nginx/conf/seafile.nginx.conf" 'if ($http_host = $server_name)' \
-  "滞留的旧 conf 被 sync_nginx_conf 自动重渲染（新规则已生效）"
-ls "$WD/data/nginx/conf/" | grep -q '^seafile\.nginx\.conf\.bak-' \
-  || die "旧 conf 没有被挪走为 .bak（sync_nginx_conf 没跑？）"
-ok "旧 conf 已备份为 .bak-*，重渲染完成"
+"${DC[@]}" exec -T seafile grep -q 'if ($http_host = $server_name)' "$CTR_CONF" \
+  || die "容器 conf 缺入口分流逻辑（跑的不是镜像内那份 conf？）"
+ok "容器跑的是镜像内 conf，数据卷滞留件被无视"
+"${DC[@]}" exec -T seafile grep -q "server_name $DOMAIN;" "$CTR_CONF" \
+  || die "restart 后 server_name 占位符替换丢了（apply_nginx_server_name 幂等性坏了？）"
+ok "restart 后 server_name 仍是 $DOMAIN（替换幂等）"
 
 step "11. 回滚机制（内联一个不可变 tag，不改任何文件）"
 # 确定性断言：内联变量确实能盖住 compose 里的通道默认值。
 # 这条是回滚能工作的全部机制 —— 它成立，回滚就成立。
-ROLLBACK_TAG='ghcr.io/topiceyes/seafile-mc:12.0.14-dingtalk.9.ed2042da'
+ROLLBACK_TAG='ghcr.io/topiceyes/seafile-mc:1.0.0.15c3abd4'
 RESOLVED=$(SEAFILE_PRO_IMAGE="$ROLLBACK_TAG" "${DC[@]}" config \
            | awk '/^  seafile:/{f=1} f && /image:/{print $2; exit}')
 assert_eq "$RESOLVED" "$ROLLBACK_TAG" "内联 SEAFILE_PRO_IMAGE 能覆盖 compose 里的通道 tag"

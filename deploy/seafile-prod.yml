@@ -5,9 +5,10 @@
 # 与 dev compose 的关键差异：
 #   - 镜像用自建 tag（二开代码 + 前端 + collectstatic + 运维脚本 全烘进去），
 #     不挂源码、也不挂任何宿主机文件 —— 所以本文件放哪个目录都能起
-#   - SEAFILE_SERVER_LETSENCRYPT 是唯一的 https 开关（容器不读别的变量判断协议）
+#   - 13.0 起容器内 Let's Encrypt 已移除（SEAFILE_SERVER_LETSENCRYPT 不存在），
+#     TLS 只能在容器外终止（反代）；SEAFILE_SERVER_PROTOCOL 决定生成链接的协议
 #   - 管理员初始化变量是 INIT_SEAFILE_ADMIN_*（不是 SEAFILE_ADMIN_*，镜像不认后者）
-#   - 数据卷里不要预置任何 nginx 配置（会压制官方模板渲染）
+#   - 数据卷里不要预置任何 nginx 配置（13.0 起 conf 构建期静态烘入镜像，不读数据卷）
 
 services:
   db:
@@ -41,11 +42,18 @@ services:
     networks:
       - seafile-net
 
-  memcached:
-    image: ghcr.io/topiceyes/memcached:1.6.29   # 同 db：镜像自 ghcr，避开被阻断的 Docker Hub
-    container_name: seafile-memcached
+  redis:
+    image: ghcr.io/topiceyes/redis:7-alpine   # 同 db：镜像自 ghcr，避开被阻断的 Docker Hub
+    container_name: seafile-redis
     restart: unless-stopped
-    entrypoint: memcached -m 256
+    # 13.0 起 seahub 默认缓存后端是 redis（CACHE_PROVIDER=redis）；AI/元数据功能硬要求。
+    # 不设密码：容器不暴露端口，只在 seafile-net 内网可达。
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
     networks:
       - seafile-net
 
@@ -76,9 +84,8 @@ services:
     container_name: seafile
     restart: unless-stopped
     ports:
-      # 两种模式都只需要 80：
-      #   LETSENCRYPT=true  → LE webroot 验证 + http→https 跳转，必须公网可达
-      #   LETSENCRYPT=false → 上游反向代理把明文 HTTP 转发到这里（本项目形态）
+      # 只需要 80：13.0 起容器内不再签 LE 证书，TLS 一律在容器外终止，
+      # 上游反向代理把明文 HTTP 转发到这里（本项目形态）
       #
       # 宿主机已有一个 nginx/面板（如宝塔）要占 80/443 时，在 .env 设
       #   SEAFILE_HTTP_LISTEN='127.0.0.1:8080'
@@ -86,32 +93,34 @@ services:
       # 默认 80 → 渲染成 "80:80"，独占服务器的部署行为不变。
       # ⚠️ 这是完整监听段（[绑定地址:]端口），不是单纯端口号——写 '8080' 也行（全网卡）。
       - "${SEAFILE_HTTP_LISTEN:-80}:80"
-      # ⚠️ 这里【故意没有】443。反代模式下容器根本不监听 443（模板只渲染 `listen 80`），
+      # ⚠️ 这里【故意没有】443。容器根本不监听 443（静态 conf 只有 `listen 80`），
       #    映射它纯属冗余；而这台机器上往往还跑着别的东西，一旦对方占了 443，
       #    `docker compose up -d` 会在**新装那一刻**直接失败——属于「装完才发现」。
-      #    LETSENCRYPT=true 的人（容器自己终止 TLS）自行加回 `- "443:443"`。
     volumes:
       # 唯一的挂载：数据卷。备份脚本与 cron 已烘进镜像（见 image/Dockerfile 第 7 项），
       # 所以本文件不含任何宿主机相对路径 —— 放哪个目录都能起，服务器上只需
       # 「一个 compose 文件 + 一个 .env」。
       - ${SEAFILE_VOLUME}:/shared
     environment:
-      - DB_HOST=${SEAFILE_MYSQL_DB_HOST}
-      - DB_ROOT_PASSWD=${SEAFILE_MYSQL_ROOT_PASSWORD}
-      # 首启 setup 用这两个值创建 seafile 库用户并写进 seahub_settings.py（不传则随机）
-      - DB_USER=${SEAFILE_MYSQL_DB_USER}
-      - DB_PASSWORD=${SEAFILE_MYSQL_DB_PASSWORD}
+      # 13.0 起 DB 环境变量改名（旧 DB_HOST/DB_USER/... 不再被读取，
+      # wait_for_mysql 只认下面这组；不改名升级即死循环）
+      - SEAFILE_MYSQL_DB_HOST=${SEAFILE_MYSQL_DB_HOST}
+      - INIT_SEAFILE_MYSQL_ROOT_PASSWORD=${SEAFILE_MYSQL_ROOT_PASSWORD}
+      # 首启 setup 用这两个值创建 seafile 库用户（不传则随机）
+      - SEAFILE_MYSQL_DB_USER=${SEAFILE_MYSQL_DB_USER}
+      - SEAFILE_MYSQL_DB_PASSWORD=${SEAFILE_MYSQL_DB_PASSWORD}
+      # 13.0 起缓存后端默认 redis（memcached 需显式 CACHE_PROVIDER=memcached 续命；
+      # AI/元数据功能硬要求 Redis，故本项目选 redis）
+      - CACHE_PROVIDER=redis
+      - REDIS_HOST=redis
       - TIME_ZONE=Asia/Shanghai
-      # 纯域名（不带协议/端口）：证书文件名 + nginx server_name + SERVICE_URL 三处引用。
+      # 纯域名（不带协议/端口）：nginx server_name + SERVICE_URL 引用。
       # 反代模式下填【公网域名】（用户浏览器里那个），不是容器地址。
       - SEAFILE_SERVER_HOSTNAME=${SEAFILE_DOMAIN}
-      # TLS 终止位置开关（bootstrap.py:is_https() 只认这一个变量）。两种模式：
-      #   true  = 容器自己签发 Let's Encrypt 证书、自己监听 443。需 80/443 公网可达
-      #   false = 上游反向代理终止 TLS，容器只监听 80（见 docs/007 §9）
-      - SEAFILE_SERVER_LETSENCRYPT=${SEAFILE_SERVER_LETSENCRYPT:-true}
       # 生成的链接（SERVICE_URL / FILE_SERVER_ROOT）用哪个协议。
-      # ⚠️ 反代模式必须显式设 https：setup 与 bootstrap 的 get_proto() 各自独立读这个变量，
-      #    不设就生成 http:// 链接 → 文件上传下载、分享链接、钉钉回调地址全错。
+      # ⚠️ 反代模式必须显式设 https：13.0 起 SERVICE_URL 由 PROTOCOL+HOSTNAME
+      #    运行期即时计算，不设就生成 http:// 链接 → 文件上传下载、分享链接、
+      #    钉钉回调地址全错。
       - SEAFILE_SERVER_PROTOCOL=${SEAFILE_SERVER_PROTOCOL:-https}
       # 首次启动建管理员（注意：镜像读的是 INIT_ 前缀，SEAFILE_ADMIN_* 无效）
       - INIT_SEAFILE_ADMIN_EMAIL=${SEAFILE_ADMIN_EMAIL}
@@ -127,8 +136,8 @@ services:
       # service_healthy：等 db 的 healthcheck 通过（= 首启初始化真的走完了）再起 seafile
       db:
         condition: service_healthy
-      # memcached 起来即可用，没有需要等待的初始化
-      memcached:
+      # redis 起来即可用，没有需要等待的初始化
+      redis:
         condition: service_started
     networks:
       - seafile-net

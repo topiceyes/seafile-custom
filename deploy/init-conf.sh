@@ -103,7 +103,9 @@ else:
         ('conf-templates/seafile.conf',             f'{shared}/seafile/conf/seafile.conf'),
         ('conf-templates/seafdav.conf',             f'{shared}/seafile/conf/seafdav.conf'),
         ('conf-templates/gunicorn.conf.py',         f'{shared}/seafile/conf/gunicorn.conf.py'),
-        ('conf-templates/nginx/seafile.nginx.conf', f'{shared}/nginx/conf/seafile.nginx.conf'),
+        # 注意没有 nginx conf：13.0 起容器只读镜像内 /etc/nginx/sites-enabled/ 那份，
+        # 数据卷里的 conf 没有任何读者。dev 的 HTTPS conf 改为 seafile-server.yml
+        # 直接 bind-mount 进容器（见 conf-templates/nginx/seafile.nginx.conf 头注）。
     ]
     for src, dst in targets:
         dstp = root / dst

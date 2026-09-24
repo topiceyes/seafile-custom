@@ -10,24 +10,27 @@
 # 现在只有这一份，改断言只改这里。
 set -eu
 
-INSTALLPATH=/opt/seafile/seafile-server-12.0.14
+INSTALLPATH=/opt/seafile/seafile-server-13.0.28
 S="$INSTALLPATH/seahub"
 
 fail() { echo "✗ $*" >&2; exit 1; }
 ok()   { echo "✓ $*"; }
 
-# ---- 1) 版本号：补丁 0002 在源码里写的是 12.0.14-dev，Dockerfile 构建期 sed 成发布号 ----
-grep -q '^SEAFILE_VERSION = "12.0.14"' "$S/seahub/settings.py" \
-  || fail "SEAFILE_VERSION 不是 12.0.14（Dockerfile 的 sed 没生效？）"
-ok "SEAFILE_VERSION = 12.0.14"
+# ---- 1) 版本号：补丁在源码里写的是 -dev，Dockerfile 构建期 sed 成发布号 ----
+grep -q '^SEAFILE_VERSION = "13.0.28"' "$S/seahub/settings.py" \
+  || fail "SEAFILE_VERSION 不是 13.0.28（Dockerfile 的 sed 没生效？）"
+ok "SEAFILE_VERSION = 13.0.28"
 
 # ---- 2) 二开补丁的落地痕迹 ----
 grep -q PASSWORD_LOGIN_ADMIN_ONLY "$S/seahub/settings.py" \
-  || fail "settings.py 缺 PASSWORD_LOGIN_ADMIN_ONLY（补丁 0008 未生效）"
-grep -q 'X-Forwarded-Proto' /templates/seafile.nginx.conf.template \
-  || fail "nginx 模板缺 X-Forwarded-Proto（Dockerfile 的模板 COPY 没生效）"
-test "$(grep -c X-Forwarded-Proto /templates/seafile.nginx.conf.template)" -ge 2 \
-  || fail "nginx 模板的 X-Forwarded-Proto 少于 2 处（location / 与 /seafdav/ 各需一处）"
+  || fail "settings.py 缺 PASSWORD_LOGIN_ADMIN_ONLY（补丁未生效）"
+# 13.0 起 conf 是构建期静态烘入，不再是 /templates/ 模板
+grep -q 'X-Forwarded-Proto' /etc/nginx/sites-enabled/seafile.nginx.conf \
+  || fail "静态 nginx conf 缺 X-Forwarded-Proto（Dockerfile 的 COPY 没生效）"
+test "$(grep -c X-Forwarded-Proto /etc/nginx/sites-enabled/seafile.nginx.conf)" -ge 2 \
+  || fail "静态 conf 的 X-Forwarded-Proto 少于 2 处（location / 与 /seafdav/ 各需一处）"
+grep -q '__SEAFILE_SERVER_NAME__' /etc/nginx/sites-enabled/seafile.nginx.conf \
+  || fail "静态 conf 缺 server_name 占位符（custom_bootstrap 首启替换的锚点没了）"
 ok "二开补丁痕迹齐全"
 
 # ---- 3) 备份依赖与运维脚本（已烘进镜像，不再由 compose 挂载）----
@@ -79,41 +82,24 @@ if missing:
 print("✓ webpack chunk 全部落地：%d 个（collectstatic 产物齐全）" % total)
 PY
 
-# ---- 5) nginx 模板：两种部署模式都要能渲染且语法合法 ----
+# ---- 5) 静态 nginx conf：语法合法 + 反代协议判定正确 ----
 #
-# 模板坏了 = 站点直接起不来，而这类错误在构建期完全看不出来（COPY 一个文本文件而已）。
-# 这里用镜像自己的 render_template 渲染，再交给 nginx -t 解析：
-#   https=true  → 容器内终止 TLS（Let's Encrypt 模式，需 443 与证书文件）
-#   https=false → 上游反向代理终止 TLS，容器只监听 80（本项目的生产形态，见 docs/007 §9）
-# 反代模式那支还需要 $seafile_fwd_proto 变量，语法错会被 nginx -t 抓到。
-D=smoke.test
-mkdir -p /shared/ssl /etc/nginx/sites-enabled
-openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
-  -keyout /shared/ssl/$D.key -out /shared/ssl/$D.crt -subj "/CN=$D" 2>/dev/null
+# 13.0 起 conf 构建期静态烘入（无 /templates/ 模板渲染）。这里直接对烘入的静态 conf
+# 做 nginx -t 语法解析，再断言反代协议判定逻辑：
+#   $seafile_fwd_proto 按访问入口分流（域名→https、其它→转发头/$scheme），
+#   不能退化成直接透传 $scheme（那恒为 http，Django 会以为请求是明文 → 登录 403）。
+nginx -t >/dev/null 2>&1 \
+  || { nginx -t; fail "静态 nginx 配置语法非法"; }
+ok "静态 nginx conf 语法合法"
 
-for mode in False True; do
-  python3 -c "
-import sys; sys.path.insert(0, '/scripts')
-from utils import render_template
-render_template('/templates/seafile.nginx.conf.template',
-                '/etc/nginx/sites-enabled/seafile.nginx.conf',
-                {'https': $mode, 'domain': '$D', 'is_tmp': False})
-" || fail "nginx 模板渲染失败（https=${mode}）"
-  nginx -t >/dev/null 2>&1 \
-    || { nginx -t; fail "nginx 配置语法非法（https=${mode}）"; }
-  ok "nginx 模板渲染且语法合法（https=${mode}）"
-
-  # 反代模式下必须不能直接透传 $scheme（那恒为 http，Django 会以为请求是明文）。
-  # 这条断言有牙齿：模板一旦回退成 proxy_set_header X-Forwarded-Proto $scheme 就会红。
-  if [ "$mode" = "False" ]; then
-    grep -q 'X-Forwarded-Proto *\$scheme' /etc/nginx/sites-enabled/seafile.nginx.conf \
-      && fail "反代模式下 X-Forwarded-Proto 直接用了 \$scheme（应交给 \$seafile_fwd_proto 处理）"
-    grep -q 'X-Forwarded-Proto *\$seafile_fwd_proto' /etc/nginx/sites-enabled/seafile.nginx.conf \
-      || fail "反代模式下 X-Forwarded-Proto 未走 \$seafile_fwd_proto"
-    ok "反代模式 X-Forwarded-Proto 取值正确"
-  fi
-done
-rm -f /etc/nginx/sites-enabled/seafile.nginx.conf
+CONF=/etc/nginx/sites-enabled/seafile.nginx.conf
+grep -q 'X-Forwarded-Proto *\$scheme' "$CONF" \
+  && fail "X-Forwarded-Proto 直接用了 \$scheme（应交给 \$seafile_fwd_proto 分流）"
+grep -q 'X-Forwarded-Proto *\$seafile_fwd_proto' "$CONF" \
+  || fail "X-Forwarded-Proto 未走 \$seafile_fwd_proto"
+grep -q 'if (\$http_host = \$server_name)' "$CONF" \
+  || fail "缺域名入口判定（if \$http_host = \$server_name → https）"
+ok "反代协议判定逻辑正确（按入口分流，非直接透传 \$scheme）"
 
 # ---- 6) 二开定制钩子：接进 start.py + 真跑一遍 ----
 #
@@ -124,7 +110,7 @@ rm -f /etc/nginx/sites-enabled/seafile.nginx.conf
 # 光检查文件存在不够——所以下面在一个假配置目录上真跑一遍，验实际行为。
 test -f /scripts/custom_bootstrap.py || fail "缺 /scripts/custom_bootstrap.py"
 test -x /scripts/custom_bootstrap.py || fail "/scripts/custom_bootstrap.py 不可执行"
-grep -q '^from custom_bootstrap import init_custom_settings, start_service_retry, sync_nginx_conf$' /scripts/start.py \
+grep -q '^from custom_bootstrap import init_custom_settings, start_service_retry$' /scripts/start.py \
   || fail "start.py 缺 custom_bootstrap 的 import（patch-upstream.py 没生效？）"
 # 调用点必须在 init_seafile_server() 之后、seafile.sh 启动之前——顺序错了就白搭：
 # 早了会被 setup 的 open('w') 覆盖，晚了 seahub 已经起来、settings.py 改不生效。
@@ -203,76 +189,46 @@ for k in ('CLIENT_SSO_VIA_LOCAL_BROWSER', 'ENABLE_DINGTALK', 'ENABLE_DELETE_ACCO
 PY
 ok "二开定制钩子已接入 start.py；行为、幂等性、升级路径均验证通过"
 
-# ---- 升级路径二：数据卷里的 nginx conf 必须随模板自动更新（sync_nginx_conf）----
+# ---- 升级路径二：静态 nginx conf 的域名占位符替换（13.0 起）----
 #
-# 上游 generate_local_nginx_conf() 只在 conf 不存在时渲染——conf 是首启渲染进
-# 数据卷的一次性产物，镜像模板更新后旧 conf 无限滞留。2026-09-22 生产 403
-# 第三形态：用户拉了三版新镜像，容器里跑的仍是首启那版模板的规则（远程探针
-# 实证 XFP=http→302 / 无头→403，与新模板行为不符）。彩排全新卷测不到这条路径，
-# 由这里的单测钉住：陈旧→挪走、一致→保留、缺模板→不崩。
-grep -q 'sync_nginx_conf()' /scripts/start.py \
-  || fail "start.py 没有在 generate_local_nginx_conf() 之前调 sync_nginx_conf()（模板滞留的洞又开了）"
-# 顺序断言：sync 必须在渲染之前（晚了上游不重渲染）
-python3 - <<'PY' || fail "start.py 里 sync_nginx_conf 不在 generate_local_nginx_conf 之前"
-src = open('/scripts/start.py').read()
-assert src.index('sync_nginx_conf()') < src.index('generate_local_nginx_conf()'), \
-    'sync_nginx_conf 必须跑在渲染之前'
-PY
-python3 - <<'PY' || fail "sync_nginx_conf 三条路径单测失败"
-import os, sys, shutil
+# 13.0 废除了 /templates/ 模板渲染（generate_local_nginx_conf 删除），conf 构建期
+# 静态烘入。这治好了 12.0 的「conf 滞留数据卷」病根（403 第三形态结构性消失，
+# sync_nginx_conf 整套退役），但带来新动作：conf 里的 server_name 是占位符
+# __SEAFILE_SERVER_NAME__，首启时由 custom_bootstrap 替换为真实 SEAFILE_DOMAIN。
+# 这里断言替换真的发生、且幂等（重启场景容器层已替换过，不能再动）。
+python3 - <<'PY' || fail "apply_nginx_server_name 行为不正确"
+import os, sys, shutil, importlib.util
 sys.path.insert(0, '/scripts')
-import importlib.util
 spec = importlib.util.spec_from_file_location('cb', '/scripts/custom_bootstrap.py')
 cb = importlib.util.module_from_spec(spec); spec.loader.exec_module(cb)
 
-base = '/tmp/synctest'; shutil.rmtree(base, ignore_errors=True); os.makedirs(base)
+base = '/tmp/nginxtest'; shutil.rmtree(base, ignore_errors=True); os.makedirs(base)
 conf = base + '/seafile.nginx.conf'
 
-open(conf, 'w').write('OLD RULE: set $seafile_fwd_proto https;')
-cb.sync_nginx_conf(conf_file=conf)
-assert not os.path.exists(conf), '陈旧 conf 没被挪走'
-assert any(f.startswith('seafile.nginx.conf.bak-') for f in os.listdir(base)), '没有 .bak'
-assert os.path.exists(base + '/.render-inputs.sha'), 'sidecar 没写'
+# 首启：占位符 → 替换为域名
+open(conf, 'w').write('server {\n    server_name __SEAFILE_SERVER_NAME__;\n}\n')
+os.environ['SEAFILE_DOMAIN'] = 'disc.example.cn'
+cb.NGINX_STATIC_CONF = conf
+cb.apply_nginx_server_name()
+out = open(conf).read()
+assert 'server_name disc.example.cn;' in out, '占位符没被替换'
+assert '__SEAFILE_SERVER_NAME__' not in out, '占位符残留'
 
-from utils import render_template, get_conf
-from bootstrap import is_https
-ctx = {'https': is_https(), 'domain': get_conf('SEAFILE_SERVER_HOSTNAME','seafile.example.com'), 'is_tmp': False}
-render_template('/templates/seafile.nginx.conf.template', conf, dict(ctx))
-os.remove(base + '/.render-inputs.sha')
-# 故意跨秒：模板第 2 行是秒级渲染时间戳（current_timestr），两次渲染跨秒就差一字节。
-# 2026-09-24 CI 实撞（本地同秒所以绿）：sync 必须归一化时间戳行后再比对，否则一致的
-# conf 被误判滞留。这里强制跨过秒边界，把归一化钉成断言。
-import time as _t; _t.sleep(1.1)
-cb.sync_nginx_conf(conf_file=conf)
-assert os.path.exists(conf), '一致的 conf 被误挪（时间戳没归一化？）'
+# 重启：已是目标域名 → 幂等不动
+cb.apply_nginx_server_name()
+assert open(conf).read() == out, '幂等失败：重启场景改了 conf'
 
-# 快路径（此时 conf 在、sidecar 是 path2 刚写的）→ 必须零动作
-before = sorted(os.listdir(base))
-cb.sync_nginx_conf(conf_file=conf)
-assert sorted(os.listdir(base)) == before, '指纹一致的快路径动了文件'
+# 未设域名：占位符保留（仅 IP 直连可用），不崩
+open(conf, 'w').write('server {\n    server_name __SEAFILE_SERVER_NAME__;\n}\n')
+del os.environ['SEAFILE_DOMAIN']
+os.environ.pop('SEAFILE_SERVER_HOSTNAME', None)
+cb.apply_nginx_server_name()
+assert '__SEAFILE_SERVER_NAME__' in open(conf).read(), '未设域名时占位符被误改'
 
-# 负控：归一化只能抹时间戳，不能把【真差异】（渲染输入变了，如域名）也抹平。
-# 没有这条，归一化写成「整行删除比对」之类的过宽实现也能混过上面的正控。
-ctx2 = dict(ctx); ctx2['domain'] = 'other.example.test'
-render_template('/templates/seafile.nginx.conf.template', conf, ctx2)
-open(base + '/.render-inputs.sha', 'w').write('not-the-fingerprint')
-cb.sync_nginx_conf(conf_file=conf)
-assert not os.path.exists(conf), '真差异（换域名）被误判一致 —— 归一化抹多了'
-assert os.path.exists(base + '/.render-inputs.sha'), 'sidecar 没补'
-
-# 恢复现场（path3 的断言期望 conf 存在），顺带再验一次跨秒保留
-render_template('/templates/seafile.nginx.conf.template', conf, dict(ctx))
-os.remove(base + '/.render-inputs.sha')
-_t.sleep(1.1)
-cb.sync_nginx_conf(conf_file=conf)
-assert os.path.exists(conf), '恢复现场时一致的 conf 被误挪'
-
-cb.sync_nginx_conf(conf_file=conf, template='/nope/template')
-assert os.path.exists(conf), '模板缺失时动了 conf'
 shutil.rmtree(base)
-print('sync paths OK')
+print('nginx server_name 替换 OK（首启替换 + 重启幂等 + 未设域名不崩）')
 PY
-ok "sync_nginx_conf：陈旧→挪走、一致→保留、快路径零动作、缺模板不崩"
+ok "静态 conf 域名替换：首启替换、重启幂等、未设域名不崩"
 
 # 清掉假配置目录：/opt/seafile/conf 若残留在镜像层，首启 setup 会有意外行为
 rm -rf /opt/seafile/conf

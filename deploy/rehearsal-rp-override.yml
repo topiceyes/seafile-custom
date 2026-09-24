@@ -13,14 +13,14 @@
 #    !override 才是替换（Compose 5.5.0 实测支持）。它【不是标准 YAML tag】，
 #    yamllint / python 的 yaml.safe_load 会因为未知 tag 报错 —— 别「顺手修掉」。
 # ⚠️ container_name 是绝对名，【不受 project 名（-p）影响】，所以必须逐个改，
-#    否则直接撞上 dev 栈的 seafile / seafile-mysql / seafile-memcached。
+#    否则直接撞上 dev 栈的 seafile / seafile-mysql / seafile-redis。
 
 services:
   db:
     container_name: seafile-rp-mysql
 
-  memcached:
-    container_name: seafile-rp-memcached
+  redis:
+    container_name: seafile-rp-redis
 
   seafile:
     container_name: seafile-rp
