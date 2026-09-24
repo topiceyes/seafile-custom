@@ -88,6 +88,10 @@ PY
 # 做 nginx -t 语法解析，再断言反代协议判定逻辑：
 #   $seafile_fwd_proto 按访问入口分流（域名→https、其它→转发头/$scheme），
 #   不能退化成直接透传 $scheme（那恒为 http，Django 会以为请求是明文 → 登录 403）。
+# 冒烟容器不挂数据卷：conf 的 access_log 指向 /shared/seafile/logs/，nginx -t 会真的
+# 去打开日志文件，目录不在就 emerg。运行期这个目录由 create_data_links 建好，
+# 这里补上只是为了让语法检查能跑（与运行期行为无涉）。
+mkdir -p /shared/seafile/logs
 nginx -t >/dev/null 2>&1 \
   || { nginx -t; fail "静态 nginx 配置语法非法"; }
 ok "静态 nginx conf 语法合法"

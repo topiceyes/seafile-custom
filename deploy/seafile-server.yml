@@ -69,6 +69,10 @@ services:
       # 13.0 起 DB 环境变量改名（旧 DB_HOST/DB_ROOT_PASSWD 不再被读取）
       - SEAFILE_MYSQL_DB_HOST=${SEAFILE_MYSQL_DB_HOST}
       - INIT_SEAFILE_MYSQL_ROOT_PASSWORD=${SEAFILE_MYSQL_ROOT_PASSWORD}
+      # 升级脚本（upgrade_12.0_13.0.sh → db_update_helper.py）只从环境变量读
+      # DB 用户名/密码，没有 seafile.conf 兜底——缺了就是 "using password: NO" 死
+      - SEAFILE_MYSQL_DB_USER=${SEAFILE_MYSQL_DB_USER}
+      - SEAFILE_MYSQL_DB_PASSWORD=${SEAFILE_MYSQL_DB_PASSWORD}
       # 13.0 起缓存后端默认 redis
       - CACHE_PROVIDER=redis
       - REDIS_HOST=redis

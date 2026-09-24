@@ -39,6 +39,10 @@ COPY seahub/frontend/package.json seahub/frontend/package-lock.json* ./
 RUN if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; \
     else npm install --no-audit --no-fund; fi
 COPY seahub/frontend/ ./
+# 13.0 的前端源码会相对路径逃逸出 frontend/ 目录引用仓库根的 media/img
+# （sf-table 的 index.css: url(../../../../../../../media/img/grippy_large.png)）。
+# 上游 CI 在完整仓库里构建所以能解析；这里构建上下文只有 frontend/，必须补这份。
+COPY seahub/media/img /media/img
 # CI=false：CRA 在 CI 环境把 warning 当 error 处理
 RUN CI=false NODE_OPTIONS=--max-old-space-size=4096 node scripts/build.js
 
