@@ -48,6 +48,10 @@ on:
       - 'deploy/seafile-prod.yml'    # ↑ 这三条是 Release 资产（= 新服务器的安装入口）
       - 'deploy/init-prod-env.sh'    #   不在 tag 哈希里 → 只会触发「重传」，不会重建
       - 'deploy/env.prod.example'
+      - 'deploy/smoke-test.sh'       #   冒烟脚本是发布门禁本体：改了它必须能重验既有
+                                     #   tag（tag 不变 → publish 模式只重跑冒烟）。
+                                     #   2026-09-24 实撞：冒烟红后只修脚本，paths 不含
+                                     #   它 → 不触发 → 红着的 tag 永远没人复验
       - '.github/workflows/build-image.yml'
 
 # 同一 ref 上不并发构建；且**不取消**进行中的构建——两次构建抢同一个 tag 是最糟的失败模式
