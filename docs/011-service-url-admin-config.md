@@ -175,3 +175,20 @@ Seafile 只能生成地址、改不了对方后台。
 - 上游 `FILE_SERVER_ROOT` 这个 settings 项现在成了死配置（seahub 不再读）。上游升级时若该处逻辑变化，
   本补丁的推导需要重新核对。
 - 中文翻译未补（见 §4.5）。
+
+## 10. 13.0 实测复核（2026-09-24，升级 13.0.28 时）
+
+13.0 上游把 `SERVICE_URL` 改成运行期即时计算（`settings.py` 在加载 seahub_settings.py
+**之后**，只要 `SEAFILE_SERVER_PROTOCOL` + `SEAFILE_SERVER_HOSTNAME` 都在就无条件重算，
+写进配置文件的同名值成为死配置）——曾担心与本补丁的 constance 化对撞。dev 容器
+（13.0.28，env 已设）manage.py shell 实测：
+
+| 场景 | get_service_url() | get_fileserver_root() |
+|---|---|---|
+| 初始（DB 无记录） | `https://127.0.0.1`（= env 计算的默认值） | `https://127.0.0.1/seafhttp` |
+| 后台改 SITE_URL 后 | 改后值**立即生效**（constance DB 优先） | 跟随 |
+| 后台清空 | 回落 env 默认值 | 跟随 |
+
+结论：**模型不撞，补丁保留**。env 只决定 constance 的【默认值】；后台一旦保存，
+DB 值赢。上游那条「加载后重算」反而让默认值永远正确——`seahub_settings.py` 里的
+`SERVICE_URL`/`FILE_SERVER_ROOT` 在 13.0 是死配置，conf-templates 里已删。

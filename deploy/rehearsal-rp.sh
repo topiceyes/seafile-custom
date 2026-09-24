@@ -71,7 +71,19 @@ cleanup() {
   rm -rf "$WD"
   ok "容器、卷、现场目录都已清掉（dev 栈全程未受影响）"
 }
-trap cleanup EXIT
+# 完成哨兵：macOS 的 bash 3.2 有个坑——set -u 撞上 unbound variable（典型：
+# $VAR 后面紧跟全角括号被并进变量名）会中断脚本【但退出码是 0】（实测复现）。
+# 也就是说脚本完全可能半截死掉还报绿。只有走到最后一条横幅才把 COMPLETED
+# 置 1；EXIT trap 里发现没走到就强制 exit 1，让「中断」永远是红的。
+COMPLETED=0
+cleanup_and_guard() {
+  cleanup
+  if [ "$COMPLETED" != "1" ]; then
+    printf '\n\033[31m✗ 彩排未完成（异常中断，没走到通过横幅）——中断即失败\033[0m\n' >&2
+    exit 1
+  fi
+}
+trap cleanup_and_guard EXIT
 
 # ---------------------------------------------------------------- 0. 前置检查
 step "0. 前置检查"
@@ -230,7 +242,7 @@ fi
 ok "容器侧没有直接透传 \$scheme"
 # 静态 conf 的域名占位符必须已被 custom_bootstrap 换成彩排域名（首启动作）
 "${DC[@]}" exec -T seafile grep -q "server_name $DOMAIN;" "$CTR_CONF" \
-  || die "容器 conf 的 server_name 不是 $DOMAIN（apply_nginx_server_name 没跑？）"
+  || die "容器 conf 的 server_name 不是 ${DOMAIN}（apply_nginx_server_name 没跑？）"
 ok "静态 conf 的域名占位符已替换为 $DOMAIN"
 assert_has "$WD/data/seafile/conf/seahub_settings.py" "SECURE_PROXY_SSL_HEADER" \
   "SECURE_PROXY_SSL_HEADER 已写进 seahub_settings.py"
@@ -449,7 +461,7 @@ assert_eq "$CODE" "200" "restart 后容器回来了（登录页 200）"
 ok "容器跑的是镜像内 conf，数据卷滞留件被无视"
 "${DC[@]}" exec -T seafile grep -q "server_name $DOMAIN;" "$CTR_CONF" \
   || die "restart 后 server_name 占位符替换丢了（apply_nginx_server_name 幂等性坏了？）"
-ok "restart 后 server_name 仍是 $DOMAIN（替换幂等）"
+ok "restart 后 server_name 仍是 ${DOMAIN}（替换幂等）"
 
 step "11. 回滚机制（内联一个不可变 tag，不改任何文件）"
 # 确定性断言：内联变量确实能盖住 compose 里的通道默认值。
@@ -461,6 +473,7 @@ assert_eq "$RESOLVED" "$ROLLBACK_TAG" "内联 SEAFILE_PRO_IMAGE 能覆盖 compos
 info "真机上回滚 = 把这条内联变量换成 Releases 里想回到的那个 tag，跑 pull && up -d"
 info "想在本机真跑一次回滚演练：./rehearsal-rp.sh --keep --tag $ROLLBACK_TAG"
 
+COMPLETED=1
 printf '\n\033[1;32m════ 反代模式彩排全部通过 ════\033[0m\n'
 printf '它证明了：容器 + Django 在「TLS 在代理终止」这个输入下是对的，\n'
 printf '且是在【真实拉回来的 amd64 字节】上对的。\n'
