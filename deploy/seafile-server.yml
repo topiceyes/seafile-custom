@@ -73,6 +73,11 @@ services:
       # DB 用户名/密码，没有 seafile.conf 兜底——缺了就是 "using password: NO" 死
       - SEAFILE_MYSQL_DB_USER=${SEAFILE_MYSQL_DB_USER}
       - SEAFILE_MYSQL_DB_PASSWORD=${SEAFILE_MYSQL_DB_PASSWORD}
+      # 三个库名写死标准名：13.0 的 bootstrap.py 以空串默认值显式注入，
+      # setup 把「存在但为空」视为缺失，全新卷首启会拒绝初始化（与 prod 同理）
+      - SEAFILE_MYSQL_DB_CCNET_DB_NAME=ccnet_db
+      - SEAFILE_MYSQL_DB_SEAFILE_DB_NAME=seafile_db
+      - SEAFILE_MYSQL_DB_SEAHUB_DB_NAME=seahub_db
       # 13.0 起缓存后端默认 redis
       - CACHE_PROVIDER=redis
       - REDIS_HOST=redis

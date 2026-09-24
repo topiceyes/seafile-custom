@@ -273,6 +273,20 @@ def apply_nginx_server_name():
         fp.write(new)
     log('nginx server_name 已设为 %s（静态 conf，随镜像走，无需数据卷同步）' % domain)
 
+    # nginx 由 runit 在容器启动那一刻就拉起来了（读的是带占位符的 conf），而
+    # start.py 顶部那次 `nginx -s reload` 早于本函数。替换后必须再 reload 一次，
+    # 否则 $http_host = $server_name 分流要等容器重启才生效——域名入口被当成
+    # 「其它 Host」，代理发了 XFP: http 时 Django 按明文处理 → 登录 403
+    # （2026-09-24 彩排实测：P2 探针撞线）。
+    # reload 失败只告警不阻断：多半是 nginx 还没被 runit 拉起，那它正式
+    # 启动时读的就是新 conf，无妨。
+    try:
+        from utils import call
+        call('nginx -s reload')
+        log('已 reload nginx（域名分流即时生效）')
+    except Exception as e:
+        log('nginx reload 未完成（%s）——若 nginx 尚未启动则无妨，启动时会读新 conf' % e)
+
 
 if __name__ == '__main__':
     init_custom_settings()

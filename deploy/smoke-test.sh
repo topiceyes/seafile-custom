@@ -206,10 +206,18 @@ sys.path.insert(0, '/scripts')
 spec = importlib.util.spec_from_file_location('cb', '/scripts/custom_bootstrap.py')
 cb = importlib.util.module_from_spec(spec); spec.loader.exec_module(cb)
 
+# 注入假 utils.call 记录 reload：nginx 在容器 boot 时就被 runit 拉起（读的仍是
+# 占位符 conf），替换后必须当场 reload，否则分流要等容器重启才生效
+# （2026-09-24 彩排实测：没 reload 时 P2 探针 403）。
+import types
+reloads = []
+fake = types.ModuleType('utils'); fake.call = lambda cmd: reloads.append(cmd)
+sys.modules['utils'] = fake
+
 base = '/tmp/nginxtest'; shutil.rmtree(base, ignore_errors=True); os.makedirs(base)
 conf = base + '/seafile.nginx.conf'
 
-# 首启：占位符 → 替换为域名
+# 首启：占位符 → 替换为域名，且触发一次 reload
 open(conf, 'w').write('server {\n    server_name __SEAFILE_SERVER_NAME__;\n}\n')
 os.environ['SEAFILE_DOMAIN'] = 'disc.example.cn'
 cb.NGINX_STATIC_CONF = conf
@@ -217,10 +225,12 @@ cb.apply_nginx_server_name()
 out = open(conf).read()
 assert 'server_name disc.example.cn;' in out, '占位符没被替换'
 assert '__SEAFILE_SERVER_NAME__' not in out, '占位符残留'
+assert reloads == ['nginx -s reload'], '替换后没有 reload nginx（分流要等重启才生效）'
 
-# 重启：已是目标域名 → 幂等不动
+# 重启：已是目标域名 → 幂等不动，也不再 reload
 cb.apply_nginx_server_name()
 assert open(conf).read() == out, '幂等失败：重启场景改了 conf'
+assert len(reloads) == 1, '幂等路径不该再 reload'
 
 # 未设域名：占位符保留（仅 IP 直连可用），不崩
 open(conf, 'w').write('server {\n    server_name __SEAFILE_SERVER_NAME__;\n}\n')
@@ -230,7 +240,7 @@ cb.apply_nginx_server_name()
 assert '__SEAFILE_SERVER_NAME__' in open(conf).read(), '未设域名时占位符被误改'
 
 shutil.rmtree(base)
-print('nginx server_name 替换 OK（首启替换 + 重启幂等 + 未设域名不崩）')
+print('nginx server_name 替换 OK（首启替换+reload + 重启幂等 + 未设域名不崩）')
 PY
 ok "静态 conf 域名替换：首启替换、重启幂等、未设域名不崩"
 

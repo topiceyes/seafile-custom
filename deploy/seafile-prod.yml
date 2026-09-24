@@ -109,6 +109,13 @@ services:
       # 首启 setup 用这两个值创建 seafile 库用户（不传则随机）
       - SEAFILE_MYSQL_DB_USER=${SEAFILE_MYSQL_DB_USER}
       - SEAFILE_MYSQL_DB_PASSWORD=${SEAFILE_MYSQL_DB_PASSWORD}
+      # 三个库名。13.0 的 bootstrap.py 会把它们以【空串默认值】显式注入 setup 的
+      # 环境（get_conf(..., '')），而 setup-seafile-mysql.py 把「存在但为空」视为
+      # 缺失 → 全新卷首启直接报 "missing ccnet db name parameter" 拒绝初始化
+      # （2026-09-24 彩排实撞）。我们不改库名，写死标准名即可。
+      - SEAFILE_MYSQL_DB_CCNET_DB_NAME=ccnet_db
+      - SEAFILE_MYSQL_DB_SEAFILE_DB_NAME=seafile_db
+      - SEAFILE_MYSQL_DB_SEAHUB_DB_NAME=seahub_db
       # 13.0 起缓存后端默认 redis（memcached 需显式 CACHE_PROVIDER=memcached 续命；
       # AI/元数据功能硬要求 Redis，故本项目选 redis）
       - CACHE_PROVIDER=redis
