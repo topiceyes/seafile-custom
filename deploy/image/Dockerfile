@@ -78,6 +78,13 @@ RUN chmod 0755 /usr/local/bin/seafile-backup.sh \
 COPY image/custom_bootstrap.py /scripts/custom_bootstrap.py
 COPY image/patch-upstream.py /tmp/patch-upstream.py
 
+# 5) 定制静态 nginx conf（13.0 起上游废除 /templates/ 模板渲染，conf 构建期静态烘入）。
+#    在上游 services/seafile.nginx.conf 基础上补 server_name + X-Forwarded-Proto 两处
+#    （上游依然没修，反代模式登录 403 的病根，docs/007 §9）。域名占位符
+#    __SEAFILE_SERVER_NAME__ 由 custom_bootstrap 首启时替换为真实 SEAFILE_DOMAIN。
+#    ⚠️ 必须在 patch-upstream.py 之前：它会校验占位符确实进了镜像（防 COPY 错文件）。
+COPY image/nginx/seafile.nginx.conf /etc/nginx/sites-enabled/seafile.nginx.conf
+
 # 三处改动由 patch-upstream.py 打入（start.py ×2、enterpoint.sh ×1），
 # **每一处都带前后断言**。改完立刻删掉脚本，它只服务于构建期。
 #
@@ -104,12 +111,6 @@ RUN grep -q '^SEAFILE_VERSION = ' ${INSTALLPATH}/seahub/seahub/settings.py \
  && sed -ri "s/^SEAFILE_VERSION = .*$/SEAFILE_VERSION = \"${SEAFILE_VERSION}\"/" \
        ${INSTALLPATH}/seahub/seahub/settings.py \
  && grep -q "^SEAFILE_VERSION = \"${SEAFILE_VERSION}\"" ${INSTALLPATH}/seahub/seahub/settings.py
-
-# 5) 定制静态 nginx conf（13.0 起上游废除 /templates/ 模板渲染，conf 构建期静态烘入）。
-#    在上游 services/seafile.nginx.conf 基础上补 server_name + X-Forwarded-Proto 两处
-#    （上游依然没修，反代模式登录 403 的病根，docs/007 §9）。域名占位符
-#    __SEAFILE_SERVER_NAME__ 由 custom_bootstrap 首启时替换为真实 SEAFILE_DOMAIN。
-COPY image/nginx/seafile.nginx.conf /etc/nginx/sites-enabled/seafile.nginx.conf
 
 # 3) 构建期 collectstatic：stub 配置 + 一次性环境（已实测配方，无需数据库）。
 #    全部在同一条 RUN 内完成并清理——包括临时目录本身：
