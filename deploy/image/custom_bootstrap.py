@@ -237,6 +237,18 @@ def init_custom_settings():
 NGINX_TEMPLATE = '/templates/seafile.nginx.conf.template'
 NGINX_CONF = '/shared/nginx/conf/seafile.nginx.conf'
 
+# 上游 render_template 的 _add_default_context 会往模板里注入秒级渲染时间戳
+# （模板第 2 行 `# Auto generated at {{ current_timestr }}`）。逐字节比对若不先
+# 归一化它，两次渲染只要跨秒就「一字符之差」——一致的 conf 被误判滞留。CI 于
+# 2026-09-24 实撞（bak 名 035508→035509 跨秒即铁证；本地没跨秒所以绿）。比对要
+# 回答的是「规则是不是当前模板的」，不是「是不是同一秒渲染的」。
+_TS_LINE = re.compile(r'^(# Auto generated at ).+$', re.M)
+
+
+def _normalize_rendered(text):
+    """把渲染时间戳行抹成占位符，让比对只看模板规则。"""
+    return _TS_LINE.sub(r'\1<normalized>', text)
+
 
 def sync_nginx_conf(conf_file=NGINX_CONF, template=NGINX_TEMPLATE):
     """模板变更自动传播到已有部署（2026-09-23 加入）。
@@ -293,7 +305,7 @@ def sync_nginx_conf(conf_file=NGINX_CONF, template=NGINX_TEMPLATE):
         if os.path.isfile(conf_file):
             with open(conf_file, 'r', encoding='utf-8') as fp:
                 current = fp.read()
-            if current == expected:
+            if _normalize_rendered(current) == _normalize_rendered(expected):
                 log('sync_nginx_conf: conf 与当前模板一致，补记指纹')
             else:
                 bak = '%s.bak-%s' % (conf_file, time.strftime('%Y%m%d-%H%M%S'))

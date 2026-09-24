@@ -239,8 +239,20 @@ from bootstrap import is_https
 ctx = {'https': is_https(), 'domain': get_conf('SEAFILE_SERVER_HOSTNAME','seafile.example.com'), 'is_tmp': False}
 render_template('/templates/seafile.nginx.conf.template', conf, dict(ctx))
 os.remove(base + '/.render-inputs.sha')
+# 故意跨秒：模板第 2 行是秒级渲染时间戳（current_timestr），两次渲染跨秒就差一字节。
+# 2026-09-24 CI 实撞（本地同秒所以绿）：sync 必须归一化时间戳行后再比对，否则一致的
+# conf 被误判滞留。这里强制跨过秒边界，把归一化钉成断言。
+import time as _t; _t.sleep(1.1)
 cb.sync_nginx_conf(conf_file=conf)
-assert os.path.exists(conf), '一致的 conf 被误挪'
+assert os.path.exists(conf), '一致的 conf 被误挪（时间戳没归一化？）'
+
+# 负控：归一化只能抹时间戳，不能把【真差异】（渲染输入变了，如域名）也抹平。
+# 没有这条，归一化写成「整行删除比对」之类的过宽实现也能混过上面的正控。
+ctx2 = dict(ctx); ctx2['domain'] = 'other.example.test'
+render_template('/templates/seafile.nginx.conf.template', conf, ctx2)
+open(base + '/.render-inputs.sha', 'w').write('not-the-fingerprint')
+cb.sync_nginx_conf(conf_file=conf)
+assert not os.path.exists(conf), '真差异（换域名）被误判一致 —— 归一化抹多了'
 assert os.path.exists(base + '/.render-inputs.sha'), 'sidecar 没补'
 
 before = sorted(os.listdir(base))
