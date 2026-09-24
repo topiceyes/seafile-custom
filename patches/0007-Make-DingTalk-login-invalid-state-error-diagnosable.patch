@@ -1,7 +1,7 @@
 From f976220ad946546dce12666cde8784c1dd45db6d Mon Sep 17 00:00:00 2001
 From: topiceyes <273286342+topiceyes@users.noreply.github.com>
 Date: Thu, 17 Sep 2026 14:19:59 +0800
-Subject: [PATCH 7/9] Make DingTalk login 'invalid state' error diagnosable
+Subject: [PATCH 07/10] Make DingTalk login 'invalid state' error diagnosable
 
 The opaque 'Error, please contact administrator.' hid the common cause:
 browsing the site on a host that differs from SERVICE_URL (e.g.

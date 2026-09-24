@@ -6,6 +6,11 @@
 > 本文中所有 `http://127.0.0.1:8180` / `http://seafile-dev.test` 的地址**均已失效**，请一律替换为 `https://127.0.0.1`；
 > 钉钉后台的回调域名也需同步改为 `https://127.0.0.1/dingtalk/callback/`。下文保留当时的原始记录。
 
+> ⚠️ **2026-09-24 更新（第 0010 补丁，tag `12.0.14-dingtalk.10.*` 起）**：`redirect_uri`
+> 不再取 SERVICE_URL，改为**跟随用户发起登录的域名**（`request.scheme + request.get_host()`，
+> 四处构造点统一走 `get_request_scheme_and_netloc()`）。同一系统经多个域名访问
+> （内网域名 + 外网云反代域名）从此都能扫码登录，配置见 §8。
+
 ## 1. 需求
 
 企业用户在 Seafile 登录页点击钉钉图标 → 跳转钉钉扫码 → 确认后自动登录 Seafile：
@@ -134,7 +139,7 @@ FILE_SERVER_ROOT = 'http://seafile-dev.test/seafhttp'
 | 8 | 钉钉回调域名校验：必须完整 URL 带 `http://`，纯 IP:端口/裸域名都会被拒 | 填 `http://127.0.0.1:8180`；若被拒用 `http://seafile-dev.test` + hosts + 80 端口 |
 | 9 | 扫码后「出错了请联系管理员」：`AccessTokenPermissionDenied, requiredScopes: [Contact.User.Read]` | 钉钉后台开权限 + **发布新版本** |
 | 10 | 首次扫码 `invalid state` | 正常现象：换访问域名后浏览器旧 session 里的 state 失效，重扫即可 |
-| 11 | 扫码后必现「出错了，请联系管理员」，日志 `invalid state` | **访问域名与 SERVICE_URL 不一致**。SERVICE_URL 由容器环境变量 `SEAFILE_SERVER_HOSTNAME` 决定（覆盖 seahub_settings.py，见 `seahub/settings.py:1172`）。用 `localhost:8180` 访问但 SERVICE_URL 是 `127.0.0.1:8180` 时，钉钉把浏览器送到 127.0.0.1，而 session cookie 绑在 localhost 域上 → 跨域丢失 → state 校验失败。**统一用 https://127.0.0.1 访问**（与钉钉后台回调域名一致）。诊断日志现在会打印 `got/expected/host` |
+| 11 | 扫码后必现「出错了，请联系管理员」，日志 `invalid state` | （2026-09-24 前的机制）**访问域名与 SERVICE_URL 不一致**：钉钉按 SERVICE_URL 回调，session cookie 绑在访问域上 → 跨域丢失 → state 校验失败。**0010 补丁起已根治**：回调跟随发起域名，host 不一致不再导致 state 丢失；仍出现时查会话/cookie（无痕窗口、禁 cookie、会话过期）。诊断日志打印 `got/expected/host` |
 
 ## 6. 运维手册
 
@@ -162,3 +167,44 @@ docker exec seafile-mysql mariadb -uroot -p'dev_root_pw_2026' \
 - **绕过 2FA**：钉钉扫码登录（及所有 OAuth 类登录）不走 seahub 双因素认证，企业安全评估需知悉
 - **上游同步成本**：`dingtalk/settings.py` 一行 diff 是永久性的，升级 seahub 版本时注意保留
 - 旧版扫码协议（`DINGTALK_QR_CONNECT_*` 配置组）未使用，忽略即可
+
+## 8. 多入口部署：一个系统、多个域名都扫码登录（2026-09-24，0010 补丁）
+
+生产形态：内网用户走 `m-disc.moresec.cn`（宿主反代直入），外网用户走
+`i-disc.moresec.cn`（云服务器反代 → 公司出口 IP 端口映射）。SERVICE_URL 只有一个
+（链接生成的规范地址），但**扫码登录哪个入口都能用**——机制：
+
+- `redirect_uri` 跟随**发起请求的域名**（`get_request_scheme_and_netloc(request)`），
+  回调与发起同域，state 所在的会话 cookie（按 host 隔离）自然可读；
+- 登录完成后的跳转是相对路径，用户全程留在原入口；
+- 钉钉后台「登录与分享 → 回调域名」**支持配多个**（英文逗号分隔），每个入口
+  各登记一条。
+
+**配置（一次性）：**
+
+1. 钉钉开发者后台 → 应用 → 登录与分享 → 回调域名：
+
+   ```
+   https://m-disc.moresec.cn/dingtalk/callback/,https://i-disc.moresec.cn/dingtalk/callback/
+   ```
+
+   （逗号分隔、不要空格；两个地址都要在。）
+2. Site URL（SERVICE_URL）保持主域名（`https://m-disc.moresec.cn`）不动——它管的是
+   邮件/分享链接等**规范地址**，不再影响扫码登录。
+3. **外网链路的协议头要传对**：云代理必须发 `X-Forwarded-Proto: https`，且沿途
+   任何中间层（宿主 nginx/宝塔）**不要用 `$scheme` 覆盖它**——云→公司这段通常是
+   明文 http，中间层若写 `proxy_set_header X-Forwarded-Proto $scheme` 会把它冲成
+   http，redirect_uri 就成了 `http://i-disc…`，与钉钉后台登记的 https 地址不匹配，
+   钉钉会在授权页直接拒绝。验证一条命令（外网机器上）：
+
+   ```bash
+   curl -s -o /dev/null -w '%{redirect_url}\n' https://i-disc.moresec.cn/dingtalk/login/
+   # 期望 Location 里的 redirect_uri=https%3A%2F%2Fi-disc.moresec.cn%2Fdingtalk%2Fcallback%2F
+   ```
+
+**边界与已知限制：**
+
+- 文件上传/下载的绝对链接（FILE_SERVER_ROOT）仍从 SERVICE_URL 派生（单值），
+  外网入口的网页文件链接会指向主域名——若外网解析不了主域名，这是下一个要处理
+  的事项（可改用相对形式 `/seafhttp`，届时单独验证）。
+- 彩排断言：`rehearsal-rp.sh` 步骤 9b（D1/D2 双 Host 探针）钉住「回调跟随发起域名」。

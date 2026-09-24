@@ -796,7 +796,7 @@ cd deploy && ./rehearsal-rp.sh
 | IP 直连 http | 内网/调试（原版能力） | 彩排 P4 |
 | WebDAV /seafdav | 文件协议 | smoke（enabled=true） |
 | 域名经宿主反代（宝塔等面板）https | 生产主路径（m-disc 形态） | 容器侧与云反代**同字节**（明文 http + Host 头 + host 分流兜底），P1–P4 覆盖；面板改写 Host 的坑见 §9.1 与 §10 第四形态 |
-| 桌面客户端 SSO / 钉钉回调 | 外部入口 | **未覆盖**——上线后用真域名复验（§7.2 边界表） |
+| 桌面客户端 SSO / 钉钉回调 | 外部入口 | 钉钉 redirect_uri 跟随发起域名：彩排 9b（D1/D2 双 Host）；真机扫码全流程仍待生产复验（§7.2 边界表）。桌面客户端 SSO 未覆盖 |
 
 
 生产不是「容器自己签 LE 证书」，而是：**docker 跑在本地，公网服务由云上的反向代理提供**。
@@ -953,6 +953,42 @@ pull——端口已由 `SEAFILE_HTTP_LISTEN` 接管，手工映射不再需要�
 `https://<域名>/dingtalk/callback/`；扫码一律从 `https://<域名>` 登录页发起
 （state 绑会话 cookie，跨地址必掉 `invalid state`）。钉钉回调域名接受 IP 与内网
 域名——匹配是纯字符串比对，回跳由浏览器发起，不要求钉钉服务器能访问该地址。
+
+### 9.2 多入口：内网 + 外网双域名同时扫码登录（2026-09-24，0010 补丁）
+
+同一系统两个入口（生产实例：内网 `m-disc.moresec.cn` 走宿主反代直入；外网
+`i-disc.moresec.cn` 走云服务器反代 → 公司出口 IP 端口映射回系统）：
+
+```
+内网用户 ──https──→ 宿主 nginx（宝塔，§9.1）──────────┐
+                                                       ├─→ 容器 :80
+外网用户 ──https──→ 云反代（TLS 终止）──http──→ 出口IP:端口 ┘
+```
+
+**钉钉扫码登录在两个入口都可用**，因为回调地址跟随发起域名（`redirect_uri` 由
+`request.scheme + request.get_host()` 构造，不再是 SERVICE_URL 单值）——state 所在
+的会话 cookie 按 host 隔离，回发起域才读得到。需要做的只有两件事：
+
+1. 钉钉后台「登录与分享 → 回调域名」把**两个入口都登记**（多个回调域名用英文
+   逗号分隔，钉钉官方支持）：
+
+   ```
+   https://m-disc.moresec.cn/dingtalk/callback/,https://i-disc.moresec.cn/dingtalk/callback/
+   ```
+
+2. 外网链路的 `X-Forwarded-Proto: https` 要一路传到容器（云代理设置；沿途中间层
+   不得用 `$scheme` 覆盖——云→公司那段是明文 http，覆盖会把 https 冲掉，
+   redirect_uri 变 http 与登记不符，钉钉在授权页直接拒绝）。验证：
+
+   ```bash
+   curl -s -o /dev/null -w '%{redirect_url}\n' https://i-disc.moresec.cn/dingtalk/login/
+   ```
+
+Site URL（SERVICE_URL）保持主域名不动——管邮件/分享链接的规范地址，不影响扫码
+登录。**已知边界**：网页里的文件上传/下载绝对链接（FILE_SERVER_ROOT）仍从
+SERVICE_URL 派生（单值），外网入口会拿到指向主域名的链接；外网若解析不了主域名，
+文件操作受影响（可改相对形式 `/seafhttp`，另行验证后成文）。彩排 9b（D1/D2 双
+Host 探针）已把「回调跟随发起域名」钉成断言。
 
 ## 10. 验证记录
 

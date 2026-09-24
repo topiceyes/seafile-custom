@@ -134,6 +134,8 @@ step "2. 生成 .env（走 init-prod-env.sh 本身，零提问）"
 sed -i.bak \
   -e "s|^SEAFILE_VOLUME=.*|SEAFILE_VOLUME='$WD/data'|" \
   -e "s|^SEAFILE_MYSQL_VOLUME=.*|SEAFILE_MYSQL_VOLUME='$WD/mysql'|" \
+  -e "s|^SEAHUB_DINGTALK_APP_KEY=.*|SEAHUB_DINGTALK_APP_KEY='rehearsal-dummy-key'|" \
+  -e "s|^SEAHUB_DINGTALK_APP_SECRET=.*|SEAHUB_DINGTALK_APP_SECRET='rehearsal-dummy-secret'|" \
   "$WD/env.prod.example"
 rm -f "$WD/env.prod.example.bak"
 ( cd "$WD" && ./init-prod-env.sh --domain "$DOMAIN" --admin-email "$ADMIN_EMAIL" \
@@ -383,6 +385,25 @@ probe_ip() {  # 原版直连行为：无转发头、Host/Referer/Origin 全是 I
 }
 P4=$(probe_ip)
 assert_eq "$P4" "302" "P4 IP 直连（无转发头）→ 302（**原版行为**：按明文 http 如实处理，不配域名也能登录）"
+
+# ---- 9b. 钉钉回调跟随发起域名（多入口部署，2026-09-24 生产形态）----
+# 生产形态：内网用户走主域名（Host=server_name），外网用户走云反代的第二域名
+# （Host≠server_name + XFP: https）。钉钉 redirect_uri 必须回到【发起的那个域名】，
+# 否则 state 所在的会话 cookie（按 host 隔离）读不到 → invalid state（第 0010 补丁）。
+# 探针直连容器 80，各带自己的 Host/XFP 组合，断言 302 Location 里的 redirect_uri
+# （urlencode 形式）跟着 Host 走。凭据是彩排专用假值——视图在构造 URL 时并不校验它们。
+dingtalk_redirect_uri_host() {  # $1=Host, $2=XFP 值（空=不发）
+  local -a H=(); [ -n "$2" ] && H=(-H "X-Forwarded-Proto: $2")
+  local loc; loc=$(curl -s --noproxy '*' -o /dev/null -w '%{redirect_url}' ${H[@]+"${H[@]}"} \
+    -H "Host: $1" "http://127.0.0.1:$HOST_PORT/dingtalk/login/")
+  # Location 形如 https://login.dingtalk.com/...?redirect_uri=https%3A%2F%2F<host>%2Fdingtalk%2Fcallback%2F...
+  printf '%s' "$loc" | sed -n 's/.*redirect_uri=https%3A%2F%2F\([^%]*\)%2Fdingtalk.*/\1/p'
+}
+D1=$(dingtalk_redirect_uri_host "$DOMAIN" '')
+assert_eq "$D1" "$DOMAIN" "D1 主域名发起（Host=server_name，无转发头）→ redirect_uri 回主域名"
+ALT_DOMAIN='i-disc.example.test'
+D2=$(dingtalk_redirect_uri_host "$ALT_DOMAIN" 'https')
+assert_eq "$D2" "$ALT_DOMAIN" "D2 第二域名发起（Host≠server_name + XFP https，云反代形态）→ redirect_uri 回第二域名"
 
 # ---------------------------------------------------------------- 10. 升级 / 回滚
 step "10. 升级路径（通道没动 → 应当是无操作）"

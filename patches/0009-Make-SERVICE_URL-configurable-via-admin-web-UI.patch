@@ -1,7 +1,7 @@
 From 0a2cfccbcd24a2001616b4f9baa882ed273962cf Mon Sep 17 00:00:00 2001
 From: topiceyes <273286342+topiceyes@users.noreply.github.com>
 Date: Sun, 20 Sep 2026 17:56:11 +0800
-Subject: [PATCH 9/9] Make SERVICE_URL configurable via admin web UI
+Subject: [PATCH 09/10] Make SERVICE_URL configurable via admin web UI
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

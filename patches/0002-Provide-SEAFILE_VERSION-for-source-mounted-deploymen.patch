@@ -1,7 +1,7 @@
 From e7c8e86f19cceb3f5eea005df5981c461cb31c85 Mon Sep 17 00:00:00 2001
 From: topiceyes <273286342+topiceyes@users.noreply.github.com>
 Date: Wed, 16 Sep 2026 22:19:44 +0800
-Subject: [PATCH 2/9] Provide SEAFILE_VERSION for source-mounted deployment
+Subject: [PATCH 02/10] Provide SEAFILE_VERSION for source-mounted deployment
 
 The release build injects SEAFILE_VERSION into settings.py at packaging
 time. Provide it explicitly so the source tree works when bind-mounted
