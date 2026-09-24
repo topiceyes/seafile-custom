@@ -8,5 +8,5 @@
 # 只改一半会在发布前被拦下。
 #
 # tag = <product_version>.<8位构建输入哈希>；本文件在哈希范围内（改版本必得新 tag）。
-product_version = 1.0.0
-seafile_version = 12.0.14
+product_version = 1.1.0
+seafile_version = 13.0.28
