@@ -17,6 +17,7 @@
 | 009 | [备份与恢复](009-backup-restore.md) | 三库 dump + 数据目录打包，每日 cron | ✅ 已完成（2026-09-20） |
 | 010 | [CI 发布流水线](010-ci-release-pipeline.md) | 推 GitHub → Actions 构建 + 冒烟 → 搬通道 tag `latest` + 建 Release → 生产机 `compose pull` | ✅ 已完成（2026-09-20） |
 | 011 | [站点地址管理化](011-service-url-admin-config.md) | SERVICE_URL 挪到管理后台、免重启生效 | ✅ 已完成（2026-09-20） |
+| 012 | [Seafile 13.x 升级评估](012-seafile-13-upgrade-assessment.md) | 12.0→13.0 差异分析：补丁重放实测 + 镜像破坏点 + 决策点 | 📋 评估完成（2026-09-24），未动手 |
 
 ## 工作区结构
 
