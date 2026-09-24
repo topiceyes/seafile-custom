@@ -2,7 +2,7 @@
 # 把生产所需镜像打成一个离线包，供「服务器连不上镜像仓库」时导入。
 #
 #   ./make-offline-bundle.sh                              # 自动取当前版本的 tag
-#   ./make-offline-bundle.sh 12.0.14-dingtalk.9.1464e1b4  # 指定 tag（示例；可用值见 GitHub Releases 记录）
+#   ./make-offline-bundle.sh 1.0.0.15c3abd4               # 指定 tag（示例；可用值见 GitHub Releases 记录）
 #   OUT_DIR=/tmp ./make-offline-bundle.sh                 # 指定输出目录
 #
 # 服务器侧：

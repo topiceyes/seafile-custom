@@ -33,8 +33,8 @@ on:
   # 自动触发：会影响镜像内容、或会影响【发布出去的那三个资产】的路径变更才跑。
   # 漏了 paths 过滤的话，一次文档提交也会烧掉十几分钟额度 + 产出一个无意义 tag。
   #
-  # ⚠️ 最后三条（前三个是 tag 哈希的输入，后三个不是）必须分开看：
-  #   前三个改了 → tag 变 → 走正常构建，十几分钟。
+  # ⚠️ 最后三条（前四个是 tag 哈希的输入，后三个不是）必须分开看：
+  #   前四个改了 → tag 变 → 走正常构建，十几分钟。
   #   后三个改了 → tag **不变**（它们不在哈希里）→ 守卫判「资产内容旧」→ mode=publish
   #                → 只重传三个文件，**40 秒，不重建**。
   # 所以把后三个加进来不会让文档改动烧构建额度；不加的话它们压根不会触发 workflow，
@@ -42,9 +42,10 @@ on:
   push:
     branches: [main]
     paths:
-      - 'patches/**'                 # ↓ 三条是 tag 哈希输入，改了要真构建
-      - 'deploy/image/**'
+      - 'patches/**'                 # ↓ 四条是 tag 哈希输入，改了要真构建
+      - 'deploy/image/**'            #   （VERSION 在内：改版本号必须产生新 tag）
       - 'deploy/build-image.sh'
+      - 'VERSION'
       - 'deploy/seafile-prod.yml'    # ↑ 这三条是 Release 资产（= 新服务器的安装入口）
       - 'deploy/init-prod-env.sh'    #   不在 tag 哈希里 → 只会触发「重传」，不会重建
       - 'deploy/env.prod.example'
@@ -154,17 +155,20 @@ jobs:
           PATCHES=$(ls patches/*.patch | wc -l | tr -d ' ')
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-          # ① tag 形如 12.0.14-dingtalk.<补丁数>.<构建输入哈希>（哈希在 build-image.sh 里算）
-          echo "$TAG" | grep -qE "^12\.0\.14-dingtalk\.${PATCHES}\.[0-9a-f]{8}$" \
-            || { echo "::error::tag ($TAG) 与补丁数 ($PATCHES) 不符";
-                 echo "::error::期望形如 12.0.14-dingtalk.$PATCHES.<8位十六进制>"; exit 1; }
+          # ① tag 形如 <产品版本>.<构建输入哈希>（版本从仓库根 VERSION 读，哈希在 build-image.sh 里算）
+          PRODUCT=$(awk '$1=="product_version"{print $3; exit}' VERSION)
+          PRODUCT_ESC=$(printf '%s' "$PRODUCT" | sed 's/\./\\./g')   # 点号进正则前转义
+          echo "$TAG" | grep -qE "^${PRODUCT_ESC}\.[0-9a-f]{8}$" \
+            || { echo "::error::tag ($TAG) 与 VERSION 的 product_version ($PRODUCT) 不符";
+                 echo "::error::期望形如 $PRODUCT.<8位十六进制>"; exit 1; }
 
-          # ② tag 的版本前缀 == Dockerfile 里 BASE_IMAGE 的版本。
-          #    升级 Seafile 时要同步改 BASE_IMAGE/INSTALLPATH/版本前缀/tag，
+          # ② VERSION 的 seafile_version == Dockerfile 里 BASE_IMAGE 的版本。
+          #    升级 Seafile 时要同步改 BASE_IMAGE/INSTALLPATH/seafile_version/基线，
           #    这条能在「只改了一半」时提前拦住，避免发出 12.0.14 与 12.1.x 混搭的镜像。
+          SEAVER=$(awk '$1=="seafile_version"{print $3; exit}' VERSION)
           DLVER=$(grep -oE 'seafile-mc:[0-9]+\.[0-9]+\.[0-9]+' deploy/image/Dockerfile | head -1 | cut -d: -f2)
-          [ "$DLVER" = "${TAG%%-dingtalk*}" ] \
-            || { echo "::error::Dockerfile 基础镜像版本 ($DLVER) 与 tag 前缀 (${TAG%%-dingtalk*}) 不符"; exit 1; }
+          [ "$DLVER" = "$SEAVER" ] \
+            || { echo "::error::Dockerfile 基础镜像版本 ($DLVER) 与 VERSION 的 seafile_version ($SEAVER) 不符"; exit 1; }
 
           # ③ 补丁文件名连续无缺口
           EXPECT=$(seq -f '%04g' 1 "$PATCHES" | tr '\n' ' ')
@@ -172,8 +176,8 @@ jobs:
           [ "$EXPECT" = "$ACTUAL" ] \
             || { echo "::error::补丁编号不连续：期望 [$EXPECT]，实际 [$ACTUAL]"; exit 1; }
 
-          echo "✅ tag 血缘校验通过：$TAG（补丁 $PATCHES 个，基础镜像 $DLVER）"
-          echo "   哈希段是【构建输入的内容哈希】（补丁内容 + deploy/image/** + build-image.sh），"
+          echo "✅ tag 血缘校验通过：$TAG（产品 $PRODUCT，补丁 $PATCHES 个，基础镜像 $DLVER）"
+          echo "   哈希段是【构建输入的内容哈希】（补丁内容 + deploy/image/** + build-image.sh + VERSION），"
           echo "   所以同 tag ⇒ 同内容；改任何构建输入都会自动得到新 tag，不需要 force。"
 
       - uses: docker/setup-buildx-action@v3     # type=gha 缓存导出需要 docker-container driver
@@ -223,7 +227,7 @@ jobs:
             #
             # ⚠️ ③ 后来从「名字在不在」升级成了「**逐字节一致**」（2026-09-21 补）。
             # 原来只查名字，漏掉的是这么一个洞：三个资产不在 tag 哈希的输入里
-            # （哈希只含 patches/ + deploy/image/ + build-image.sh），所以**单独改它们
+            # （哈希只含 patches/ + deploy/image/ + build-image.sh + VERSION），所以**单独改它们
             # 不会产生新 tag**；只改资产 → tag 不变、名字也都在 → 守卫判「完整」→
             # mode=none → **固定安装 URL 上那份永远是旧的**。新服务器会装到
             # 「旧 compose + 新镜像」的组合，全程全绿、零告警。
@@ -268,7 +272,7 @@ jobs:
                   echo ""
                   echo "\`$IMAGE:$TAG\` 已存在，通道 \`$CHANNEL\` 已指向它，Release 的三个资产在且与仓库一字不差。"
                   echo "tag 含构建输入哈希，同 tag 即同内容，说明这次推送没有改动任何构建输入"
-                  echo "（\`patches/\`、\`deploy/image/\`、\`build-image.sh\`）。无需重建，本次运行视为成功。"
+                  echo "（\`patches/\`、\`deploy/image/\`、\`build-image.sh\`、\`VERSION\`）。无需重建，本次运行视为成功。"
                 } >> "$GITHUB_STEP_SUMMARY"
                 echo "::notice::$IMAGE:$TAG 已存在且发布完整，自动触发无需构建，跳过（非失败）。"
                 echo "mode=none" >> "$GITHUB_OUTPUT"
@@ -399,7 +403,7 @@ jobs:
             CHANGES="（首次发布，无对比基线）"
           elif git rev-parse -q --verify "refs/tags/$PREV" >/dev/null 2>&1; then
             CHANGES=$(git log --no-decorate --oneline "$PREV..$GITHUB_SHA" -- \
-                        patches deploy/image deploy/build-image.sh)
+                        patches deploy/image deploy/build-image.sh VERSION)
             [ -n "$CHANGES" ] || CHANGES="（构建输入无变化——内容寻址的 tag 本不该重现，这多半是同 tag 的补做发布）"
           else
             CHANGES="（上一个版本 $PREV 的 git tag 不在本地——浅克隆？改 fetch-depth）"

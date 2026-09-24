@@ -20,7 +20,7 @@ seahub/dev-dingtalk 提交
                                          ├ git am patches/*.patch
                                          ├ 断言源码树 == MANIFEST.tree_sha
                                          ├ deploy/build-image.sh（与开发机同一脚本）
-                                         ├ push  → ghcr.io/topiceyes/seafile-mc:12.0.14-dingtalk.<N>.<hash>
+                                         ├ push  → ghcr.io/topiceyes/seafile-mc:<产品版本>.<hash>（VERSION 文件）
                                          ├ 冒烟验证【推上去的那份字节】
                                          ├ 搬通道 tag（imagetools --prefer-index=false）
                                          │    :latest ──→ 同一个 digest
@@ -113,24 +113,32 @@ gh workflow run build-image.yml -f force=true    # 覆盖已存在的 tag
 
 ## 4. tag 规则与血缘断言
 
-tag 形如 `12.0.14-dingtalk.<N>.<8位哈希>`：
+tag 形如 `<产品版本>.<8位哈希>`（如 `1.0.0.15c3abd4`）：
 
 | 段 | 含义 |
 |---|---|
-| `12.0.14` | Seafile 版本（与 Dockerfile 的 `BASE_IMAGE` 耦合） |
-| `N` | 补丁个数（= `git rev-list --count <base_commit>..HEAD`）。**给人看的**，便于沟通 |
-| `<8位哈希>` | **构建输入的内容哈希**：补丁内容 + `deploy/image/**` + `build-image.sh` |
+| `<产品版本>` | 产品语义版本（如 `1.0.0`），人工管理，单一事实来源是仓库根 `VERSION` 文件。发版 = 改它 → 提交 main → 切 `release/<版本>` 分支锚住发布点 |
+| `<8位哈希>` | **构建输入的内容哈希**：补丁内容 + `deploy/image/**` + `build-image.sh` + `VERSION` |
+
+上游 Seafile 版本不再进 tag，记在 `VERSION` 的 `seafile_version`（当前 `12.0.14`），
+与 Dockerfile 的 `BASE_IMAGE` 耦合。
 
 tag 由 `./deploy/build-image.sh --print-tag` 算出，**不在 YAML 里重算** ——
 那是 CI 与本地最可能发生漂移的地方。
 
 CI 在构建前跑三条断言：
 
-1. tag 里的数字 == `patches/*.patch` 的文件数
-2. tag 的版本前缀 == `deploy/image/Dockerfile` 里 `BASE_IMAGE` 的版本
-   （升级 Seafile 时要同步改 BASE_IMAGE / INSTALLPATH / 版本前缀 / tag 四处，
+1. tag 的版本段 == `VERSION` 的 `product_version`
+2. `VERSION` 的 `seafile_version` == `deploy/image/Dockerfile` 里 `BASE_IMAGE` 的版本
+   （升级 Seafile 时要同步改 BASE_IMAGE / INSTALLPATH / seafile_version / seahub 基线，
    这条能在「只改了一半」时提前拦住，避免发出 12.0.14 与 12.1.x 混搭的镜像）
 3. 补丁文件名 `0001..000N` 连续无缺口
+
+> **版本制迁移（2026-09-24，1.0.0 起）**：此前 tag 形如 `12.0.14-dingtalk.<N>.<8位哈希>`
+>（`N` = 补丁个数）。切版本制后 `N` 不再进 tag，但 `build-image.sh --print-tag` 仍在
+> 补丁数与分支提交数不一致时告警（export-patches 新鲜度信号）。`1.0.0.<hash>` 的镜像
+> 内容与 `12.0.14-dingtalk.10.41273fae` **逐字节等价**——切版本制改的都是构建编排与
+> 版本文件，不进镜像层。
 
 ### 为什么 tag 里要带内容哈希
 
@@ -437,6 +445,10 @@ docker login registry.cn-hangzhou.aliyuncs.com
 > 就是这个形状。现在发布零人工，记录也就不该由人写。
 >
 > 基础设施镜像（mariadb/memcached）的 digest **不是每版本产出的**，已挪到 §8.1。
+
+> tag 方案分界：2026-09-24 起 GitHub Releases 上的记录用产品版本制
+> `<产品版本>.<哈希>`（首个 `1.0.0.<hash>`）；此前的记录仍是
+> `12.0.14-dingtalk.<N>.<hash>`，都是有效可回滚的不可变 tag。
 
 **历史台账（2026-09-20 ~ 2026-09-21，手工维护时期）**：
 

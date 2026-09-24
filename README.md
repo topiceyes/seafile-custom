@@ -51,7 +51,7 @@
 
 ## 二开代码在哪
 
-Seafile 的二开改动集中在 `seahub`（Django Web 层），共 9 个提交，以 patch 形式记录在 `patches/`：
+Seafile 的二开改动集中在 `seahub`（Django Web 层），共 10 个提交，以 patch 形式记录在 `patches/`：
 
 | 补丁 | 内容 | 文档 |
 |---|---|---|
@@ -64,6 +64,7 @@ Seafile 的二开改动集中在 `seahub`（Django Web 层），共 9 个提交�
 | 0007 | 钉钉登录 `invalid state` 可诊断 | [001](docs/001-dingtalk-login.md) |
 | 0008 | 密码登录仅限管理员（钉钉 SSO 唯一入口） | [008](docs/008-restrict-password-login.md) |
 | 0009 | 站点地址 `SERVICE_URL` 挪到管理后台、免重启生效 | [011](docs/011-service-url-admin-config.md) |
+| 0010 | 钉钉 OAuth 回调跟随发起域名（多入口扫码登录） | [001](docs/001-dingtalk-login.md) |
 
 基线是 `haiwen/seahub` 分支 `12.0` 的 commit `0877ad7`（全 SHA 与目标 tree sha 记在
 [`patches/MANIFEST.md`](patches/MANIFEST.md)，**由脚本生成，勿手工编辑**）。应用到上游源码：
@@ -150,8 +151,10 @@ CI 每次构建都重新验证「补丁能逐字节复现二开分支」，上�
 > 转 public 之前还有一条策略性理由（上游是公开仓库、其 fork 无法设为私有），
 > 但 2026-09-20 本仓库已转为 public，那条已不适用。详见 [docs/010 §2](docs/010-ci-release-pipeline.md)。
 
-**tag 规则**：`12.0.14-dingtalk.<补丁数>.<8位哈希>`。哈希段是**构建输入的内容哈希**
-（补丁内容 + `deploy/image/**` + `build-image.sh`），所以改模板或 Dockerfile 也会自动得到新
+**tag 规则**：`<产品版本>.<8位哈希>`（如 `1.0.0.15c3abd4`；产品版本在仓库根 `VERSION`，
+是人工管理的语义版本，日常开发在 main，发版时切 `release/<版本>` 分支锚住发布点）。
+哈希段是**构建输入的内容哈希**（补丁内容 + `deploy/image/**` + `build-image.sh` + `VERSION`），
+所以改模板或 Dockerfile 也会自动得到新
 tag —— **同 tag ⇒ 同内容**，正常发布不需要 `force`（只有重建以刷新上游基础镜像才需要）。
 
 即便如此，`latest` 也不是任何一段字节的唯一地址：它只会被 CI 搬到**同一次运行产出的不可变

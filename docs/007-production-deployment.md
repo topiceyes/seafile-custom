@@ -108,7 +108,7 @@ TLS 由云上反向代理终止（本项目的实际形态，见 §9）；容器
 
   > **离线导入**（服务器确实连不上 ghcr 时的保底，一定能成）：在开发机上
   > ```bash
-  > cd deploy && ./make-offline-bundle.sh 12.0.14-dingtalk.9.1464e1b4   # 不给 tag 就取当前构建输入算出来的那个；可用值见 GitHub Releases
+  > cd deploy && ./make-offline-bundle.sh 1.0.0.15c3abd4   # 不给 tag 就取当前构建输入算出来的那个；可用值见 GitHub Releases
   > # → /tmp/seafile-offline-<tag>.tar.gz（三个镜像，约 690MB）
   > ```
   > ```bash
@@ -190,8 +190,9 @@ cd deploy
 ./build-image.sh registry.cn-hangzhou.aliyuncs.com/myns    # 推 ACR（ghcr 不可达时的后路）
 ```
 
-- tag 由 `./build-image.sh --print-tag` 算出：`12.0.14-dingtalk.<N>.<8位哈希>`。
-  哈希段是**构建输入的内容哈希**（补丁内容 + `deploy/image/**` + `build-image.sh`），
+- tag 由 `./build-image.sh --print-tag` 算出：`<产品版本>.<8位哈希>`（产品版本在仓库根
+  `VERSION`，如 `1.0.0.15c3abd4`）。哈希段是**构建输入的内容哈希**
+  （补丁内容 + `deploy/image/**` + `build-image.sh` + `VERSION`），
   所以改模板/Dockerfile 也会自动得到新 tag —— 同 tag 即同内容（详见 010 §4）
 - 防呆：seahub 工作区不干净、或补丁树与分支树不一致，都会拒绝构建
 - 推 registry 默认双架构（amd64+arm64）；CI 只构建 amd64（runner 原生，arm64 走 QEMU 会拖到一小时以上）
@@ -305,7 +306,7 @@ curl -fL --max-time 120 \
   | tar -xz --strip-components=1 -C /opt/seafile-custom
 ```
 
-（<tag> 取 GitHub Releases 上最新那条，形如 `12.0.14-dingtalk.9.ed2042da`。这是一棵钉死的树，
+（<tag> 取 GitHub Releases 上最新那条，形如 `1.0.0.15c3abd4`。这是一棵钉死的树，
 解出来就是 `deploy/`，与上面固定 URL 那条落到同一个位置。）
 
 `init-prod-env.sh` 会自检取回来的 `seafile-prod.yml` 是否完整（形状 + `docker compose
@@ -587,8 +588,8 @@ image: ${SEAFILE_PRO_IMAGE:-ghcr.io/topiceyes/seafile-mc:latest}
 
 ```bash
 cd /opt/seafile-custom/deploy
-SEAFILE_PRO_IMAGE='ghcr.io/topiceyes/seafile-mc:12.0.14-dingtalk.9.<hash>' \
-  docker compose pull && SEAFILE_PRO_IMAGE='ghcr.io/topiceyes/seafile-mc:12.0.14-dingtalk.9.<hash>' \
+SEAFILE_PRO_IMAGE='ghcr.io/topiceyes/seafile-mc:1.0.0.<hash>' \
+  docker compose pull && SEAFILE_PRO_IMAGE='ghcr.io/topiceyes/seafile-mc:1.0.0.<hash>' \
   docker compose up -d
 ```
 
@@ -617,8 +618,14 @@ unreleased 的 tag、digest、构建输入指纹都在里面。数据卷全程�
 
 
 
-**升级 Seafile 版本**（如 12.0.14 → 12.1.x）时三处硬编码要同步：
-`deploy/image/Dockerfile` 的 BASE_IMAGE 与 INSTALLPATH、seahub 仓库基线（patches 重放）。官方镜像可能改 bootstrap 行为，升级前**必须重跑本地彩排**。
+**升级 Seafile 版本**（如 12.0.14 → 12.1.x）时四处要同步：仓库根 `VERSION` 的
+`seafile_version`、`deploy/image/Dockerfile` 的 BASE_IMAGE 与 INSTALLPATH、
+seahub 仓库基线（patches 重放）。CI 断言 `seafile_version` == BASE_IMAGE，
+只改一半会在发布前被拦下。官方镜像可能改 bootstrap 行为，升级前**必须重跑本地彩排**。
+
+**发新版**（产品版本，如 1.0.0 → 1.1.0）：改 `VERSION` 的 `product_version` → 提交到
+main → 切 `release/<版本>` 分支锚住发布点 → push，CI 自动构建发布。日常开发在 main；
+`release/*` 分支只是冻结的发布点锚，回滚不碰分支（钉镜像 tag 即可）。
 
 ## 7. 本地彩排
 

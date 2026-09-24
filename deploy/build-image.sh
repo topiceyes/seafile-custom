@@ -6,12 +6,15 @@
 #   ./build-image.sh --print-tag              # 只打印本次会用的 tag（供 CI 取用）
 #   ./build-image.sh --check-tree             # 只校验「补丁能复现分支树」（供 export-patches.sh 复用）
 #
-# tag 规则：12.0.14-dingtalk.<N>.<构建输入哈希>
-#   N        = seahub 分支相对基线的提交数（= 补丁个数，对人可读）
-#   <哈希>   = 补丁内容 + deploy/image/** + 本脚本 的 sha256 前 8 位
-# 把构建输入并进 tag 是为了让「同 tag ⇒ 同内容」成立——只按 N 编号的话，
+# tag 规则：<product_version>.<构建输入哈希>（版本段来自 VERSION，哈希段 8 位十六进制；
+#   本脚本是哈希输入之一，注释里写死具体哈希是自指的——改一行注释哈希就变，故不写）
+#   <版本>   = 仓库根 VERSION 文件的 product_version（产品语义版本，人工管理）
+#   <哈希>   = 补丁内容 + deploy/image/** + 本脚本 + VERSION 的 sha256 前 8 位
+# 把构建输入并进 tag 是为了让「同 tag ⇒ 同内容」成立——只按版本号的话，
 # 改一次 nginx 模板或 Dockerfile 就会产出同 tag 不同内容（静默漂移）。
-# 基线从 patches/MANIFEST.md 读取 —— 勿在此硬编码，否则会与 CI 各写一份而漂移。
+# 基线从 patches/MANIFEST.md、版本从 VERSION 读取 —— 勿在此硬编码，
+# 否则会与 CI 各写一份而漂移。2026-09-24 之前 tag 形如 12.0.14-dingtalk.<N>.<哈希>
+#（N=补丁数），切版本制后补丁数不再进 tag，但仍在下方做一致性告警。
 #
 # 环境变量旋钮（CI 用）：
 #   SEAHUB_DIR    seahub 检出位置（默认 $REPO_ROOT/seahub）
@@ -62,6 +65,11 @@ if [[ -z "$BASE_FULL" ]]; then
 fi
 git -C "$SEAHUB_DIR" cat-file -e "${BASE_FULL}^{commit}" 2>/dev/null \
   || { echo "错误：基线 $BASE_FULL 不在 seahub 仓库中（浅克隆可能不含它）" >&2; exit 1; }
+
+# ---- 产品版本：以仓库根 VERSION 为唯一事实来源（与 CI 共用同一份）----
+PRODUCT_VER=$(awk '$1=="product_version"{print $3; exit}' "$REPO_ROOT/VERSION" 2>/dev/null || true)
+[[ -n "$PRODUCT_VER" ]] \
+  || { echo "错误：未能从 VERSION 读到 product_version（tag 的版本段从这来）" >&2; exit 1; }
 
 # ---- 核心不变量：补丁逐字节复现分支树 ----
 # 临时 index 上逐个 apply --cached（不碰工作区），再比 tree 哈希。
@@ -121,17 +129,18 @@ build_inputs_hash() {
   {
     # 补丁内容（不只是个数）
     cat "$PATCHES_DIR"/*.patch
-    # 除补丁外的构建输入：Dockerfile、nginx 模板、本脚本
-    ( cd "$REPO_ROOT" && find deploy/image deploy/build-image.sh -type f \
+    # 除补丁外的构建输入：Dockerfile、nginx 模板、本脚本、VERSION（版本决定 tag，
+    # 改版本号必须得到新 tag——不进哈希就会出现同 tag 不同版本）
+    ( cd "$REPO_ROOT" && find deploy/image deploy/build-image.sh VERSION -type f \
         ! -name '*.pyc' ! -path '*/__pycache__/*' \
         -exec sha256sum {} + | LC_ALL=C sort -k2 )
   } | sha256sum | cut -c1-8
 }
 BUILD_HASH=$(build_inputs_hash)
 
-# 版本前缀 12.0.14 与 Dockerfile 的 BASE_IMAGE/INSTALLPATH 耦合，
-# 升级 Seafile 时三处要同步（docs/007 §6）；CI 有断言兜住半途而废的升级。
-TAG="12.0.14-dingtalk.${N}.${BUILD_HASH}"
+# 上游 Seafile 版本（VERSION 的 seafile_version）与 Dockerfile 的 BASE_IMAGE/INSTALLPATH
+# 耦合，升级 Seafile 时几处要同步（docs/007 §6）；CI 有断言兜住半途而废的升级。
+TAG="${PRODUCT_VER}.${BUILD_HASH}"
 
 # 说明：tag 覆盖的是【本仓库的构建输入】。基础镜像 seafileltd/seafile-mc:12.0.14
 # 是按 tag 引用的，上游若重新推同一个 tag，溯源内容仍可能变——那属于上游行为，

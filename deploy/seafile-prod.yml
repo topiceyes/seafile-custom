@@ -67,7 +67,7 @@ services:
     #    那个失败类别（pull 报成功、跑的还是旧镜像）。
     #
     # 回滚（一条命令，不改文件、不取仓库；可用 tag 见 GitHub Releases 记录）：
-    #   SEAFILE_PRO_IMAGE=ghcr.io/topiceyes/seafile-mc:12.0.14-dingtalk.9.<hash> \
+    #   SEAFILE_PRO_IMAGE=ghcr.io/topiceyes/seafile-mc:1.0.0.<hash> \
     #     docker compose pull && docker compose up -d
     # 把它写进 .env 也行，但那会让这台机器**从此不再跟随通道**，属于刻意 pin。
     #

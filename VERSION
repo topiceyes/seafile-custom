@@ -1,0 +1,12 @@
+# 产品版本 —— 单一事实来源（deploy/build-image.sh 与 CI 共用，勿在别处硬编码）。
+# 解析沿用 patches/MANIFEST.md 的惯例：awk '$1=="product_version"{print $3; exit}'。
+#
+# 发布新版本：改 product_version → 提交 → 切 release/<版本> 分支锚住发布点
+#（日常开发在 main；回滚钉镜像 tag，不碰分支）。
+# 升级上游 Seafile：改 seafile_version，并同步 Dockerfile 的 BASE_IMAGE/INSTALLPATH
+# 与 seahub 基线（补丁重放，docs/007 §6）；CI 断言 seafile_version == BASE_IMAGE，
+# 只改一半会在发布前被拦下。
+#
+# tag = <product_version>.<8位构建输入哈希>；本文件在哈希范围内（改版本必得新 tag）。
+product_version = 1.0.0
+seafile_version = 12.0.14
