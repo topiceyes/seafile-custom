@@ -246,6 +246,11 @@ import time as _t; _t.sleep(1.1)
 cb.sync_nginx_conf(conf_file=conf)
 assert os.path.exists(conf), '一致的 conf 被误挪（时间戳没归一化？）'
 
+# 快路径（此时 conf 在、sidecar 是 path2 刚写的）→ 必须零动作
+before = sorted(os.listdir(base))
+cb.sync_nginx_conf(conf_file=conf)
+assert sorted(os.listdir(base)) == before, '指纹一致的快路径动了文件'
+
 # 负控：归一化只能抹时间戳，不能把【真差异】（渲染输入变了，如域名）也抹平。
 # 没有这条，归一化写成「整行删除比对」之类的过宽实现也能混过上面的正控。
 ctx2 = dict(ctx); ctx2['domain'] = 'other.example.test'
@@ -255,9 +260,12 @@ cb.sync_nginx_conf(conf_file=conf)
 assert not os.path.exists(conf), '真差异（换域名）被误判一致 —— 归一化抹多了'
 assert os.path.exists(base + '/.render-inputs.sha'), 'sidecar 没补'
 
-before = sorted(os.listdir(base))
+# 恢复现场（path3 的断言期望 conf 存在），顺带再验一次跨秒保留
+render_template('/templates/seafile.nginx.conf.template', conf, dict(ctx))
+os.remove(base + '/.render-inputs.sha')
+_t.sleep(1.1)
 cb.sync_nginx_conf(conf_file=conf)
-assert sorted(os.listdir(base)) == before, '指纹一致的快路径动了文件'
+assert os.path.exists(conf), '恢复现场时一致的 conf 被误挪'
 
 cb.sync_nginx_conf(conf_file=conf, template='/nope/template')
 assert os.path.exists(conf), '模板缺失时动了 conf'
