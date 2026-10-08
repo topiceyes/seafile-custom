@@ -4,6 +4,14 @@
 > 补丁重放 / 镜像层改造 / 本地+CI 构建 / 彩排 37 断言全绿，镜像 tag `1.1.0.e1d530c7`）。
 > 执行中实撞的三个新坑已回写进对应代码注释：① db_update_helper.py 只从 env 读库密码；
 > ② 三个库名 env 空串注入坑（全新卷首启）；③ 静态 conf 占位符替换后必须 reload nginx。
+> **④ 生产灰度又撞一个（2026-09-24，全站 500）**：12.0 老卷的 seahub_settings.py
+> 带着 bootstrap 追加的 memcached CACHES（`'LOCATION': 'memcached:11211'`），而
+> 13.0 settings.py 在 `REDIS_PORT` 未设时会从文件现成的 LOCATION **解析端口**、
+> `REDIS_HOST` 只盖主机名 → Django 连 `redis:11211` 被拒 → 每个请求死在 constance
+> 读缓存。dev/彩排都没炸（dev 的文件是模板渲染无 CACHES；彩排全新卷无此块）——
+> 只有「12.0 老卷原地升级」这个形态会踩，与 403 第三形态同病根（都藏在已有数据卷里）。
+> 修复三层已入库：`custom_bootstrap.heal_stale_caches()` 启动自愈 + compose 显式
+> `REDIS_PORT=6379` 兜底 + 冒烟「升级路径三」/彩排 10c 断言。
 > 0009 实测结论：保留（见 docs/011 §10）
 > 调研口径：seahub 12.0 基线 `0877ad7` → 13.0 分支 tip `7555f87`；
 > 镜像 `seafile-mc:12.0.14` → `seafile-mc:13.0.28`（CE）

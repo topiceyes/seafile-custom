@@ -463,6 +463,43 @@ ok "容器跑的是镜像内 conf，数据卷滞留件被无视"
   || die "restart 后 server_name 占位符替换丢了（apply_nginx_server_name 幂等性坏了？）"
 ok "restart 后 server_name 仍是 ${DOMAIN}（替换幂等）"
 
+# ---- 10c. 12.0 老卷的 memcached CACHES：启动自愈（2026-09-24 生产实撞形态）----
+# 老卷 seahub_settings.py 带着 12.0 bootstrap 追加的 memcached CACHES，13.0 的
+# settings.py 从 LOCATION 解析出端口 11211、REDIS_HOST 环境变量只盖主机名 →
+# Django 连 redis:11211 被拒 → 全站 500。修复两层：镜像内 heal_stale_caches
+# （启动时改写为 redis:6379）+ compose 的 REDIS_PORT 兜底。彩排每次都是全新卷
+# （没有这个块），所以只能手工放一份来钉住。⚠️ 行为层的 200 可能来自 REDIS_PORT
+# 兜底（它会掩盖自愈失败），因此必须【直接断言卷里文件】被改写了。
+step "10c. 12.0 老卷 memcached CACHES：启动自愈"
+RP_CONF="$WD/data/seafile/conf/seahub_settings.py"
+cp "$RP_CONF" "$RP_CONF.pre-10c"
+cat >> "$RP_CONF" <<'EOF'
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django_pylibmc.memcached.PyLibMCCache',
+        'LOCATION': 'memcached:11211',
+    },
+}
+EOF
+"${DC[@]}" restart seafile >/dev/null 2>&1
+CODE=000
+for i in $(seq 1 60); do
+  CODE=$(curl -sk --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 10 \
+           --resolve "$DOMAIN:$PROXY_PORT:127.0.0.1" "https://$DOMAIN:$PROXY_PORT/accounts/login/" || true)
+  [ "$CODE" = "200" ] && break
+  sleep 10
+done
+assert_eq "$CODE" "200" "带着 12.0 CACHES 残留 restart 后站点仍 200"
+grep -q 'redis:6379' "$RP_CONF" \
+  || die "卷里的 memcached:11211 没被自愈（heal_stale_caches 没跑或没匹配上）"
+if grep -q ':11211' "$RP_CONF"; then
+  die "卷里仍残留 :11211（改写不完整）"
+fi
+ok "老卷 CACHES 残留已被启动自愈改写为 redis:6379（不是只靠 REDIS_PORT 兜底活着）"
+# 还原：把 10c 的模拟残留撤掉，后续步骤跑在干净状态上
+mv "$RP_CONF.pre-10c" "$RP_CONF"
+
 step "11. 回滚机制（内联一个不可变 tag，不改任何文件）"
 # 确定性断言：内联变量确实能盖住 compose 里的通道默认值。
 # 这条是回滚能工作的全部机制 —— 它成立，回滚就成立。

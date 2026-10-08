@@ -120,6 +120,11 @@ services:
       # AI/元数据功能硬要求 Redis，故本项目选 redis）
       - CACHE_PROVIDER=redis
       - REDIS_HOST=redis
+      # REDIS_PORT 必须显式给：13.0 settings.py 在 REDIS_PORT 未设时，会从数据卷
+      # seahub_settings.py 现成的 CACHES.LOCATION 解析端口——12.0 老卷里的
+      # 'memcached:11211' 会让 Django 连 redis:11211 → 全站 500（2026-09-24 生产
+      # 实撞）。镜像内 custom_bootstrap 会自愈该残留，这里的环境变量是第二道保险。
+      - REDIS_PORT=6379
       - TIME_ZONE=Asia/Shanghai
       # 纯域名（不带协议/端口）：nginx server_name + SERVICE_URL 引用。
       # 反代模式下填【公网域名】（用户浏览器里那个），不是容器地址。

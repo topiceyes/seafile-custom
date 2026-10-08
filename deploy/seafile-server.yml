@@ -78,9 +78,11 @@ services:
       - SEAFILE_MYSQL_DB_CCNET_DB_NAME=ccnet_db
       - SEAFILE_MYSQL_DB_SEAFILE_DB_NAME=seafile_db
       - SEAFILE_MYSQL_DB_SEAHUB_DB_NAME=seahub_db
-      # 13.0 起缓存后端默认 redis
+      # 13.0 起缓存后端默认 redis。REDIS_PORT 显式给：未设时 settings.py 会从
+      # 数据卷 CACHES.LOCATION 解析端口，12.0 老卷的 memcached:11211 会带歪
       - CACHE_PROVIDER=redis
       - REDIS_HOST=redis
+      - REDIS_PORT=6379
       - TIME_ZONE=Asia/Shanghai
       # HTTPS 站点（证书 /shared/ssl/127.0.0.1.crt|key，即 deploy/seafile-data/ssl/）
       # 注意：这里不能带端口，否则 SERVICE_URL/回调地址会带端口

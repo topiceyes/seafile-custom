@@ -1145,6 +1145,21 @@ P1/P2/P3（域名入口：带头 https / 带头 http / 无头）全 302，**P4�
 > 时先怀疑非确定性（时间、随机、顺序），别急着怀疑 CI 环境**——证据（两个 .bak 名的
 > 秒数差）就躺在日志里。
 
+**13.0 灰度首日：12.0 老卷 CACHES 残留 → 全站 500（2026-09-24 定位与修复）**
+
+| 项 | 实测 |
+|---|---|
+| 症状 | 升级 `up -d` 后全站 500（Seafile 自己的 `templates/500.html`，"server hiccup"页）；静态文件 200、容器全 Up、redis healthy |
+| 定位证据（SSH 取 seahub.log） | 每个请求的 traceback 终点：`redis.exceptions.ConnectionError: Error 111 connecting to redis:11211`——**redis 主机 + memcached 端口**。读 13.0 `settings.py:1249-1262`：`REDIS_PORT` 未设时端口从文件现成的 `CACHES['default']['LOCATION']` 解析，`REDIS_HOST` 只盖主机名；老卷里的 `'memcached:11211'` 于是拼成 `redis:11211` |
+| 为什么 dev/彩排都没拦住 | dev 的 seahub_settings.py 是模板渲染（无 CACHES 块）；彩排每次全新卷——**这个坑只存在于「12.0 老卷原地升级」**，与 403 第三形态同病根：差异藏在已有数据卷里，全新卷结构性测不到 |
+| 生产止血 | 数据卷 `seahub_settings.py` 的 `'LOCATION': 'memcached:11211'` → `'redis:6379'` 一行 + `seahub.sh restart`（用户执行；备份先行） |
+| 结构性修复（入库） | ① `custom_bootstrap.heal_stale_caches()`：每次启动把 memcached 痕迹的 CACHES 改写为 redis（幂等，`CACHE_PROVIDER=memcached` 时不动）；② compose 显式 `REDIS_PORT=6379` 兜底；③ 冒烟「升级路径三」+ 彩排 10c（手工放 12.0 形态残留 → restart → **直接断言卷文件被改写**，不是只看 200——REDIS_PORT 兜底会掩盖自愈失败） |
+| 验证 | 生产：`/` 302、登录页 200、`/api2/server-info/` 返回 `version 13.0.28` + `client-sso-via-local-browser`（二开在） |
+
+> 教训与第三形态完全同构：**升级路径的验证必须覆盖「已有数据卷」形态**，全新卷
+> 彩排测得再绿也代不代表老卷。彩排从此有 10b（conf 滞留）与 10c（CACHES 残留）
+> 两个老卷场景。
+
 > **那一步已经删掉了（2026-09-21）。** 上面那条「还能再少一步」的笔记当时判为「暂缓，
 > 等下次有别的理由出镜像时一并带上」——**这个判断是错的**。用户随后直接问「为什么我二开
 > 的内容还要单独搞？难道不是应该融合到里面吗？」——对。对交付物而言这就是个缺陷：

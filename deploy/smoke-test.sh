@@ -193,6 +193,38 @@ for k in ('CLIENT_SSO_VIA_LOCAL_BROWSER', 'ENABLE_DINGTALK', 'ENABLE_DELETE_ACCO
 PY
 ok "二开定制钩子已接入 start.py；行为、幂等性、升级路径均验证通过"
 
+# ---- 升级路径三：12.0 老卷的 memcached CACHES 自愈 ----
+#
+# 2026-09-24 生产实撞（12.0 数据卷原地升级 13.0，全站 500）：13.0 settings.py
+# 从文件现成的 CACHES['default']['LOCATION'] 解析 redis 端口，REDIS_HOST 环境变量
+# 只盖主机名——12.0 bootstrap 追加的 'memcached:11211' 于是变成 redis:11211，
+# 每个请求死在 constance 读缓存。全新卷（彩排/首装）没有这个块，结构性测不到。
+# 这里手工放一份 12.0 形态的块，断言钩子把它改写为 redis 且幂等。
+cat > /opt/seafile/conf/seahub_settings.py <<'EOF'
+SECRET_KEY = "smoke"
+CACHES = {
+    'default': {
+        'BACKEND': 'django_pylibmc.memcached.PyLibMCCache',
+        'LOCATION': 'memcached:11211',
+    },
+    'locmem': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+    },
+}
+EOF
+python3 /scripts/custom_bootstrap.py >/dev/null || fail "老卷 CACHES 自愈路径跑失败"
+python3 - <<'PY' || fail "老卷 CACHES 没被自愈（12.0 升级会全站 500）"
+src = open('/opt/seafile/conf/seahub_settings.py').read()
+assert 'redis:6379' in src, "LOCATION 没改写成 redis:6379"
+assert ':11211' not in src, 'memcached 端口残留'
+assert 'pylibmc' not in src, 'pylibmc BACKEND 残留'
+assert 'locmem' in src, '误伤了 default 之外的缓存项（应只动 default）'
+PY
+python3 /scripts/custom_bootstrap.py >/dev/null || fail "自愈后第二遍跑失败"
+test "$(grep -c 'redis:6379' /opt/seafile/conf/seahub_settings.py)" = "1" \
+  || fail "自愈不幂等：redis:6379 出现多次"
+ok "12.0 老卷 CACHES 自愈：改写为 redis:6379，幂等，不误伤其它缓存项"
+
 # ---- 升级路径二：静态 nginx conf 的域名占位符替换（13.0 起）----
 #
 # 13.0 废除了 /templates/ 模板渲染（generate_local_nginx_conf 删除），conf 构建期

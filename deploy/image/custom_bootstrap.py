@@ -185,6 +185,48 @@ def apply_webdav(confdir):
     log('已开启 WebDAV（seafdav.conf enabled = true）')
 
 
+def heal_stale_caches(confdir):
+    """12.0 老卷升级自愈：CACHES['default'] 若还是 memcached 配置，改写为 redis。
+
+    13.0 的 settings.py 会从文件里现成的 CACHES['default']['LOCATION'] 解析 redis
+    端口（settings.py:1249-1262）：REDIS_HOST 环境变量只盖【主机名】，REDIS_PORT
+    未设时端口取文件的。于是 12.0 时代 bootstrap 追加的
+    'LOCATION': 'memcached:11211' 让 Django 去连 redis:11211 → 每个请求在
+    constance 读缓存那一步死掉 → 全站 500（2026-09-24 生产实撞）。
+
+    全新卷没有这个块（13.0 的 setup 不写 CACHES），彩排每次都是全新卷，
+    结构性测不到——只有「12.0 老卷原地升级」这个形态会踩，与 nginx conf
+    滞留（403 第三形态）同类：都藏在「已有数据卷」里。
+    """
+    if os.environ.get('CACHE_PROVIDER', 'redis') == 'memcached':
+        return  # 用户明确在用 memcached（非本产品形态），不动配置
+
+    path = os.path.join(confdir, 'seahub_settings.py')
+    if not os.path.exists(path):
+        return  # 缺文件的报错由 apply_settings 负责，这里不重复
+
+    with open(path, 'r', encoding='utf-8') as fp:
+        current = fp.read()
+
+    # 只认 memcached 痕迹（BACKEND 含 pylibmc/memcached，或 LOCATION 指向 11211）。
+    # 已是 redis 配置时两条都不命中，天然幂等。
+    patterns = (
+        (re.compile(r"('BACKEND'\s*:\s*')[^']*(?:pylibmc|memcached)[^']*(')"),
+         r"\1django.core.cache.backends.redis.RedisCache\2"),
+        (re.compile(r"('LOCATION'\s*:\s*')[^':]+:11211(')"),
+         r"\1redis:6379\2"),
+    )
+    new = current
+    for pat, rep in patterns:
+        new = pat.sub(rep, new)
+    if new == current:
+        return
+
+    with open(path, 'w', encoding='utf-8') as fp:
+        fp.write(new)
+    log('已把 CACHES 的 12.0 memcached 残留改写为 redis:6379（老卷升级自愈）')
+
+
 def start_service_retry(cmd, attempts=3, delay=5):
     """起服务，失败就重试。替代 start.py 里起 seahub 的那个裸 `call(...)`。
 
@@ -223,6 +265,7 @@ def init_custom_settings():
     confdir = conf_dir()
     log('应用二开定制（%s）' % confdir)
     apply_settings(confdir)
+    heal_stale_caches(confdir)
     apply_webdav(confdir)
     apply_nginx_server_name()
     log('完成 —— 此时 seafile/seahub 尚未启动，无需重启即已生效')
