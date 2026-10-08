@@ -434,8 +434,16 @@ assert_eq "$D2" "$ALT_DOMAIN" "D2 第二域名发起（Host≠server_name + XFP 
 # ---------------------------------------------------------------- 10. 升级 / 回滚
 step "10. 升级路径（通道没动 → 应当是无操作）"
 BEFORE=$("${DC[@]}" ps --format '{{.Image}}' seafile 2>/dev/null || echo '')
-"${DC[@]}" pull >/dev/null 2>&1
-"${DC[@]}" up -d >/dev/null 2>&1
+# pull/up 的输出不能静默吞掉：2026-10-08 这两行之一失败过一次，set -e 直接中断、
+# 全靠完成哨兵才把「假绿」拦住，但现场没留下任何原因——失败时必须把输出打出来。
+if ! OUT=$("${DC[@]}" pull 2>&1); then
+  printf '%s\n' "$OUT" >&2
+  die "步骤 10 的 pull 失败（输出见上；多半是 registry 网络抖动，重跑即可）"
+fi
+if ! OUT=$("${DC[@]}" up -d 2>&1); then
+  printf '%s\n' "$OUT" >&2
+  die "步骤 10 的 up -d 失败（输出见上）"
+fi
 AFTER=$("${DC[@]}" ps --format '{{.Image}}' seafile 2>/dev/null || echo '')
 assert_eq "$AFTER" "$BEFORE" "pull && up -d 之后镜像没变（通道未动 = 无操作）"
 
