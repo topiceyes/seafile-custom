@@ -246,6 +246,8 @@ ok "容器侧没有直接透传 \$scheme"
 ok "静态 conf 的域名占位符已替换为 $DOMAIN"
 assert_has "$WD/data/seafile/conf/seahub_settings.py" "SECURE_PROXY_SSL_HEADER" \
   "SECURE_PROXY_SSL_HEADER 已写进 seahub_settings.py"
+assert_has "$WD/data/seafile/conf/seahub_settings.py" "ENABLE_WIKI = False" \
+  "知识库模块已关闭（ENABLE_WIKI = False；13.0 wiki 依赖未部署的 SeaDoc）"
 # 13.0 起 bootstrap.py 不再往 seahub_settings.py 写 SERVICE_URL / FILE_SERVER_ROOT
 # （只写 TIME_ZONE）；SERVICE_URL 由 settings.py 按 SEAFILE_SERVER_PROTOCOL+HOSTNAME
 # 运行期即时计算（补丁 0009 又把它 constance 化）。链接协议对不对，由第 8 步

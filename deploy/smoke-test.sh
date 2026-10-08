@@ -160,6 +160,8 @@ assert ns['ENABLE_DELETE_ACCOUNT'] is False, 'ENABLE_DELETE_ACCOUNT 不是 False
 # CSRF 的 good_origin 算成 http://域名 → 登录 403（2026-09-21 生产实测）。
 assert ns['SECURE_PROXY_SSL_HEADER'] == ('HTTP_X_FORWARDED_PROTO', 'https'), \
     'SECURE_PROXY_SSL_HEADER 缺失或取值不对（反代模式下会导致登录 403）'
+# 知识库已关闭（13.0 wiki 依赖未部署的 SeaDoc，开着只会让用户撞 AxiosError）
+assert ns['ENABLE_WIKI'] is False, 'ENABLE_WIKI 不是 False（知识库模块应关闭）'
 assert 'enabled = true' in open('/opt/seafile/conf/seafdav.conf').read(), 'WebDAV 没开'
 PY
 
@@ -188,7 +190,8 @@ ns = {}
 exec(compile(src, 'seahub_settings.py', 'exec'), ns)
 assert ns['SECURE_PROXY_SSL_HEADER'] == ('HTTP_X_FORWARDED_PROTO', 'https'), \
     'SECURE_PROXY_SSL_HEADER 没被补上——反代模式下这台机器会登录 403'
-for k in ('CLIENT_SSO_VIA_LOCAL_BROWSER', 'ENABLE_DINGTALK', 'ENABLE_DELETE_ACCOUNT'):
+assert ns['ENABLE_WIKI'] is False, 'ENABLE_WIKI 没被补上（老部署升级会漏新开关）'
+for k in ('CLIENT_SSO_VIA_LOCAL_BROWSER', 'ENABLE_DINGTALK', 'ENABLE_DELETE_ACCOUNT', 'ENABLE_WIKI'):
     assert src.count(k + ' = ') == 1, '%s 出现多次：逐项核对退化成了整块追加' % k
 PY
 ok "二开定制钩子已接入 start.py；行为、幂等性、升级路径均验证通过"

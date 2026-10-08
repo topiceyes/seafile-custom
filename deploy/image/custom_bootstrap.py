@@ -79,6 +79,13 @@ MANAGED_SETTINGS = (
     # nginx 侧由 $seafile_fwd_proto 保证该头在两种模式下都正确，见 docs/007 §9。
     ('SECURE_PROXY_SSL_HEADER',
      'SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")'),
+    # 关闭知识库模块：13.0 的 wiki 页面是 sdoc 文档，编辑器依赖独立的 SeaDoc
+    # 协作服务容器，本产品不部署它——留着入口只会让用户撞 AxiosError
+    # （/api/v2.1/seadoc/* 在 ENABLE_SEADOC=false 时整体 404）。ENABLE_WIKI=False
+    # 后 can_create_wiki() 直接 False：侧边栏「知识库」入口消失、创建 API 被拒。
+    # accounts.py 是请求期读 settings.ENABLE_WIKI，但每次启动写文件时 seahub 还没起，无碍。
+    ('ENABLE_WIKI',
+     'ENABLE_WIKI = False                    # 知识库模块关闭（不部署 SeaDoc，见 docs/013）'),
 )
 
 LOG_PREFIX = '[custom-bootstrap]'
@@ -129,6 +136,7 @@ def settings_block(lines):
 #   ENABLE_DELETE_ACCOUNT        → profile/views.py 模块级 from seahub.settings import
 #   SECURE_PROXY_SSL_HEADER      → Django 据此认 X-Forwarded-Proto；
 #                                  反代模式下不设它 request.is_secure() 恒为假，登录 403
+#   ENABLE_WIKI                  → 产品开关（知识库依赖未部署的 SeaDoc），不属于后台配置
 # 其余站点相关配置（SERVICE_URL、钉钉凭据与开关）都已是 constance：管理员在
 # 后台「系统管理 → 设置」页填，存库、免重启生效，不归这里管。
 #
