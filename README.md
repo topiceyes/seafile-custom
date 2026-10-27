@@ -165,4 +165,4 @@ tag** 上，且搬完必须通过 `digest(:latest) == digest(:<不可变 tag>)` 
 
 ## 分支约定
 
-上游基线是 **`12.0` 维护分支**（不是 `master`——master 是 13.x 线，Django 5.2，与本项目不兼容）。升级 Seafile 版本时需同步处理：compose 里的版本目录硬编码路径、patch 基线、以及手写的 nginx 配置。
+上游基线是 **`14.0` 线**（当前 `14.0.9`，补丁重放的目标基线见其 MANIFEST）。升级 Seafile 版本时需同步处理：compose 里的版本目录硬编码路径、patch 基线、以及手写的 nginx 配置（完整流程见 [docs/014](docs/014-seafile-14-upgrade.md)，13.0 那轮见 [docs/012](docs/012-seafile-13-upgrade-assessment.md)）。
