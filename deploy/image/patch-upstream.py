@@ -109,9 +109,10 @@ def patch_start_py():
     # ---- 2) 起 seahub 失败要重试 ----
     # 只替换含 get_script('seahub.sh') 的那两行（non_root 分支各一行），
     # 不能动 seafile.sh 那两行——seafile.sh 没有这个 5 秒误判问题，改了徒增变量。
+    # 14.0 起 root 分支的 su 加了 -p（保留环境变量）：call('su -p seafile -c ...')
     for old, new in (
-        ("call('su seafile -c \"{} start\"'.format(get_script('seahub.sh')))",
-         "start_service_retry('su seafile -c \"{} start\"'.format(get_script('seahub.sh')))"),
+        ("call('su -p seafile -c \"{} start\"'.format(get_script('seahub.sh')))",
+         "start_service_retry('su -p seafile -c \"{} start\"'.format(get_script('seahub.sh')))"),
         ("call('{} start'.format(get_script('seahub.sh')))",
          "start_service_retry('{} start'.format(get_script('seahub.sh')))"),
     ):

@@ -144,6 +144,9 @@ services:
       # 就有个非空默认值。注意 SEAHUB_ 前缀，别写成 DINGTALK_。
       - SEAHUB_DINGTALK_APP_KEY=${SEAHUB_DINGTALK_APP_KEY:-}
       - SEAHUB_DINGTALK_APP_SECRET=${SEAHUB_DINGTALK_APP_SECRET:-}
+      # 14.0 起 WebDAV 开关改由环境变量控制（官方 upgrade notes：seafdav.conf
+      # 的 enabled/workers 两键移除，改读这里）。缺省 false = 官方默认关。
+      - ENABLE_SEAFDAV=true
     depends_on:
       # service_healthy：等 db 的 healthcheck 通过（= 首启初始化真的走完了）再起 seafile
       db:

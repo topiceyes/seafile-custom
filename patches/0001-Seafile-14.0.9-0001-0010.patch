@@ -1,23 +1,15 @@
-From 204aea5e24d99e6499f46bd7569eb03b74cfbd84 Mon Sep 17 00:00:00 2001
+From cd12d4b97fc87c5ff6b0183f95b195600bd9e591 Mon Sep 17 00:00:00 2001
 From: topiceyes <273286342+topiceyes@users.noreply.github.com>
-Date: Thu, 24 Sep 2026 15:08:21 +0800
-Subject: [PATCH] =?UTF-8?q?Seafile=2013.0.28=20=E5=9F=BA=E7=BA=BF=20+=20?=
+Date: Tue, 27 Oct 2026 19:15:01 +0800
+Subject: [PATCH] =?UTF-8?q?Seafile=2014.0.9=20=E5=9F=BA=E7=BA=BF=20+=20?=
  =?UTF-8?q?=E4=BA=8C=E5=BC=80=E8=A1=A5=E4=B8=81=E9=87=8D=E6=94=BE=EF=BC=88?=
  =?UTF-8?q?0001-0010=20=E8=AF=AD=E4=B9=89=E5=85=A8=E9=87=8F=EF=BC=89?=
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-- 基线：v13.0.28-server 的源码 commit 03d185f（dist tag 的 parent;
-  dist 顶层与源码的 seahub/ 子树逐字节一致，差的 37 个 .mo 由构建期
-  collectstatic 重新生成）
-- 重放方式：git apply -3 全量 + 手工补回三方合并丢掉的语义
-  （0009 的 get_fileserver_root/get_service_url/CONSTANCE 注册、
-  0003 的 is_dingtalk_enabled)
-- 已通过 8 项补丁语义特征检查
-- Django 4.2→5.2、SERVICE_URL 即时计算上游化——0009 实际优先级待实测
 ---
- .../sys-admin/web-settings/web-settings.js    |  27 ++++
+ .../src/pages/sys-admin/settings/index.js     |  27 ++++
  seahub/api2/endpoints/admin/dingtalk.py       |  35 ++--
  seahub/api2/endpoints/admin/web_settings.py   |  10 +-
  seahub/auth/forms.py                          |  11 ++
@@ -32,18 +24,18 @@ Content-Transfer-Encoding: 8bit
  .../send_notices_to_social_account.py         |  12 +-
  seahub/oauth/backends.py                      |  24 +--
  seahub/profile/views.py                       |   5 +-
- seahub/settings.py                            |  26 +++
+ seahub/settings.py                            |  28 ++++
  seahub/templates/registration/login.html      |   3 +
  seahub/utils/__init__.py                      |  28 +++-
  seahub/views/sso.py                           |   4 +-
  seahub/views/sysadmin.py                      |   4 +-
- 20 files changed, 399 insertions(+), 91 deletions(-)
+ 20 files changed, 401 insertions(+), 91 deletions(-)
  create mode 100644 seahub/dingtalk/management/commands/deactivate_departed_users.py
 
-diff --git a/frontend/src/pages/sys-admin/web-settings/web-settings.js b/frontend/src/pages/sys-admin/web-settings/web-settings.js
-index 630f047b..081be717 100644
---- a/frontend/src/pages/sys-admin/web-settings/web-settings.js
-+++ b/frontend/src/pages/sys-admin/web-settings/web-settings.js
+diff --git a/frontend/src/pages/sys-admin/settings/index.js b/frontend/src/pages/sys-admin/settings/index.js
+index a6ce235a..a5ecd226 100644
+--- a/frontend/src/pages/sys-admin/settings/index.js
++++ b/frontend/src/pages/sys-admin/settings/index.js
 @@ -318,6 +318,33 @@ class WebSettings extends Component {
                    />
                  </Section>
@@ -197,10 +189,10 @@ index 331faac9..98eef056 100644
                  return api_error(status.HTTP_400_BAD_REQUEST, error_msg)
  
 diff --git a/seahub/auth/forms.py b/seahub/auth/forms.py
-index 0dd5123e..463c04e9 100644
+index 5e396da2..98261f22 100644
 --- a/seahub/auth/forms.py
 +++ b/seahub/auth/forms.py
-@@ -25,6 +25,9 @@ from seahub.utils.auth import is_force_user_sso, can_user_update_password
+@@ -23,6 +23,9 @@ from seahub.utils.auth import user_local_password_enabled
  from seahub.utils.password import get_password_strength_requirements, \
          is_password_strength_valid
  
@@ -210,7 +202,7 @@ index 0dd5123e..463c04e9 100644
  
  class AuthenticationForm(forms.Form):
      """
-@@ -72,6 +75,14 @@ class AuthenticationForm(forms.Form):
+@@ -70,6 +73,14 @@ class AuthenticationForm(forms.Form):
                      if not is_first_login or not settings.ACTIVATE_AFTER_FIRST_LOGIN:
                          self.errors['inactive'] = _("This account is inactive.")
                          raise forms.ValidationError(_("This account is inactive."))
@@ -244,33 +236,34 @@ index cd218032..3f0078de 100644
  
  
 diff --git a/seahub/base/context_processors.py b/seahub/base/context_processors.py
-index d404bdb9..8f5ab83c 100644
+index 4ab26a7f..c27728f4 100644
 --- a/seahub/base/context_processors.py
 +++ b/seahub/base/context_processors.py
-@@ -25,10 +25,12 @@ from seahub.settings import SEAFILE_VERSION, SITE_DESCRIPTION, \
+@@ -26,11 +26,13 @@ from seahub.settings import SEAFILE_VERSION, SITE_DESCRIPTION, \
      LOGIN_BG_IMAGE_PATH, THUMBNAIL_DEFAULT_SIZE, \
      CUSTOM_LOGIN_BG_PATH, ENABLE_SHARE_LINK_REPORT_ABUSE, \
      PRIVACY_POLICY_LINK, TERMS_OF_SERVICE_LINK, ENABLE_SEADOC, THUMBNAIL_SIZE_FOR_GRID, \
 -    FILE_SERVER_ROOT, NOTIFICATION_SERVER_URL, \
 +    NOTIFICATION_SERVER_URL, \
      ENABLE_METADATA_MANAGEMENT, BAIDU_MAP_KEY, GOOGLE_MAP_KEY, GOOGLE_MAP_ID, \
-     ENABLE_SEAFILE_AI, ENABLE_NOTIFICATION_SERVER, OFFICE_SUITE_ENABLED_EDIT_FILE_TYPES, \
-     ENABLE_FACE_RECOGNITION
+     ENABLE_SEAFILE_AI, ENABLE_AI_CHAT, ENABLE_NOTIFICATION_SERVER, OFFICE_SUITE_ENABLED_EDIT_FILE_TYPES, ENABLE_THUMBNAIL_SERVER, \
+     ENABLE_FACE_RECOGNITION, ENABLE_STORAGE_CLASSES, SHARE_LINK_ALWAYS_SEND_PASSWORD_SEPARATELY
+ 
 +# [dev] FILE_SERVER_ROOT 不再从这里 import——它是启动期绑定，后台改了不生效。
 +# 改走 seahub.utils.get_fileserver_root()，该项由 SERVICE_URL 推导（补丁 0009）。
  from seahub.organizations.models import OrgAdminSettings
  from seahub.organizations.settings import ORG_ENABLE_ADMIN_CUSTOM_LOGO
  from seahub.onlyoffice.settings import ENABLE_ONLYOFFICE, \
-@@ -36,7 +38,7 @@ from seahub.onlyoffice.settings import ENABLE_ONLYOFFICE, \
+@@ -38,7 +40,7 @@ from seahub.onlyoffice.settings import ENABLE_ONLYOFFICE, \
  from seahub.wopi.settings import ENABLE_OFFICE_WEB_APP, \
          OFFICE_WEB_APP_EDIT_FILE_EXTENSION
  from seahub.constants import DEFAULT_ADMIN
 -from seahub.utils import get_site_name, get_service_url
 +from seahub.utils import get_site_name, get_service_url, get_fileserver_root
  from seahub.avatar.templatetags.avatar_tags import api_avatar_url
+ from seahub.ai.utils import verify_chat_ai_config
  
- 
-@@ -53,7 +55,7 @@ except ImportError:
+@@ -58,7 +60,7 @@ except ImportError:
      ENABLE_FILE_SCAN = False
  from seahub.work_weixin.settings import ENABLE_WORK_WEIXIN
  from seahub.weixin.settings import ENABLE_WEIXIN
@@ -279,7 +272,7 @@ index d404bdb9..8f5ab83c 100644
  
  from seahub.settings import HELP_LINK
  try:
-@@ -81,7 +83,7 @@ def base(request):
+@@ -86,7 +88,7 @@ def base(request):
      repo_id_patt = r".*/([a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})/.*"
      m = re.match(repo_id_patt, request.get_full_path())
      search_repo_id = m.group(1) if m is not None else None
@@ -288,7 +281,7 @@ index d404bdb9..8f5ab83c 100644
      if not file_server_root.endswith('/'):
          file_server_root += '/'
  
-@@ -138,7 +140,7 @@ def base(request):
+@@ -144,7 +146,7 @@ def base(request):
          'enable_signup': config.ENABLE_SIGNUP,
          'enable_weixin': ENABLE_WEIXIN,
          'enable_work_weixin': ENABLE_WORK_WEIXIN,
@@ -884,10 +877,10 @@ index bf819ea3..daf65d4b 100644
              elif settings.NOTIFY_ADMIN_AFTER_REGISTRATION:
                  notify_admins_on_register_complete(user.username)
 diff --git a/seahub/profile/views.py b/seahub/profile/views.py
-index 28a61936..850d0efc 100644
+index 0cdb17cb..f3a98d09 100644
 --- a/seahub/profile/views.py
 +++ b/seahub/profile/views.py
-@@ -26,7 +26,8 @@ from seahub.utils import is_org_context, is_pro_version, is_valid_username, \
+@@ -25,7 +25,8 @@ from seahub.utils import is_org_context, is_pro_version, is_valid_username, get_
  from seahub.utils.two_factor_auth import has_two_factor_auth
  from seahub.views import get_owned_repo_list
  from seahub.work_weixin.utils import work_weixin_oauth_check
@@ -897,7 +890,7 @@ index 28a61936..850d0efc 100644
  from seahub.weixin.settings import ENABLE_WEIXIN
  from seahub.organizations.models import OrgSAMLConfig
  
-@@ -105,7 +106,7 @@ def edit_profile(request):
+@@ -104,7 +105,7 @@ def edit_profile(request):
          enable_wechat_work = False
          social_connected = False
  
@@ -907,12 +900,12 @@ index 28a61936..850d0efc 100644
          social_connected_dingtalk = SocialAuthUser.objects.filter(
              username=request.user.username, provider='dingtalk').count() > 0
 diff --git a/seahub/settings.py b/seahub/settings.py
-index 8606d306..6930b851 100644
+index 436f154d..c4207ade 100644
 --- a/seahub/settings.py
 +++ b/seahub/settings.py
-@@ -324,6 +324,14 @@ ENABLE_MULTI_ADFS = False
+@@ -328,6 +328,14 @@ ENABLE_MULTI_ADFS = False
  
- DISABLE_ADFS_USER_PWD_LOGIN = False
+ DISABLE_SSO_USER_LOCAL_PWD_LOGIN = False
  
 +# [dev] 0008: 除管理员（is_staff）外禁止密码登录——钉钉 SSO 是普通用户唯一入口。
 +# 影响面：web 登录表单、/api2/auth-token/（见 seahub/auth/forms.py、
@@ -925,7 +918,7 @@ index 8606d306..6930b851 100644
  ENABLE_OAUTH = False
  ENABLE_WATERMARK = False
  
-@@ -340,6 +348,8 @@ ENABLE_WEIXIN = False
+@@ -344,6 +352,8 @@ ENABLE_WEIXIN = False
  
  # enable dingtalk
  ENABLE_DINGTALK = False
@@ -934,7 +927,7 @@ index 8606d306..6930b851 100644
  
  # enable ldap
  ENABLE_LDAP = False
-@@ -1315,6 +1325,10 @@ IS_PRO_VERSION = os.environ.get('IS_PRO_VERSION', 'false').lower() == 'true'
+@@ -1421,6 +1431,10 @@ IS_PRO_VERSION = os.environ.get('IS_PRO_VERSION', 'false').lower() == 'true'
  
  CONSTANCE_ENABLED = ENABLE_SETTINGS_VIA_WEB
  CONSTANCE_CONFIG = {
@@ -945,7 +938,7 @@ index 8606d306..6930b851 100644
      'DISABLE_SYNC_WITH_ANY_FOLDER': (DISABLE_SYNC_WITH_ANY_FOLDER, ''),
  
      'ENABLE_SIGNUP': (ENABLE_SIGNUP, ''),
-@@ -1351,6 +1365,11 @@ CONSTANCE_CONFIG = {
+@@ -1457,6 +1471,11 @@ CONSTANCE_CONFIG = {
  
      'CLIENT_SSO_VIA_LOCAL_BROWSER': (CLIENT_SSO_VIA_LOCAL_BROWSER, ''),
      'CLIENT_SSO_TOKEN_EXPIRATION': (CLIENT_SSO_TOKEN_EXPIRATION, ''),
@@ -957,7 +950,7 @@ index 8606d306..6930b851 100644
  }
  
  # if Seafile admin enable remote user authentication in conf/seahub_settings.py
-@@ -1362,6 +1381,10 @@ if ENABLE_REMOTE_USER_AUTHENTICATION:
+@@ -1468,6 +1487,10 @@ if ENABLE_REMOTE_USER_AUTHENTICATION:
  
  if ENABLE_OAUTH or ENABLE_CUSTOM_OAUTH or ENABLE_WORK_WEIXIN or ENABLE_WEIXIN or ENABLE_DINGTALK:
      AUTHENTICATION_BACKENDS += ('seahub.oauth.backends.OauthRemoteUserBackend',)
@@ -968,16 +961,17 @@ index 8606d306..6930b851 100644
  
  if ENABLE_CAS:
      AUTHENTICATION_BACKENDS += ('seahub.django_cas_ng.backends.CASBackend',)
-@@ -1387,4 +1410,7 @@ if ENABLE_LDAP:
+@@ -1492,3 +1515,8 @@ if ENABLE_LDAP:
+ # ]
  
  # settings.py
- 
++
 +# [dev] 发布构建时会在打包阶段注入此变量；源码运行（挂载进容器）时需手动提供，
 +# 否则 seahub.base.context_processors 的 import 会失败
 +SEAFILE_VERSION = "12.0.14-dev"
- 
++
 diff --git a/seahub/templates/registration/login.html b/seahub/templates/registration/login.html
-index b59673d8..991af4a4 100644
+index e069f5be..08e8cc3c 100644
 --- a/seahub/templates/registration/login.html
 +++ b/seahub/templates/registration/login.html
 @@ -74,6 +74,9 @@ html, body, #wrapper { height:100%; }
@@ -991,10 +985,10 @@ index b59673d8..991af4a4 100644
          <p class="error mt-2">{% trans "Incorrect email or password" %}</p>
          {% endif %}
 diff --git a/seahub/utils/__init__.py b/seahub/utils/__init__.py
-index 4ddf7bf5..07bd0dfb 100644
+index 13a05297..76fc22aa 100644
 --- a/seahub/utils/__init__.py
 +++ b/seahub/utils/__init__.py
-@@ -184,10 +184,17 @@ def list_to_string(l):
+@@ -190,10 +190,17 @@ def list_to_string(l):
  def get_fileserver_root():
      """ Construct seafile fileserver address and port.
  
@@ -1013,7 +1007,7 @@ index 4ddf7bf5..07bd0dfb 100644
  
  def get_inner_fileserver_root():
      """Construct inner seafile fileserver address and port.
-@@ -905,9 +912,24 @@ def calc_file_path_hash(path, bits=12):
+@@ -942,9 +949,24 @@ def calc_file_path_hash(path, bits=12):
      return path_hash
  
  def get_service_url():
@@ -1041,7 +1035,7 @@ index 4ddf7bf5..07bd0dfb 100644
  def get_webdav_url():
      """Get webdav url.
 diff --git a/seahub/views/sso.py b/seahub/views/sso.py
-index 8f77442b..a95ee16e 100644
+index a06d3e6a..4fd695d8 100644
 --- a/seahub/views/sso.py
 +++ b/seahub/views/sso.py
 @@ -22,7 +22,7 @@ from seahub.api2.utils import get_token_v1, get_token_v2
@@ -1063,19 +1057,19 @@ index 8f77442b..a95ee16e 100644
          return render_error(request, error_msg)
  
 diff --git a/seahub/views/sysadmin.py b/seahub/views/sysadmin.py
-index 2e815973..e7ff5437 100644
+index c819db86..e309e182 100644
 --- a/seahub/views/sysadmin.py
 +++ b/seahub/views/sysadmin.py
-@@ -65,7 +65,7 @@ try:
+@@ -68,7 +68,7 @@ try:
  except ImportError:
      ENABLE_FILE_SCAN = False
  from seahub.work_weixin.settings import ENABLE_WORK_WEIXIN
 -from seahub.dingtalk.settings import ENABLE_DINGTALK
 +from seahub.dingtalk.settings import is_dingtalk_enabled
+ from seahub.views.repo import get_commit
  
  
- logger = logging.getLogger(__name__)
-@@ -96,7 +96,7 @@ def sysadmin_react_fake_view(request, **kwargs):
+@@ -100,7 +100,7 @@ def sysadmin_react_fake_view(request, **kwargs):
          'enable_terms_and_conditions': config.ENABLE_TERMS_AND_CONDITIONS,
          'enable_file_scan': ENABLE_FILE_SCAN,
          'enable_work_weixin': ENABLE_WORK_WEIXIN,

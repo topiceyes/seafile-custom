@@ -170,27 +170,19 @@ def apply_settings(confdir):
 
 
 def apply_webdav(confdir):
-    path = os.path.join(confdir, 'seafdav.conf')
-    if not os.path.exists(path):
-        log('seafdav.conf 不存在，跳过 WebDAV（该配置由 setup 生成）')
+    """14.0 起 WebDAV 开关改由 ENABLE_SEAFDAV 环境变量控制：seafile-monitor.sh
+    只认这个 env（= true 才拉起 wsgidav），seafdav.conf 的 enabled 键已无读者
+    （seahub 只剩 share_name 解析，用来拼界面上的 WebDAV 地址）。
+
+    所以这里不再改 conf（13.0 时代的 enabled = true 写法已死），只做防御性核对：
+    该产品形态 WebDAV 常开，env 没设就 loud warning——静默关掉与「忘了不会报错」
+    那一类失败同源，不给它留位置。真正生效的开关在 compose 的 ENABLE_SEAFDAV。
+    """
+    if os.environ.get('ENABLE_SEAFDAV', '').strip().lower() == 'true':
+        log('WebDAV：ENABLE_SEAFDAV=true，seafile-monitor.sh 将拉起 seafdav（14.0 起只认 env）')
         return
-
-    with open(path, 'r', encoding='utf-8') as fp:
-        current = fp.read()
-
-    if re.search(r'^enabled\s*=\s*true', current, re.M):
-        log('seafdav.conf 已是 enabled = true，跳过')
-        return
-
-    # 官方生成的原文是 "enabled = false"，这里只改这一行的值，其余原样保留。
-    new = re.sub(r'^enabled\s*=\s*.*$', 'enabled = true', current, count=1, flags=re.M)
-    if new == current:
-        sys.exit('%s seafdav.conf 里找不到 enabled = 这一行，无法开启 WebDAV。'
-                 '上游模板可能改了，检查 %s。' % (LOG_PREFIX, path))
-
-    with open(path, 'w', encoding='utf-8') as fp:
-        fp.write(new)
-    log('已开启 WebDAV（seafdav.conf enabled = true）')
+    log('⚠️ ENABLE_SEAFDAV 未设为 true —— 14.0 起 seafdav 只认这个环境变量，'
+        'WebDAV 将不启动。compose 里补 ENABLE_SEAFDAV=true 即可恢复。')
 
 
 def heal_stale_caches(confdir):
