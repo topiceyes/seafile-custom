@@ -252,8 +252,13 @@ assert_has "$WD/data/seafile/conf/seahub_settings.py" "ENABLE_WIKI = False" \
 # （只写 TIME_ZONE）；SERVICE_URL 由 settings.py 按 SEAFILE_SERVER_PROTOCOL+HOSTNAME
 # 运行期即时计算（补丁 0009 又把它 constance 化）。链接协议对不对，由第 8 步
 # 「上传/下载地址必须是 https://域名/seafhttp/」的断言兜底——那才是用户感知的症状。
-assert_has "$WD/data/seafile/conf/seafdav.conf" "enabled = true" \
-  "二开定制自动落地（WebDAV 已开）"
+# 14.0 起 WebDAV 只认 ENABLE_SEAFDAV 环境变量（seafile-monitor.sh 据此拉起 wsgidav；
+# seafdav.conf 的 enabled 键已无读者——13.0 的「env 未设回落读 conf」被上游删了）。
+# 所以这里不再断言 conf 内容，改验：env 真的进了容器（compose 写对），
+# 以及第 8 步末尾 /seafdav/ 端到端 401（wsgidav 活着的硬证据）。
+"${DC[@]}" exec -T seafile sh -c '[ "$ENABLE_SEAFDAV" = "true" ]' \
+  || die "容器内 ENABLE_SEAFDAV 不是 true（compose 没写进去？14.0 起 WebDAV 会静默关掉）"
+ok "容器内 ENABLE_SEAFDAV=true（14.0 起 seafdav 只认这个 env）"
 
 # ---------------------------------------------------------------- 7. 端到端
 step "7. 真表单登录（CSRF → POST → 302，不是 403）"
@@ -364,6 +369,12 @@ esac
 curl -sk --noproxy '*' "${R[@]}" -o "$J/back.txt" "$(rp_url "$DL")"
 cmp -s "$J/payload.txt" "$J/back.txt" || die "下载回来的内容与上传的不一致"
 ok "下载内容与上传逐字节一致"
+
+# WebDAV 端到端：14.0 起由 ENABLE_SEAFDAV env 拉起 wsgidav（13.0 读 conf enabled 的
+# 那套已废）。未带认证 → 必须 401（Basic 认证挑战）：这是 seafile-monitor.sh 真的把
+# seafdav 拉起来了的硬证据——没起的话这里返回 502/404。
+WV=$(curl -sk --noproxy '*' "${R[@]}" -o /dev/null -w '%{http_code}' "$P/seafdav/")
+assert_eq "$WV" "401" "WebDAV /seafdav/ 未认证 → 401（env 机制端到端生效，seafdav 已起）"
 
 # ---------------------------------------------------------------- 9. 对照探针
 step "9. 对照探针：域名入口怎么转发都通；IP 直连是原版行为"
