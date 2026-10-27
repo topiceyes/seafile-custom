@@ -156,9 +156,20 @@ SEAFILE_PRO_IMAGE=ghcr.io/topiceyes/seafile-mc:1.1.1.a1e0b916 docker compose pul
   && SEAFILE_PRO_IMAGE=ghcr.io/topiceyes/seafile-mc:1.1.1.a1e0b916 docker compose up -d
 ```
 
-灰度验证结果（198，2026-10-27）：
+灰度验证结果（198，2026-10-27，镜像 `1.2.0.924f77dc`）全绿：
 
-<!-- 灰度完成后回填：容器状态、bootstrap 日志、/seafdav/ 401、P1-P3 登录探针、上传下载回环、钉钉 redirect_uri -->
+| 项 | 结果 |
+|---|---|
+| 溯源 | 运行中 digest `3c225f4a…` == digest(:latest) == digest(:1.2.0.924f77dc) ✅ |
+| bootstrap 日志 | 5 项定制齐全、WebDAV env 确认接线、server_name 替换 m-disc.moresec.cn，零 warning ✅ |
+| WebDAV `GET /seafdav/`（未认证） | 401——env 机制在真实服务器上端到端生效 ✅ |
+| 管理员表单登录（IP 直连 9800） | 302 + sessionid ✅ |
+| 上传/下载回环 | 上传链接按 constance SERVICE_URL 派生 `https://i-disc.moresec.cn:7443/seafhttp/…`，上传返回 40 位文件 id，下载逐字节一致 ✅ |
+| 钉钉 redirect_uri（域名入口） | `https://m-disc.moresec.cn/dingtalk/callback/`（https + 登记域名）✅；IP 直连入口跟随发起者为 http（0010 设计内行为，与 13.0 一致） |
+| 外网两入口（m-disc / i-disc:7443） | 登录页 200；m-disc 外网表单登录 302 + 会话 ✅ |
+
+备份留在 198：`seafile-prod.yml.bak-1.1.1` / `.env.bak-20261027`（确认无虞后可删）。
+用户侧待验：真浏览器两入口走一遍 + 钉钉真机扫码登录。
 
 ## 7. 踩坑回写（本轮新增）
 
