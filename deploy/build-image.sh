@@ -47,7 +47,7 @@ REGISTRY_NS="${1:-}"
 SEAHUB_DIR="${SEAHUB_DIR:-$REPO_ROOT/seahub}"
 PATCHES_DIR="${PATCHES_DIR:-$REPO_ROOT/patches}"
 MANIFEST="$PATCHES_DIR/MANIFEST.md"
-DEFAULT_BASE=0877ad70251d50fcb43e2b15026f086bcfc4f815
+DEFAULT_BASE=3c408439bfca54dbad61e2f6cdb706d2dcdf9f7a
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
 CACHE_ARGS="${CACHE_ARGS:-}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
@@ -144,7 +144,7 @@ BUILD_HASH=$(build_inputs_hash)
 # 耦合，升级 Seafile 时几处要同步（docs/007 §6）；CI 有断言兜住半途而废的升级。
 TAG="${PRODUCT_VER}.${BUILD_HASH}"
 
-# 说明：tag 覆盖的是【本仓库的构建输入】。基础镜像 seafileltd/seafile-mc:12.0.14
+# 说明：tag 覆盖的是【本仓库的构建输入】。基础镜像 seafileltd/seafile-mc:14.0.9
 # 是按 tag 引用的，上游若重新推同一个 tag，溯源内容仍可能变——那属于上游行为，
 # 靠生产侧钉 digest + 发布台账（docs/010 §9）覆盖。
 

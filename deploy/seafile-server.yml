@@ -43,7 +43,7 @@ services:
       - seafile-net
 
   seafile:
-    image: seafileltd/seafile-mc:13.0.28
+    image: seafileltd/seafile-mc:14.0.9
     container_name: seafile
     restart: unless-stopped
     ports:
@@ -56,7 +56,7 @@ services:
       - ${SEAFILE_VOLUME}:/shared
       # seahub 二开源码（只挂 Python 包目录；勿挂整个 seahub/，容器内 thirdpart 含已装依赖和 gunicorn）
       # 注意：版本目录硬编码，升级 Seafile 镜像版本后需同步修改
-      - ../seahub/seahub:/opt/seafile/seafile-server-13.0.28/seahub/seahub
+      - ../seahub/seahub:/opt/seafile/seafile-server-14.0.9/seahub/seahub
       # dev 自签 HTTPS 的 nginx conf。13.0 起 conf 构建期静态烘入镜像、数据卷里的
       # conf 不再有任何读者（12.0 是预渲染进数据卷压制模板渲染），所以 dev 改成
       # 直接 bind-mount 覆盖容器内那份。改了它要 docker exec seafile nginx -s reload。
@@ -84,6 +84,9 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - TIME_ZONE=Asia/Shanghai
+      # 14.0 起 WebDAV 只认这个 env（13.0 还回落读 seafdav.conf 的 enabled 键，14.0 删了
+      # 那行回落）。与 prod 对齐常开；不写的话 dev 的 WebDAV 会静默关掉。
+      - ENABLE_SEAFDAV=true
       # HTTPS 站点（证书 /shared/ssl/127.0.0.1.crt|key，即 deploy/seafile-data/ssl/）
       # 注意：这里不能带端口，否则 SERVICE_URL/回调地址会带端口
       - SEAFILE_SERVER_HOSTNAME=127.0.0.1

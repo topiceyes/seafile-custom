@@ -10,16 +10,16 @@
 # 现在只有这一份，改断言只改这里。
 set -eu
 
-INSTALLPATH=/opt/seafile/seafile-server-13.0.28
+INSTALLPATH=/opt/seafile/seafile-server-14.0.9
 S="$INSTALLPATH/seahub"
 
 fail() { echo "✗ $*" >&2; exit 1; }
 ok()   { echo "✓ $*"; }
 
 # ---- 1) 版本号：补丁在源码里写的是 -dev，Dockerfile 构建期 sed 成发布号 ----
-grep -q '^SEAFILE_VERSION = "13.0.28"' "$S/seahub/settings.py" \
-  || fail "SEAFILE_VERSION 不是 13.0.28（Dockerfile 的 sed 没生效？）"
-ok "SEAFILE_VERSION = 13.0.28"
+grep -q '^SEAFILE_VERSION = "14.0.9"' "$S/seahub/settings.py" \
+  || fail "SEAFILE_VERSION 不是 14.0.9（Dockerfile 的 sed 没生效？）"
+ok "SEAFILE_VERSION = 14.0.9"
 
 # ---- 2) 二开补丁的落地痕迹 ----
 grep -q PASSWORD_LOGIN_ADMIN_ONLY "$S/seahub/settings.py" \
@@ -146,7 +146,14 @@ mkdir -p /opt/seafile/conf
 printf 'SECRET_KEY = "smoke"\n' > /opt/seafile/conf/seahub_settings.py
 printf '\n[WEBDAV]\nenabled = false\nport = 8080\n' > /opt/seafile/conf/seafdav.conf
 
-python3 /scripts/custom_bootstrap.py >/dev/null || fail "custom_bootstrap.py 跑失败"
+# 14.0 起 WebDAV 只认 ENABLE_SEAFDAV 环境变量（seafile-monitor.sh 据此拉起 wsgidav），
+# bootstrap 不再写 seafdav.conf。带 env 跑一遍：conf 里这份 13.0 遗留的 enabled = false
+# 必须原样保留（改它就是又去信一个死键），且日志要确认 env 开关被接到。
+out=$(ENABLE_SEAFDAV=true python3 /scripts/custom_bootstrap.py) || fail "custom_bootstrap.py 跑失败"
+echo "$out" | grep -q 'ENABLE_SEAFDAV=true' \
+  || fail "bootstrap 没确认 WebDAV 的 env 开关（compose 的 ENABLE_SEAFDAV 没生效？）"
+grep -q '^enabled = false' /opt/seafile/conf/seafdav.conf \
+  || fail "bootstrap 改了 seafdav.conf（14.0 起 enabled 键已无读者，不该再写它）"
 
 python3 - <<'PY' || fail "钩子写入的配置不正确"
 import ast, sys
@@ -162,11 +169,14 @@ assert ns['SECURE_PROXY_SSL_HEADER'] == ('HTTP_X_FORWARDED_PROTO', 'https'), \
     'SECURE_PROXY_SSL_HEADER 缺失或取值不对（反代模式下会导致登录 403）'
 # 知识库已关闭（13.0 wiki 依赖未部署的 SeaDoc，开着只会让用户撞 AxiosError）
 assert ns['ENABLE_WIKI'] is False, 'ENABLE_WIKI 不是 False（知识库模块应关闭）'
-assert 'enabled = true' in open('/opt/seafile/conf/seafdav.conf').read(), 'WebDAV 没开'
 PY
 
-# 幂等：第二遍不能再追加一个块（否则每次重启配置都会变长）
-python3 /scripts/custom_bootstrap.py >/dev/null || fail "custom_bootstrap.py 第二遍跑失败"
+# 幂等：第二遍不能再追加一个块（否则每次重启配置都会变长）。
+# 注意第二遍【不带】ENABLE_SEAFDAV：要同时验 env 缺失时的 loud warning——
+# WebDAV 静默关掉与「忘了不会报错」是同一类失败，不给它留位置。
+out=$(python3 /scripts/custom_bootstrap.py) || fail "custom_bootstrap.py 第二遍跑失败"
+echo "$out" | grep -q 'ENABLE_SEAFDAV 未设为 true' \
+  || fail "ENABLE_SEAFDAV 缺失时 bootstrap 没有 loud warning（WebDAV 会静默关掉）"
 n=$(grep -c 'CLIENT_SSO_VIA_LOCAL_BROWSER = True' /opt/seafile/conf/seahub_settings.py)
 [ "$n" = "1" ] || fail "钩子不幂等：CLIENT_SSO_VIA_LOCAL_BROWSER 出现 $n 次（应为 1）"
 
@@ -273,6 +283,10 @@ del os.environ['SEAFILE_DOMAIN']
 os.environ.pop('SEAFILE_SERVER_HOSTNAME', None)
 cb.apply_nginx_server_name()
 assert '__SEAFILE_SERVER_NAME__' in open(conf).read(), '未设域名时占位符被误改'
+
+# 静态 conf 缺失（13.0 之前无此文件；机制若变这是无声失效路径）：不崩、有日志
+cb.NGINX_STATIC_CONF = base + '/nonexistent.conf'
+cb.apply_nginx_server_name()  # 不应抛异常
 
 shutil.rmtree(base)
 print('nginx server_name 替换 OK（首启替换+reload + 重启幂等 + 未设域名不崩）')

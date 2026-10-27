@@ -7,12 +7,12 @@
 下面的 key = value 块是机器可读的（脚本用 `awk '$1=="base_commit"{print $3}'` 取值）。
 
 ```ini
-base_commit     = 03d185f2f51c6fce085af82ceefff61cacf411ea
-base_branch     = 13.0
+base_commit     = 3c408439bfca54dbad61e2f6cdb706d2dcdf9f7a
+base_branch     = 14.0
 patch_count     = 1
-tree_sha        = 77b4cc45c4a9aebe5a9c729ebc607b1c8ba9b261
-seahub_head_sha = 204aea5e24d99e6499f46bd7569eb03b74cfbd84
-exported_at     = 2026-09-24
+tree_sha        = 68dc2ff7821934a12bc345ca981906bf7f233227
+seahub_head_sha = cd12d4b97fc87c5ff6b0183f95b195600bd9e591
+exported_at     = 2026-10-27
 ```
 
 ## 各字段含义
