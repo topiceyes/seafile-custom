@@ -94,3 +94,9 @@ dev 栈（14.0.9 官方镜像 + bind-mount 补丁源码）全流程仿真：
    要追到 next 的内容本身——这里它承载了整个设备参数链，不是单纯的跳转问题。
 4. **14.0 用户表在 ccnet_db.EmailUser**，不在 seahub_db.auth_user（后者存在但空），
    排查时 `SELECT … FROM auth_user` 查不到人会误判成空库。
+5. **手工推本地预览镜像到内容寻址 tag 会毒化发布流**（本轮实际踩到）：tag 是构建输入
+   的内容哈希，CI 的「tag 已存在」守卫撞上它会跳过真实构建直接进入补发布分支——
+   而把本地 arm64 预览镜像指上 `:latest` 的灾难只差一步。教训：预览彩排要用 CI 产出
+   的正式架构镜像（彩排脚本断言 amd64，本地 arm64 构建天然过不了这关），本地构建
+   只用于冒烟；tag 被毒化时用 `gh workflow run -f force=true` 覆盖重建
+   （gh token 需 delete:packages 才能删版本，没有就走 force）。
