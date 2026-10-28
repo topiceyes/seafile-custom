@@ -66,14 +66,21 @@ dev 栈（14.0.9 官方镜像 + bind-mount 补丁源码）全流程仿真：
 | 同流程但 UA 不可识别（curl/8.7.1） | 正确退回 v1：v2 表不增行，复用该用户既有 v1 ✅ |
 | 登录页带 `?next=/client-sso/…complete/` | 钉钉按钮 href 含 `?next=`，内层 query 编码完整 ✅ |
 
-198 灰度（1.2.1）：
+198 灰度（1.2.1，镜像 `1.2.1.d6dbd1d9`，2026-10-28）：
 
 | 项 | 结果 |
 |---|---|
-| 溯源 | 运行中 digest == digest(:latest) == digest(:1.2.1.d6dbd1d9) ✅ |
-| cron 修复生效 | 容器内 `/etc/cron.d/dingtalk-sync` 走 seafile-server-latest；手动执行 deactivate_departed_users 命令成功 ✅ |
-| 存量 v1 用户重新链接 | 重新走客户端登录后设备出现在管理后台（浏览器 UA 识别的平台正确）✅ |
-| 回归：登录/上传下载/WebDAV/钉钉扫码 | 全绿（docs/014 §6.1 探针原样重放）✅ |
+| 溯源 | 容器 `.Image` config digest `f503d8bf…` == ghcr `:latest` == `:1.2.1.d6dbd1d9` ✅ |
+| bootstrap 日志 | 5 项定制齐全、WebDAV env 接线确认、server_name m-disc.moresec.cn，零 warning ✅ |
+| 补丁 0011/0012 在运行镜像内 | sso.py 4 处 0011 标记、login.html 1 处 0012 标记 ✅ |
+| cron 修复 | 容器内 cron 走 seafile-server-latest + 失败留痕 ✅（下一次整点触发首次真实运行） |
+| WebDAV `GET /seafdav/` | 401 ✅ |
+| 登录页 | 200 ✅；带 `next`（含内层 query）请求时钉钉按钮 href 原样携带——0012 生产实测 ✅ |
+| 回归（1.2.0 探针） | 上传下载回环、钉钉 redirect_uri 等依赖外部入口的项未重放（compose 未变、相关代码路径未动） |
+
+**待用户侧验证**：存量 v1 token 的客户端（管理员 + 钉钉用户）要重新走一次客户端登录
+（客户端里删掉账号重新链接），新 token 即落 `api2_tokenv2`、设备出现在管理后台；
+钉钉真机扫码确认首次即回客户端确认页（0012 效果）。
 
 ## 4. 上游遗留（不修，观察）
 
