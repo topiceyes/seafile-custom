@@ -1,0 +1,56 @@
+From 1381cb8a5b5a7574ac652d01a05baa1a20f8b330 Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 19:19:02 +0800
+Subject: [PATCH 6/6] =?UTF-8?q?[dev]=200014=20CE=20=E5=AE=9E=E6=B5=8B?=
+ =?UTF-8?q?=E4=BF=AE=E6=AD=A3=EF=BC=9A=E9=83=A8=E9=97=A8=E8=B5=84=E6=96=99?=
+ =?UTF-8?q?=E5=BA=93=EF=BC=88=E7=BB=84=E5=B1=9E=E4=B8=BB=E5=BA=93=EF=BC=89?=
+ =?UTF-8?q?C=20=E6=A0=B8=E5=BF=83=E6=97=A0=20RPC=EF=BC=8C=E9=9A=90?=
+ =?UTF-8?q?=E8=97=8F=E5=BB=BA=E5=BA=93=E5=85=A5=E5=8F=A3?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ .../src/components/admin/departments/department-menu.js    | 7 ++++---
+ frontend/src/pages/sys-admin/departments/index.js          | 4 +++-
+ 2 files changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/frontend/src/components/admin/departments/department-menu.js b/frontend/src/components/admin/departments/department-menu.js
+index b770d054..f06e4f03 100644
+--- a/frontend/src/components/admin/departments/department-menu.js
++++ b/frontend/src/components/admin/departments/department-menu.js
+@@ -3,15 +3,16 @@ import { gettext, isPro } from '@/utils/constants';
+ export function getDepartmentMenuItems({ node, toggleDelete, toggleRename, toggleAddMembers, toggleAddDepartment, toggleAddLibrary, toggleSetQuotaDialog, toggleMoveDepartment }) {
+   const items = [
+     { key: `${node.id}-add-department`, label: gettext('Add sub-department'), onClick: () => toggleAddDepartment(node) },
+-    { key: `${node.id}-add-repo`, label: gettext('Add Library'), onClick: () => toggleAddLibrary(node) },
+     { key: `${node.id}-add-members`, label: gettext('Add members'), onClick: () => toggleAddMembers(node) },
+     { key: `${node.id}-rename`, label: gettext('Rename'), onClick: () => toggleRename(node) },
+     { key: `${node.id}-delete`, label: gettext('Delete'), onClick: () => toggleDelete(node) },
+     { key: `${node.id}-move`, label: gettext('Move department'), onClick: () => toggleMoveDepartment(node) },
+   ];
+-  // [dev] 0014: 配额是 Pro C 核心 API，CE 无 set_group_quota——隐藏入口
+-  // （后端 PUT quota 在 CE 下也会明确拒绝，双保险）
++  // [dev] 0014: 部门资料库（组属主库）依赖 Pro C 核心 RPC（CE 实测无
++  // add_group_owned_repo）——CE 隐藏建库入口；共享给部门的库仍在列表页可见。
++  // 「Add Library」与「Set quota」同属 Pro-only，一并按 isPro 过滤
+   if (isPro) {
++    items.splice(1, 0, { key: `${node.id}-add-repo`, label: gettext('Add Library'), onClick: () => toggleAddLibrary(node) });
+     items.push({ key: `${node.id}-set-quota`, label: gettext('Set quota'), onClick: () => toggleSetQuotaDialog(node) });
+   }
+   items.push({ key: `${node.id}-id`, label: `${gettext('Department ID')} : ${node.id}`, disabled: true });
+diff --git a/frontend/src/pages/sys-admin/departments/index.js b/frontend/src/pages/sys-admin/departments/index.js
+index 5b1bc074..7cd9e1bd 100644
+--- a/frontend/src/pages/sys-admin/departments/index.js
++++ b/frontend/src/pages/sys-admin/departments/index.js
+@@ -508,7 +508,9 @@ class Departments extends React.Component {
+             setRootNode={this.setRootNode}
+           />
+         }
+-        {this.state.isShowAddRepoDialog && (
++        {/* [dev] 0014: 部门资料库（组属主库）是 Pro C 核心能力，CE 无
++            add_group_owned_repo——建库对话框一并按 isPro 兜底隐藏（菜单入口已过滤） */}
++        {this.state.isShowAddRepoDialog && isPro && (
+           <AddRepoDialog
+             toggle={this.toggleAddLibrary}
+             onAddNewRepo={() => {this.setState({ isAddNewRepo: !this.state.isAddNewRepo });}}
