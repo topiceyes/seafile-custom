@@ -59,17 +59,17 @@ settings chunk 含状态文本、`dingtalk/disconnect` 零残留；frontend 指�
 （716→718 文件，与 1.2.1 不同，符合预期）。
 
 **CI / 彩排 / 灰度**：沿用 1.2.1 同款流程（CI 预演 → 反代彩排 → 合 main → release/1.2.2 →
-198 `pull && up -d`，compose 未变）。198 灰度验证：
+198 `pull && up -d`，compose 未变）。198 灰度验证（2026-10-28，镜像 `1.2.2.d7aa394b`）：
 
 | 项 | 结果 |
 |---|---|
-| 溯源 | 容器 `.Image` == ghcr `:latest` == `:1.2.2.d7aa394b` ✅ |
+| 溯源 | 容器 `.Image` config digest == 198 本地 `:latest` == CI 构建 ✅ |
 | 补丁 0013 | 容器内 `dingtalk/views.py` 0013 标记在位 ✅ |
-| 后端拦截 | 198 上 POST `/dingtalk/disconnect/`（带 session+CSRF）→ 返回禁令错误页，绑定未删 ✅ |
-| 前端 bundle | 容器内 settings chunk 无 `dingtalk/disconnect`、含状态文本 ✅ |
-| 回归 | 登录页 200、WebDAV 401、钉钉扫码入口未动 ✅ |
+| 前端实际服务面 | webpack-stats 将 settings 入口指向新 chunk `efe4419b.js`（含状态文本、无 `dingtalk/disconnect`）✅ |
+| 镜像内残留 | 基础镜像自带的旧 chunk `settings.545862c9.js`（含 disconnect 文本）仍在 media 目录——**惰性文件**：webpack-stats 不指向它，且后端 API 已被 0013 硬拦，双保险下无实际通道；collectstatic 不清旧文件的固行为，后续镜像可考虑构建期清理 |
+| 回归 | 登录页 200、WebDAV 401 ✅ |
 
-**待用户侧验证**：用普通钉钉账号登录后看「个人设置 → Single Sign On (SSO)」，
+**待用户侧验证**：普通钉钉账号登录后看「个人设置 → Single Sign On (SSO)」，
 已绑定应显示状态文本、无 Disconnect 按钮。
 
 ## 5. 踩坑回写
