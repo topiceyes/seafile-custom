@@ -19,6 +19,10 @@
 | 011 | [站点地址管理化](011-service-url-admin-config.md) | SERVICE_URL 挪到管理后台、免重启生效 | ✅ 已完成（2026-09-20） |
 | 012 | [Seafile 13.x 升级评估](012-seafile-13-upgrade-assessment.md) | 12.0→13.0 差异分析：补丁重放实测 + 镜像破坏点 + 决策点 | ✅ 已落地（2026-09-24，1.1.0） |
 | 013 | [知识库模块关闭](013-wiki-disabled.md) | 13.0 wiki 依赖未部署的 SeaDoc；ENABLE_WIKI=False 关掉入口 | ✅ 已落地（2026-10-08，1.1.1） |
+| 014 | [Seafile 14 升级](014-seafile-14-upgrade.md) | 13.0→14.0.9 升级：补丁重放 + 破坏点清查 | ✅ 已落地（1.2.0） |
+| 015 | [SSO 设备可见性](015-client-sso-device-visibility.md) | 无设备参数的客户端 SSO 补录 TokenV2（1.2.1） | ✅ 已发布灰度 |
+| 016 | [恢复钉钉解绑禁令](016-dingtalk-disconnect-ban-restore.md) | 0005 在 13/14 重放时丢失的审计与恢复（1.2.2） | ✅ 已发布灰度 |
+| 017 | [部门功能解锁到 CE](017-departments-ce-unlock.md) | Departments 去 IsProVersion 门；配额/部门资料库为 C 核心硬缺口（1.2.3） | ✅ 已发布，灰度待验收 |
 
 ## 工作区结构
 
