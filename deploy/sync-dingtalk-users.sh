@@ -6,7 +6,8 @@ set -euo pipefail
 
 CONTAINER=seafile
 SEAHUB=/opt/seafile/seafile-server-latest/seahub.sh
-WORKDIR=/opt/seafile/seafile-server-12.0.14/seahub
+# 走 seafile-server-latest 符号链接——硬编码版本目录会在升级后静默失效（12→13 踩过）
+WORKDIR=/opt/seafile/seafile-server-latest/seahub
 LOG=/Volumes/newdisc/appdev/Seafile/deploy/sync-dingtalk-users.log
 
 echo "==== $(date '+%F %T') ====" >> "$LOG"
