@@ -1,0 +1,209 @@
+From ab87e6422a3784b440c4944e8b0f16bc81ce2522 Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 18:54:38 +0800
+Subject: [PATCH 5/5] =?UTF-8?q?[dev]=200014=20=E8=A7=A3=E9=94=81=E9=83=A8?=
+ =?UTF-8?q?=E9=97=A8=E5=8A=9F=E8=83=BD=E5=88=B0=20CE=EF=BC=88Departments/a?=
+ =?UTF-8?q?ddress-book=20=E5=8E=BB=20IsProVersion=20+=20=E9=85=8D=E9=A2=9D?=
+ =?UTF-8?q?=E5=AE=88=E5=8D=AB=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ .../admin/departments/department-menu.js      | 13 +++++++---
+ .../src/pages/sys-admin/departments/index.js  |  5 ++--
+ frontend/src/pages/sys-admin/side-panel.js    |  4 ++-
+ .../endpoints/admin/address_book/groups.py    | 25 +++++++++++++------
+ seahub/api2/endpoints/admin/groups.py         | 13 +++++++---
+ 5 files changed, 43 insertions(+), 17 deletions(-)
+
+diff --git a/frontend/src/components/admin/departments/department-menu.js b/frontend/src/components/admin/departments/department-menu.js
+index e7a5a7bc..b770d054 100644
+--- a/frontend/src/components/admin/departments/department-menu.js
++++ b/frontend/src/components/admin/departments/department-menu.js
+@@ -1,14 +1,19 @@
+-import { gettext } from '@/utils/constants';
++import { gettext, isPro } from '@/utils/constants';
+ 
+ export function getDepartmentMenuItems({ node, toggleDelete, toggleRename, toggleAddMembers, toggleAddDepartment, toggleAddLibrary, toggleSetQuotaDialog, toggleMoveDepartment }) {
+-  return [
++  const items = [
+     { key: `${node.id}-add-department`, label: gettext('Add sub-department'), onClick: () => toggleAddDepartment(node) },
+     { key: `${node.id}-add-repo`, label: gettext('Add Library'), onClick: () => toggleAddLibrary(node) },
+     { key: `${node.id}-add-members`, label: gettext('Add members'), onClick: () => toggleAddMembers(node) },
+     { key: `${node.id}-rename`, label: gettext('Rename'), onClick: () => toggleRename(node) },
+     { key: `${node.id}-delete`, label: gettext('Delete'), onClick: () => toggleDelete(node) },
+     { key: `${node.id}-move`, label: gettext('Move department'), onClick: () => toggleMoveDepartment(node) },
+-    { key: `${node.id}-set-quota`, label: gettext('Set quota'), onClick: () => toggleSetQuotaDialog(node) },
+-    { key: `${node.id}-id`, label: `${gettext('Department ID')} : ${node.id}`, disabled: true },
+   ];
++  // [dev] 0014: 配额是 Pro C 核心 API，CE 无 set_group_quota——隐藏入口
++  // （后端 PUT quota 在 CE 下也会明确拒绝，双保险）
++  if (isPro) {
++    items.push({ key: `${node.id}-set-quota`, label: gettext('Set quota'), onClick: () => toggleSetQuotaDialog(node) });
++  }
++  items.push({ key: `${node.id}-id`, label: `${gettext('Department ID')} : ${node.id}`, disabled: true });
++  return items;
+ }
+diff --git a/frontend/src/pages/sys-admin/departments/index.js b/frontend/src/pages/sys-admin/departments/index.js
+index 335f596e..5b1bc074 100644
+--- a/frontend/src/pages/sys-admin/departments/index.js
++++ b/frontend/src/pages/sys-admin/departments/index.js
+@@ -14,7 +14,7 @@ import MoveDepartmentDialog from '@/components/dialog/sysadmin-dialog/sysadmin-m
+ import SetGroupQuotaDialog from '@/components/dialog/sysadmin-dialog/sysadmin-set-group-quota-dialog';
+ import Loading from '@/components/loading';
+ import toaster from '@/components/toast';
+-import { enableSysAdminViewRepo, gettext } from '@/utils/constants';
++import { enableSysAdminViewRepo, gettext, isPro } from '@/utils/constants';
+ import { Utils } from '@/utils/utils';
+ 
+ import './system-departments.css';
+@@ -515,7 +515,8 @@ class Departments extends React.Component {
+             groupID={String(operateNode.id)}
+           />
+         )}
+-        {this.state.isSetQuotaDialogShow &&
++        {/* [dev] 0014: 配额是 Pro C 核心 API，CE 隐藏（菜单入口已按 isPro 过滤，这里兜底） */}
++        {this.state.isSetQuotaDialogShow && isPro &&
+           <SetGroupQuotaDialog
+             group={operateNode}
+             onSetQuota={this.onSetQuota}
+diff --git a/frontend/src/pages/sys-admin/side-panel.js b/frontend/src/pages/sys-admin/side-panel.js
+index 9fa1fbc8..1eadbe21 100644
+--- a/frontend/src/pages/sys-admin/side-panel.js
++++ b/frontend/src/pages/sys-admin/side-panel.js
+@@ -130,7 +130,9 @@ class SidePanel extends React.Component {
+                     </Link>
+                   </li>
+                 }
+-                {isPro && canManageGroup &&
++                {/* [dev] 0014: 部门功能解锁到 CE（后端 IsProVersion 门已除，见
++                    api2/endpoints/admin/address_book/groups.py），菜单不再要求 isPro */}
++                {canManageGroup &&
+                   <li className={`nav-item ${this.getActiveClass('departments')}`}>
+                     <Link
+                       className={`nav-link ellipsis ${this.getActiveClass('departments')}`}
+diff --git a/seahub/api2/endpoints/admin/address_book/groups.py b/seahub/api2/endpoints/admin/address_book/groups.py
+index d3b9b84e..3db1374a 100644
+--- a/seahub/api2/endpoints/admin/address_book/groups.py
++++ b/seahub/api2/endpoints/admin/address_book/groups.py
+@@ -15,14 +15,13 @@ from seahub.avatar.settings import AVATAR_DEFAULT_SIZE
+ from seahub.avatar.templatetags.avatar_tags import api_avatar_url
+ from seahub.base.templatetags.seahub_tags import email2nickname, \
+         email2contact_email
+-from seahub.utils import is_org_context
++from seahub.utils import is_org_context, is_pro_version
+ from seahub.utils.timeutils import timestamp_to_isoformat_timestr
+ from seahub.group.utils import validate_group_name, check_group_name_conflict
+ from seahub.admin_log.signals import admin_operation
+ from seahub.admin_log.models import GROUP_DELETE
+ from seahub.api2.utils import to_python_boolean, api_error
+ from seahub.api2.throttling import UserRateThrottle
+-from seahub.api2.permissions import IsProVersion
+ from seahub.api2.authentication import TokenAuthentication
+ from seahub.auth.models import ExternalDepartment
+ 
+@@ -40,14 +39,18 @@ def address_book_group_to_dict(group):
+         "owner": group.creator_name,
+         "created_at": timestamp_to_isoformat_timestr(group.timestamp),
+         "parent_group_id": group.parent_group_id,
+-        "quota": seafile_api.get_group_quota(group.id),
++        # [dev] 0014: 部门配额是 Pro C 核心 API，CE 无 set/get_group_quota——
++        # 返回 0 占位（对齐 admin/groups.py 的 CE 守卫写法），前端按 isPro 隐藏配额 UI
++        "quota": seafile_api.get_group_quota(group.id) if is_pro_version() else 0,
+     }
+ 
+ 
+ class AdminAddressBookGroups(APIView):
+     authentication_classes = (TokenAuthentication, SessionAuthentication)
+     throttle_classes = (UserRateThrottle,)
+-    permission_classes = (IsAdminUser, IsProVersion)
++    # [dev] 0014: 解锁部门功能到 CE。底层 ccnet get_top_groups/create_group(parent_group_id)
++    # 均为 CE 能力，原 IsProVersion 门是发布分层而非技术限制（0001 解锁钉钉登录同款思路）
++    permission_classes = (IsAdminUser,)
+ 
+     def get(self, request):
+         """List top groups in address book."""
+@@ -112,7 +115,9 @@ class AdminAddressBookGroups(APIView):
+             else:
+                 group_id = ccnet_api.create_group(group_name, group_owner,
+                                                   parent_group_id=parent_group)
+-            seafile_api.set_group_quota(group_id, -2)
++            # [dev] 0014: 配额是 Pro C 核心 API，CE 守卫（-2 = 不限制）
++            if is_pro_version():
++                seafile_api.set_group_quota(group_id, -2)
+         except SearpcError as e:
+             logger.error(e)
+             error_msg = 'Internal Server Error'
+@@ -127,7 +132,8 @@ class AdminAddressBookGroups(APIView):
+ class AdminAddressBookGroup(APIView):
+     authentication_classes = (TokenAuthentication, SessionAuthentication)
+     throttle_classes = (UserRateThrottle,)
+-    permission_classes = (IsAdminUser, IsProVersion)
++    # [dev] 0014: 解锁到 CE（同 AdminAddressBookGroups）
++    permission_classes = (IsAdminUser,)
+ 
+     def _get_address_book_group_member_info(self, request, group_member_obj):
+ 
+@@ -222,8 +228,13 @@ class AdminAddressBookGroup(APIView):
+         try:
+             if org_id:
+                 has_repo = seafile_api.org_if_group_has_group_owned_repo(org_id, group_id)
+-            else:
++            elif is_pro_version():
+                 has_repo = seafile_api.if_group_has_group_owned_repo(group_id)
++            else:
++                # [dev] 0014: CE C 核心无 if_group_has_group_owned_repo，用
++                # get_repos_by_group 兜底——语义略宽（有任意共享库即拒删，含自有库），
++                # 方向更保守，docs/017 有记
++                has_repo = len(seafile_api.get_repos_by_group(group_id)) > 0
+ 
+             child_groups = ccnet_api.get_child_groups(group_id)
+         except Exception as e:
+diff --git a/seahub/api2/endpoints/admin/groups.py b/seahub/api2/endpoints/admin/groups.py
+index 72d08bec..5b0b9e48 100644
+--- a/seahub/api2/endpoints/admin/groups.py
++++ b/seahub/api2/endpoints/admin/groups.py
+@@ -25,7 +25,6 @@ from seahub.admin_log.models import GROUP_CREATE, GROUP_DELETE, GROUP_TRANSFER
+ from seahub.api2.utils import api_error
+ from seahub.api2.throttling import UserRateThrottle
+ from seahub.api2.authentication import TokenAuthentication
+-from seahub.api2.permissions import IsProVersion
+ from seahub.share.models import ExtraGroupsSharePermission
+ from seahub.utils.ccnet_db import CcnetDB
+ 
+@@ -249,8 +248,13 @@ class AdminGroup(APIView):
+                                  operation=GROUP_TRANSFER, detail=admin_op_detail)
+ 
+         # set group quota
++        # [dev] 0014: 配额是 Pro C 核心 API，CE 无 set_group_quota——此前未守卫，
++        # CE 下带 quota 字段的 PUT 直接 500；这里明确拒绝并给出可读错误
+         group_quota = request.data.get('quota', '')
+         if group_quota:
++            if not is_pro_version():
++                error_msg = 'Setting group quota is not available in this edition.'
++                return api_error(status.HTTP_400_BAD_REQUEST, error_msg)
+             try:
+                 group_quota = int(group_quota)
+             except ValueError:
+@@ -448,7 +452,8 @@ class AdminDepartments(APIView):
+ class AdminGroupToDeptView(APIView):
+     """group to department"""
+     authentication_classes = (TokenAuthentication, SessionAuthentication)
+-    permission_classes = (IsAdminUser, IsProVersion)
++    # [dev] 0014: 解锁到 CE——change_groups_into_departments 是纯 SQL（ccnet 库表 CE 齐全）
++    permission_classes = (IsAdminUser,)
+     throttle_classes = (UserRateThrottle,)
+ 
+     def post(self, request, group_id):
+@@ -477,7 +482,9 @@ class AdminGroupToDeptView(APIView):
+         try:
+             ccnet_db = CcnetDB()
+             ccnet_db.change_groups_into_departments(group_id)
+-            seafile_api.set_group_quota(group_id, -2)
++            # [dev] 0014: 配额是 Pro C 核心 API，CE 守卫
++            if is_pro_version():
++                seafile_api.set_group_quota(group_id, -2)
+         except Exception as e:
+             logger.error(e)
+             error_msg = 'Internal Server Error'
