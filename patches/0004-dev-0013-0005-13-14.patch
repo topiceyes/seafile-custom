@@ -1,0 +1,106 @@
+From f56dd3b365f704a3a8975d589dd9e130d5205ed2 Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 17:10:26 +0800
+Subject: [PATCH 4/4] =?UTF-8?q?[dev]=200013=20=E6=81=A2=E5=A4=8D=200005=20?=
+ =?UTF-8?q?=E9=92=89=E9=92=89=E8=A7=A3=E7=BB=91=E7=A6=81=E4=BB=A4=EF=BC=88?=
+ =?UTF-8?q?13/14=20=E4=B8=A4=E6=AC=A1=E9=87=8D=E6=94=BE=E6=97=B6=E9=9D=99?=
+ =?UTF-8?q?=E9=BB=98=E4=B8=A2=E5=A4=B1=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+0005 在 13.0.28 补丁重放（204aea5e）时前后端两处防线都没打上：
+- 后端 dingtalk_disconnect 是上游原始实现，点解绑真删绑定（virtual id 用户
+  还删 Profile 联系邮箱），再扫码 create_unknown_user 新建空账号、旧数据消失
+- 前端 Disconnect 按钮随上游设置页重构迁到 pages/settings/，带活按钮落地
+
+本补丁恢复 0005 原始语义：视图入口硬拦（原逻辑留不可达）+ 已绑定态渲染
+状态文本。docs/016 补 0001-0010 存在性审计方法（本次就是只复测对撞语义、
+没逐个核对存在性而漏网的）。
+---
+ .../settings/social-login-dingtalk/index.js   | 35 ++-----------------
+ seahub/dingtalk/views.py                      |  7 ++++
+ 2 files changed, 10 insertions(+), 32 deletions(-)
+
+diff --git a/frontend/src/pages/settings/social-login-dingtalk/index.js b/frontend/src/pages/settings/social-login-dingtalk/index.js
+index 4e970a87..dd5430aa 100644
+--- a/frontend/src/pages/settings/social-login-dingtalk/index.js
++++ b/frontend/src/pages/settings/social-login-dingtalk/index.js
+@@ -1,10 +1,7 @@
+ import React from 'react';
+-import ConfirmDisconnectDingtalk from '@/components/dialog/confirm-disconnect-dingtalk';
+-import ModalPortal from '@/components/modal-portal';
+ import { gettext, siteRoot } from '@/utils/constants';
+ 
+ const {
+-  csrfToken,
+   langCode,
+   socialConnectedDingtalk,
+   socialNextPage
+@@ -12,45 +9,19 @@ const {
+ 
+ class SocialLoginDintalk extends React.Component {
+ 
+-  constructor(props) {
+-    super(props);
+-    this.state = {
+-      isConfirmDialogOpen: false
+-    };
+-  }
+-
+-  confirmDisconnect = () => {
+-    this.setState({
+-      isConfirmDialogOpen: true
+-    });
+-  };
+-
+-  toggleDialog = () => {
+-    this.setState({
+-      isConfirmDialogOpen: !this.state.isConfirmDialogOpen
+-    });
+-  };
+-
+   render() {
+     return (
+       <React.Fragment>
+         <div className="setting-item" id="social-auth">
+           <h3 className="setting-item-heading">{gettext('Single Sign On (SSO)')}</h3>
+           <p className="mb-2">{langCode == 'zh-cn' ? '钉钉' : 'Dingtalk'}</p>
++          {/* [dev] 0013 恢复 0005 企业策略：禁止解绑（后端 dingtalk_disconnect 同步硬拦）。
++              已绑定态渲染状态文本，不渲染 Disconnect 按钮。 */}
+           {socialConnectedDingtalk ?
+-            <button className="btn btn-outline-primary" onClick={this.confirmDisconnect}>{gettext('Disconnect')}</button> :
++            <p className="m-0">{langCode == 'zh-cn' ? '已连接（如需更换请联系管理员）' : 'Connected (contact administrator to change)'}</p> :
+             <a href={`${siteRoot}dingtalk/connect/?next=${encodeURIComponent(socialNextPage)}`} className="btn btn-outline-primary">{gettext('Connect')}</a>
+           }
+         </div>
+-        {this.state.isConfirmDialogOpen && (
+-          <ModalPortal>
+-            <ConfirmDisconnectDingtalk
+-              formActionURL={`${siteRoot}dingtalk/disconnect/?next=${encodeURIComponent(socialNextPage)}`}
+-              csrfToken={csrfToken}
+-              toggle={this.toggleDialog}
+-            />
+-          </ModalPortal>
+-        )}
+       </React.Fragment>
+     );
+   }
+diff --git a/seahub/dingtalk/views.py b/seahub/dingtalk/views.py
+index cd371e7d..9b43b5b9 100644
+--- a/seahub/dingtalk/views.py
++++ b/seahub/dingtalk/views.py
+@@ -277,6 +277,13 @@ def dingtalk_connect_callback(request):
+ @login_required
+ def dingtalk_disconnect(request):
+ 
++    # [dev] 0013 恢复 0005 企业策略：钉钉身份是普通用户的登录方式，禁止解绑。
++    # 0005 在 13.0.28/14.0.9 两次补丁重放时静默丢失（docs/016），此处恢复：
++    # 解绑不止锁死账号——virtual id 用户还会被删 Profile 联系邮箱，且再扫码时
++    # create_unknown_user 会新建一个空账号，旧数据"消失"。
++    # 原逻辑保留在下方（不可达），回退时删除下面这行 return 即可。
++    return render_error(request, _('Disconnecting DingTalk account is not allowed. Please contact administrator.'))
++
+     if not is_dingtalk_enabled():
+         return render_error(request, _('Error, please contact administrator.'))
+ 

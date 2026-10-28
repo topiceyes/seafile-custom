@@ -6,7 +6,8 @@ set -euo pipefail
 
 SEAHUB_DIR="$(cd "$(dirname "$0")/../seahub" && pwd)"
 CONTAINER=seafile
-INSTALL_PATH=/opt/seafile/seafile-server-12.0.14/seahub
+# 走 seafile-server-latest 符号链接，别硬编码版本目录（12→13 升级时踩过同款静默失效）
+INSTALL_PATH=/opt/seafile/seafile-server-latest/seahub
 
 echo "==> [1/4] npm build（宿主机）"
 cd "$SEAHUB_DIR/frontend"
