@@ -1,0 +1,31 @@
+From 351d1420eb257feb3926a9bd65c4e61854993737 Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 14:00:14 +0800
+Subject: [PATCH 3/3] =?UTF-8?q?[dev]=200012=20=E7=99=BB=E5=BD=95=E9=A1=B5?=
+ =?UTF-8?q?=E9=92=89=E9=92=89=E6=8C=89=E9=92=AE=E4=BF=9D=E7=95=99=20next?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+客户端 SSO 的设备参数（shib_*）坐在 next 的 query 里由 client_sso() 转发，
+钉钉图标按钮裸 {% url "dingtalk_sso" %} 丢 next → 参数链全断 + 首次扫码落首页。
+补 ?next= 写法对齐同文件 JS SSO 按钮；urlencode 保证内层 query 不被拆散。
+---
+ seahub/templates/registration/login.html | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/seahub/templates/registration/login.html b/seahub/templates/registration/login.html
+index 08e8cc3c..80aebf28 100644
+--- a/seahub/templates/registration/login.html
++++ b/seahub/templates/registration/login.html
+@@ -121,7 +121,9 @@ html, body, #wrapper { height:100%; }
+       {% endif %}
+ 
+       {% if enable_dingtalk %}
+-        <a href="{% url "dingtalk_sso" %}">
++        {# [dev] 0012: 保留 next —— 客户端 SSO 的设备参数（shib_*）坐在 next 的 query 里，#}
++        {# 丢了 next 参数链全断，用户首次扫码落在首页而非回到客户端确认页。写法对齐上面 JS SSO 按钮。 #}
++        <a href="{% url "dingtalk_sso" %}{% if next %}?next={{ next|urlencode }}{% endif %}">
+           <img src="{{MEDIA_URL}}img/dingtalk.png" width="32" alt="" title="{% if LANGUAGE_CODE == 'zh-cn' %}钉钉{% else %}DingTalk{% endif %}" />
+         </a>
+       {% endif %}

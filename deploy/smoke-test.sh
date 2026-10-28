@@ -50,6 +50,13 @@ for f in /etc/cron.d/seafile-backup /etc/cron.d/dingtalk-sync; do
 done
 ok "运维脚本与 cron 就位（backup.sh + 两个 cron，属性符合 cron 要求）"
 
+# [dev] 0013 防回归：dingtalk-sync cron 的 cd 路径必须走 seafile-server-latest 符号链接。
+# 12→13 升级时硬编码的 seafile-server-12.0.14 目录不存在，离职同步静默失效近一年无人知
+# （2026-10-28 排查设备不可见时顺带发现）。硬编码版本目录的坑必须在这里被拦住。
+grep -q 'cd /opt/seafile/seafile-server-latest/seahub' /etc/cron.d/dingtalk-sync \
+  || fail "dingtalk-sync cron 未走 seafile-server-latest 符号链接（硬编码版本目录升级后必静默失效）"
+ok "dingtalk-sync cron 路径走 seafile-server-latest 符号链接（防硬编码版本目录回归）"
+
 # ---- 4) 前端：验证【真正被浏览器请求的那份】，而不是构建的中间产物 ----
 #
 # 链条：frontend/build/frontend/static/js/*  →collectstatic→  media/assets/frontend/static/js/*

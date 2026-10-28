@@ -1,0 +1,94 @@
+From da7cd1e4856b5d0067ff87678906d8c6938b068b Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 13:59:59 +0800
+Subject: [PATCH 2/3] =?UTF-8?q?[dev]=200011=20=E5=AE=A2=E6=88=B7=E7=AB=AF?=
+ =?UTF-8?q?=20SSO=20=E6=97=A0=E8=AE=BE=E5=A4=87=E5=8F=82=E6=95=B0=E6=97=B6?=
+ =?UTF-8?q?=E6=8C=89=E6=B5=8F=E8=A7=88=E5=99=A8=20UA=20=E8=A1=A5=E5=BD=95?=
+ =?UTF-8?q?=20TokenV2?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+SeaDrive GUI ≤3.0.27 发 /api2/client-sso-link/ 不带 shib_* 参数（上游客户端
+缺陷），上游兜底 get_token_v1 的 token 同步可用但永远不进 api2_tokenv2：
+管理后台设备列表不可见、无法解绑/远程擦除。改为从浏览器 UA 猜平台、
+sha1(用户名|UA) 作 device_id（40 位合法、同用户同机稳定去重）补录 v2；
+UA 不可识别才退回 v1。远程擦除生效于 wiped_at DB 检查，不依赖真实 peer id。
+
+实测：无参数 SSO 全流程 → api2_tokenv2 新增 mac 行、apiToken 可认证 API。
+---
+ seahub/views/sso.py | 47 ++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 46 insertions(+), 1 deletion(-)
+
+diff --git a/seahub/views/sso.py b/seahub/views/sso.py
+index 4fd695d8..40e005c3 100644
+--- a/seahub/views/sso.py
++++ b/seahub/views/sso.py
+@@ -2,6 +2,7 @@
+ # -*- coding: utf-8 -*-
+ import jwt
+ import time
++import hashlib
+ import logging
+ 
+ from django.conf import settings
+@@ -28,6 +29,48 @@ from seahub.dingtalk.settings import is_dingtalk_enabled
+ logger = logging.getLogger(__name__)
+ 
+ 
++def _guess_platform_from_browser_ua(user_agent):
++    """[dev] 0011: 从浏览器 UA 猜桌面平台（windows/mac/linux），猜不出返回 None。"""
++    ua = (user_agent or '').lower()
++    if 'windows' in ua:
++        return 'windows'
++    if 'macintosh' in ua or 'mac os x' in ua:
++        return 'mac'
++    if 'x11' in ua or 'linux' in ua:
++        return 'linux'
++    return None
++
++
++def get_token_v2_fallback(request, username):
++    """[dev] 0011: 客户端 SSO 完成但没拿到 shib_* 设备参数时的 v2 补录兜底。
++
++    上游原样兜底是 get_token_v1()：v1 token 同步可用，但永远不进 api2_tokenv2，
++    管理后台设备列表看不到、无法解绑/远程擦除。触发场景实测有两种：
++      1. SeaDrive GUI ≤3.0.27 发 /api2/client-sso-link/ 根本不带 shib_* 参数
++         （seafile 同步客户端会带，属上游客户端缺陷）；
++      2. 登录页第三方图标按钮丢 next（login.html 0012 已修），参数随 next 的
++         query 一起死。
++
++    补录策略：完成确认是浏览器发起的，UA 是浏览器 UA（拿不到客户端版本），
++    但 OS 信息足够定平台；device_id 用 sha1(用户名|UA)——40 位合法、同用户同机
++    稳定去重（unique_together(user, platform, device_id) 下重链接复用同一行，
++    擦除后重建拿新 key）。远程擦除生效于 api2 认证的 wiped_at DB 检查，
++    不依赖真实 peer id，所以补录设备可正常解绑/擦除。
++    """
++    user_agent = request.META.get('HTTP_USER_AGENT', '')
++    platform = _guess_platform_from_browser_ua(user_agent)
++    if not platform:
++        logger.info('Client SSO fallback: cannot guess platform from UA %r, user %s',
++                    user_agent, username)
++        return get_token_v1(username)
++
++    device_id = hashlib.sha1(('%s|%s' % (username, user_agent)).encode('utf-8')).hexdigest()
++    device_name = 'SSO 登录设备（浏览器 UA 识别）'
++    return get_token_v2(request, username, platform, device_id,
++                        device_name, client_version='',
++                        platform_version='')
++
++
+ def sso(request):
+ 
+     request.session['is_sso_user'] = True
+@@ -246,7 +289,9 @@ def client_sso_complete(request, token):
+                     request, username, platform, device_id,
+                     device_name, client_version, platform_version)
+             else:
+-                api_token = get_token_v1(username)
++                # [dev] 0011: 无 shib_* 参数时按浏览器 UA 补录 TokenV2，
++                # 设备在管理后台可见、可解绑/远程擦除；UA 不可识别才退回上游 v1。
++                api_token = get_token_v2_fallback(request, username)
+ 
+             t.completed(username=username, api_key=api_token.key)
+             logger.info('Client SSO success, token: %s, user: %s' % (token, username))

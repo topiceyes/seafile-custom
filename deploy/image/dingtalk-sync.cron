@@ -3,4 +3,4 @@
 # dev ：官方镜像没烘 cron，由 seafile-server.yml 从同一路径挂载，两边内容不会漂移
 # 日志：数据卷内的 /shared/seafile/logs/dingtalk-sync.log
 #       （开发机 = deploy/seafile-data/seafile/logs/，生产 = $SEAFILE_VOLUME/seafile/logs/）
-17 * * * * root cd /opt/seafile/seafile-server-12.0.14/seahub && /opt/seafile/seafile-server-latest/seahub.sh python-env python3 manage.py deactivate_departed_users >> /shared/seafile/logs/dingtalk-sync.log 2>&1
+17 * * * * root cd /opt/seafile/seafile-server-latest/seahub && /opt/seafile/seafile-server-latest/seahub.sh python-env python3 manage.py deactivate_departed_users >> /shared/seafile/logs/dingtalk-sync.log 2>&1 || echo "$(date -Is) dingtalk-sync FAILED (cd 或命令非零退出，检查 seafile-server-latest 符号链接)" >> /shared/seafile/logs/dingtalk-sync.log
