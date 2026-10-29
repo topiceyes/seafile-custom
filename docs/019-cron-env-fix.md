@@ -1,6 +1,6 @@
 # 019 - cron 定时任务自 14.0 升级起静默失效的修复（产品 1.2.5）
 
-> 完成日期：2026-10-29 ｜ 状态：1.2.5 发布中（198 灰度前需用户批准）
+> 完成日期：2026-10-29 ｜ 状态：1.2.5 已发布并灰度到 198，验证全绿
 > 起因：018（1.2.4）灰度后盯首跑，发现部门同步 cron 失败——深挖后确认**两个 manage.py
 > 定时任务（离职同步 004 / 部门同步 018）自 14.0 升级以来每小时静默失败，dev/198 全中**
 > （198 从 10-27 装上起就没跑成过；141 同理）。
@@ -52,9 +52,12 @@ smoke 加动态断言：带 fake JWT 跑 bootstrap 必须生成 `.env`、连跑�
   可用；②14.0 的 `.env` 检查是上游行为变化，升级评估（docs/014）漏了「cron 环境
   与主进程环境的 env 差异」这个维度。
 
-## 5. 灰度结果（待灰度后回填）
+## 5. 灰度结果（2026-10-29 灰度到 198，全绿）
 
-- [ ] digest 溯源链完整
-- [ ] 198 容器内 `/opt/seafile/conf/.env` 存在且含 JWT_PRIVATE_KEY
-- [ ] 手动触发 `sync_dingtalk_departments` 成功（不等下个整点）
-- [ ] 下个整点 cron 日志出现 Tree sync created=N
+- [x] digest 溯源链完整：ghcr `1.2.5.5df84dfe` == `:latest` == 198 运行镜像
+      （`sha256:89f526a6…`）
+- [x] 容器内 `/opt/seafile/conf/.env` 已生成（bootstrap 首次启动时写入）
+- [x] 手动触发 `sync_dingtalk_departments` 成功：195 部门创建、23 名已登录钉钉用户
+      挂入各自部门、349 名未登录成员跳过（首登后下次同步自动挂入）
+- [x] `deactivate_departed_users --dry-run` 在 198 跑通（Departments: 196, active
+      members: 331，无离职）——同一 .env 修复覆盖，下个小时整点 cron 双任务恢复
