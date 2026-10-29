@@ -25,6 +25,7 @@
 | 017 | [部门功能解锁到 CE](017-departments-ce-unlock.md) | Departments 去 IsProVersion 门；配额/部门资料库为 C 核心硬缺口（1.2.3） | ✅ 已发布，灰度待验收 |
 | 018 | [钉钉部门自动同步](018-dingtalk-departments-sync.md) | 钉钉组织架构→Seafile 部门树+成员每小时对齐（1.2.4） | 发布中 |
 | 019 | [cron .env 修复](019-cron-env-fix.md) | 14.0 起 cron 无容器 env 致定时任务静默失效；bootstrap 幂等生成 conf/.env（1.2.5） | 发布中 |
+| 020 | [用户组列表 CE 守卫](020-groups-quota-ce-guard.md) | 部门进用户组列表后 /api/v2.1/groups/ 500；group_quota 补 is_pro_version 守卫（1.2.6） | 发布中 |
 
 ## 工作区结构
 
