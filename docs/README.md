@@ -24,6 +24,7 @@
 | 016 | [恢复钉钉解绑禁令](016-dingtalk-disconnect-ban-restore.md) | 0005 在 13/14 重放时丢失的审计与恢复（1.2.2） | ✅ 已发布灰度 |
 | 017 | [部门功能解锁到 CE](017-departments-ce-unlock.md) | Departments 去 IsProVersion 门；配额/部门资料库为 C 核心硬缺口（1.2.3） | ✅ 已发布，灰度待验收 |
 | 018 | [钉钉部门自动同步](018-dingtalk-departments-sync.md) | 钉钉组织架构→Seafile 部门树+成员每小时对齐（1.2.4） | 发布中 |
+| 019 | [cron .env 修复](019-cron-env-fix.md) | 14.0 起 cron 无容器 env 致定时任务静默失效；bootstrap 幂等生成 conf/.env（1.2.5） | 发布中 |
 
 ## 工作区结构
 
