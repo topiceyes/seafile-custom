@@ -1,0 +1,310 @@
+From d71e818d9463e985a7c1421ffdb60fc3d6135aa5 Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 11:27:35 +0800
+Subject: [PATCH 7/7] =?UTF-8?q?[dev]=200015=20=E9=92=89=E9=92=89=E7=BB=84?=
+ =?UTF-8?q?=E7=BB=87=E6=9E=B6=E6=9E=84=E2=86=92Seafile=20=E9=83=A8?=
+ =?UTF-8?q?=E9=97=A8=E8=87=AA=E5=8A=A8=E5=90=8C=E6=AD=A5=EF=BC=88=E6=A0=91?=
+ =?UTF-8?q?=E5=88=9B=E5=BB=BA/=E6=94=B9=E5=90=8D=20+=20=E6=88=90=E5=91=98?=
+ =?UTF-8?q?=E5=AE=8C=E5=85=A8=E5=AF=B9=E9=BD=90=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ .../commands/sync_dingtalk_departments.py     | 287 ++++++++++++++++++
+ 1 file changed, 287 insertions(+)
+ create mode 100644 seahub/dingtalk/management/commands/sync_dingtalk_departments.py
+
+diff --git a/seahub/dingtalk/management/commands/sync_dingtalk_departments.py b/seahub/dingtalk/management/commands/sync_dingtalk_departments.py
+new file mode 100644
+index 00000000..90d44504
+--- /dev/null
++++ b/seahub/dingtalk/management/commands/sync_dingtalk_departments.py
+@@ -0,0 +1,287 @@
++# Copyright (c) 2012-2026 Seafile Ltd.
++# encoding: utf-8
++#
++# [dev] 0015 钉钉组织架构 → Seafile 部门自动同步
++#
++# 从钉钉企业通讯录拉取完整部门树（topapi v2），在 Seafile 部门（address-book
++# group，creator='system admin'）中逐项对齐：
++#   - 新部门：按父子关系递归创建（BFS 序，父先于子），并登记
++#     ExternalDepartment(provider='dingtalk', outer_id=钉钉 dept_id) 映射
++#   - 改名：钉钉侧部门名变了 → 同步改 Seafile 部门名
++#   - 成员：完全对齐钉钉（用户拍板 2026-10-29）——钉钉通讯录在部门的就拉进来，
++#     不在的移出；is_staff 管理员保护不删；从未登录 Seafile 的钉钉成员无账号可挂，
++#     跳过并计数（首次扫码登录后下次同步自动挂入）
++#   - 钉钉侧删掉的部门：仅告警不删（部门可能已挂共享资料库，用户拍板 2026-10-29）
++#
++# 用法：
++#   docker exec seafile /opt/seafile/seafile-server-latest/seahub.sh python-env \
++#     python3 manage.py sync_dingtalk_departments [--dry-run]
++#
++# 安全阀（沿用 deactivate_departed_users 同款思路）：
++#   - 钉钉侧拉取结果为空（token 失效、权限回收）→ 直接中止，不动任何部门/成员
++#   - 单个部门创建/改名失败 → 记日志跳过，不中断整体同步
++#   - --dry-run 只打印不对 Seafile 做任何写操作
++
++import logging
++
++import requests
++from django.core.management.base import BaseCommand
++
++from seaserv import ccnet_api
++from seahub.auth.models import ExternalDepartment, SocialAuthUser
++from seahub.base.accounts import User
++from seahub.dingtalk.settings import (get_dingtalk_app_key,
++                                      get_dingtalk_app_secret,
++                                      is_dingtalk_enabled)
++from seahub.group.utils import set_group_name_cache
++
++logger = logging.getLogger(__name__)
++
++DINGTALK_PROVIDER = 'dingtalk'
++ROOT_DEPT_ID = 1
++
++# 钉钉服务端 API（topapi v2，与 deactivate_departed_users 同款；
++# 本机钉钉应用已实测开通部门/成员读权限——离职同步每小时在用）
++DEPARTMENT_LIST_SUB_URL = 'https://oapi.dingtalk.com/topapi/v2/department/listsub'
++USER_LIST_URL = 'https://oapi.dingtalk.com/topapi/v2/user/list'
++PAGE_SIZE = 100
++
++# 部门操作以 creator 身份执行（ccnet 校验 group.creator_name，部门即 'system admin'）
++DEPT_OPERATOR = 'system admin'
++
++
++def _get_orgapp_token():
++    from seahub.dingtalk.utils import dingtalk_get_orgapp_token
++    return dingtalk_get_orgapp_token()
++
++
++def _fetch_department_tree(token):
++    """BFS 拉全量部门树，返回 [(dept_id, name, parent_id), ...]（父先于子）。
++
++    topapi v2 department/listsub 返回当前部门的直接子部门列表。
++    """
++    tree = []
++    stack = [ROOT_DEPT_ID]
++    while stack:
++        dept_id = stack.pop(0)
++        resp = requests.post(DEPARTMENT_LIST_SUB_URL,
++                             params={'access_token': token},
++                             json={'dept_id': dept_id}).json()
++        if resp.get('errcode') != 0:
++            raise RuntimeError('department/listsub failed (dept %s): %s'
++                               % (dept_id, resp))
++        for dept in resp.get('result', []):
++            child_id = dept['dept_id']
++            tree.append((child_id, dept.get('name', ''), dept_id))
++            stack.append(child_id)
++    return tree
++
++
++def _fetch_dept_union_ids(token, dept_id):
++    """按部门分页拉成员 unionId 集合。"""
++    union_ids = set()
++    cursor = 0
++    while True:
++        resp = requests.post(USER_LIST_URL,
++                             params={'access_token': token},
++                             json={'dept_id': dept_id, 'cursor': cursor,
++                                   'size': PAGE_SIZE}).json()
++        if resp.get('errcode') != 0:
++            raise RuntimeError('user/list failed (dept %s): %s' % (dept_id, resp))
++        result = resp.get('result', {})
++        for member in result.get('list', []):
++            union_id = member.get('unionid', '')
++            if union_id:
++                union_ids.add(union_id)
++        if not result.get('has_more'):
++            break
++        cursor = result.get('next_cursor', cursor + PAGE_SIZE)
++    return union_ids
++
++
++class Command(BaseCommand):
++    help = 'Sync DingTalk organization departments (tree + members) into Seafile departments.'
++
++    def add_arguments(self, parser):
++        parser.add_argument('--dry-run', action='store_true',
++                            help='Only print what would be changed.')
++
++    def println(self, msg):
++        self.stdout.write(msg)
++
++    def handle(self, *args, **options):
++        self.dry_run = bool(options['dry_run'])
++        if self.dry_run:
++            self.println('DRY-RUN: 不做任何写操作')
++
++        if not is_dingtalk_enabled():
++            self.stderr.write('DingTalk login is not enabled, skip.')
++            return
++        if not (get_dingtalk_app_key() and get_dingtalk_app_secret()):
++            self.stderr.write('DingTalk AppKey/Secret not configured, skip.')
++            return
++
++        token = _get_orgapp_token()
++        if not token:
++            self.stderr.write('Failed to get DingTalk orgapp token, abort.')
++            return
++
++        try:
++            tree = _fetch_department_tree(token)
++        except Exception as e:
++            logger.error(e)
++            self.stderr.write('Failed to fetch department tree, abort: %s' % e)
++            return
++
++        # 安全阀：空树大概率是钉钉侧异常，绝不动现有部门
++        if not tree:
++            logger.error('Empty department tree from DingTalk, abort.')
++            self.stderr.write('Empty department tree from DingTalk, abort.')
++            return
++
++        self.println('DingTalk departments: %d' % len(tree))
++        self._sync_tree(tree)
++        self._sync_members(token, tree)
++        self._report_removed(tree)
++
++    # ---------------- 部门树 ----------------
++
++    def _sync_tree(self, tree):
++        """按 BFS 序确保每个钉钉部门都有对应 Seafile 部门（父先于子，映射必然已就绪）。"""
++        created = renamed = failed = 0
++        dept_ids = set(d for d, _, _ in tree)
++
++        for dept_id, name, parent_ding_id in tree:
++            mapping = ExternalDepartment.objects.get_by_provider_and_outer_id(
++                DINGTALK_PROVIDER, dept_id)
++            if mapping:
++                group = ccnet_api.get_group(mapping.group_id)
++                if group is None:
++                    # Seafile 侧部门被人工删了（映射还在）→ 重建并复用映射
++                    self.println('WARN: dept %s group %s missing in Seafile, recreating'
++                                 % (dept_id, mapping.group_id))
++                    group_id = self._create_department(name, parent_ding_id, dept_ids)
++                    if group_id:
++                        if not self.dry_run:
++                            mapping.group_id = group_id
++                            mapping.save()
++                        created += 1
++                    else:
++                        failed += 1
++                    continue
++                if group.group_name != name:
++                    self.println('RENAME dept %s: %r -> %r' % (dept_id, group.group_name, name))
++                    if not self.dry_run:
++                        ccnet_api.set_group_name(group.id, name)
++                        set_group_name_cache(group.id, name)
++                    renamed += 1
++                continue
++
++            group_id = self._create_department(name, parent_ding_id, dept_ids)
++            if group_id:
++                if not self.dry_run:
++                    ExternalDepartment.objects.create(
++                        group_id=group_id, provider=DINGTALK_PROVIDER,
++                        outer_id=dept_id)
++                self.println('CREATE dept %s %r -> group %s' % (dept_id, name, group_id))
++                created += 1
++            else:
++                failed += 1
++
++        self.println('Tree sync: created=%d renamed=%d failed=%d'
++                     % (created, renamed, failed))
++
++    def _resolve_parent_group_id(self, parent_ding_id, dept_ids):
++        """钉钉 parent dept_id → Seafile 父部门 group_id；根/未同步父 → -1（顶层）。"""
++        if parent_ding_id not in dept_ids:
++            return -1
++        parent_mapping = ExternalDepartment.objects.get_by_provider_and_outer_id(
++            DINGTALK_PROVIDER, parent_ding_id)
++        if not parent_mapping:
++            return -1
++        return parent_mapping.group_id
++
++    def _create_department(self, name, parent_ding_id, dept_ids):
++        if self.dry_run:
++            return -2  # 假 group_id（真 id 恒正；-2 仅让调用方统计走通，打印时一眼可辨）
++        try:
++            parent_group_id = self._resolve_parent_group_id(
++                parent_ding_id, dept_ids)
++            group_id = ccnet_api.create_group(
++                name, DEPT_OPERATOR, parent_group_id=parent_group_id)
++            if group_id < 0:
++                raise RuntimeError('ccnet create_group returned %s' % group_id)
++            return group_id
++        except Exception as e:
++            logger.error('Create department %r failed: %s' % (name, e))
++            self.stderr.write('Create department %r failed: %s' % (name, e))
++            return None
++
++    # ---------------- 成员对齐 ----------------
++
++    def _sync_members(self, token, tree):
++        added = removed = skipped_no_account = 0
++        for dept_id, name, _ in tree:
++            mapping = ExternalDepartment.objects.get_by_provider_and_outer_id(
++                DINGTALK_PROVIDER, dept_id)
++            if not mapping:
++                continue  # 部门创建失败的上游，成员无处可挂
++            group_id = mapping.group_id
++
++            try:
++                target_union_ids = _fetch_dept_union_ids(token, dept_id)
++            except Exception as e:
++                logger.error(e)
++                self.stderr.write('Fetch members failed (dept %s %r), skip: %s'
++                                  % (dept_id, name, e))
++                continue
++
++            # unionId → Seafile 用户名（只统计已登录建过账号的）
++            target_users = set()
++            for uid in target_union_ids:
++                binding = SocialAuthUser.objects.filter(
++                    provider=DINGTALK_PROVIDER, uid=uid).first()
++                if binding:
++                    target_users.add(binding.username)
++                else:
++                    skipped_no_account += 1
++
++            current_users = set()
++            for m in ccnet_api.get_group_members(group_id):
++                current_users.add(m.user_name)
++
++            for username in sorted(target_users - current_users):
++                self.println('ADD %s -> dept %s %r' % (username, dept_id, name))
++                if not self.dry_run:
++                    ccnet_api.group_add_member(group_id, DEPT_OPERATOR, username)
++                added += 1
++
++            for username in sorted(current_users - target_users):
++                # 管理员保护：不从部门移出（与离职同步的 is_staff 跳过同思路）
++                try:
++                    user = User.objects.get(email=username)
++                    if user.is_staff:
++                        self.println('SKIP remove admin %s from dept %s %r'
++                                     % (username, dept_id, name))
++                        continue
++                except User.DoesNotExist:
++                    pass
++                self.println('REMOVE %s <- dept %s %r' % (username, dept_id, name))
++                if not self.dry_run:
++                    ccnet_api.group_remove_member(group_id, DEPT_OPERATOR, username)
++                removed += 1
++
++        self.println('Member sync: added=%d removed=%d skipped_no_account=%d'
++                     % (added, removed, skipped_no_account))
++
++    # ---------------- 漂移告警 ----------------
++
++    def _report_removed(self, tree):
++        live_ids = set(d for d, _, _ in tree)
++        stale = ExternalDepartment.objects.filter(provider=DINGTALK_PROVIDER) \
++                                          .exclude(outer_id__in=live_ids)
++        for m in stale:
++            msg = ('WARN: DingTalk dept %s no longer exists; Seafile group %s kept '
++                   '(manual cleanup required)' % (m.outer_id, m.group_id))
++            logger.warning(msg)
++            self.println(msg)

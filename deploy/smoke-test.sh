@@ -57,6 +57,12 @@ grep -q 'cd /opt/seafile/seafile-server-latest/seahub' /etc/cron.d/dingtalk-sync
   || fail "dingtalk-sync cron 未走 seafile-server-latest 符号链接（硬编码版本目录升级后必静默失效）"
 ok "dingtalk-sync cron 路径走 seafile-server-latest 符号链接（防硬编码版本目录回归）"
 
+# [dev] 0015 防回归：部门同步命令必须挂在 cron 里。它纯增量、首次同步后部门树全量
+# 依赖定时任务维护，漏挂的表象是「钉钉改了架构 Seafile 不动」，无任何报错可查。
+grep -q 'sync_dingtalk_departments' /etc/cron.d/dingtalk-sync \
+  || fail "dingtalk-sync cron 未挂 sync_dingtalk_departments（0015 部门同步将不会定时执行）"
+ok "dingtalk-sync cron 已挂 sync_dingtalk_departments（0015 部门同步定时执行在位）"
+
 # ---- 4) 前端：验证【真正被浏览器请求的那份】，而不是构建的中间产物 ----
 #
 # 链条：frontend/build/frontend/static/js/*  →collectstatic→  media/assets/frontend/static/js/*

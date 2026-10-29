@@ -4,3 +4,6 @@
 # 日志：数据卷内的 /shared/seafile/logs/dingtalk-sync.log
 #       （开发机 = deploy/seafile-data/seafile/logs/，生产 = $SEAFILE_VOLUME/seafile/logs/）
 17 * * * * root cd /opt/seafile/seafile-server-latest/seahub && /opt/seafile/seafile-server-latest/seahub.sh python-env python3 manage.py deactivate_departed_users >> /shared/seafile/logs/dingtalk-sync.log 2>&1 || echo "$(date -Is) dingtalk-sync FAILED (cd 或命令非零退出，检查 seafile-server-latest 符号链接)" >> /shared/seafile/logs/dingtalk-sync.log
+# [dev] 0015 钉钉组织架构 → Seafile 部门同步（树 + 成员完全对齐；部门只增/改名，钉钉侧
+# 删掉的部门仅告警）。放在离职同步后同一时刻顺序执行。
+23 * * * * root cd /opt/seafile/seafile-server-latest/seahub && /opt/seafile/seafile-server-latest/seahub.sh python-env python3 manage.py sync_dingtalk_departments >> /shared/seafile/logs/dingtalk-sync.log 2>&1 || echo "$(date -Is) dingtalk-departments-sync FAILED (cd 或命令非零退出，检查 seafile-server-latest 符号链接)" >> /shared/seafile/logs/dingtalk-sync.log

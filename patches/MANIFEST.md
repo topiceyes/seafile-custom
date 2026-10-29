@@ -9,10 +9,10 @@
 ```ini
 base_commit     = 3c408439bfca54dbad61e2f6cdb706d2dcdf9f7a
 base_branch     = 14.0
-patch_count     = 6
-tree_sha        = acb4056d92092bfc4c4ad8061429124afa5abd73
-seahub_head_sha = 1381cb8a5b5a7574ac652d01a05baa1a20f8b330
-exported_at     = 2026-10-28
+patch_count     = 7
+tree_sha        = d7c7fdb686b61b40280fe2de4ac16a614cebd859
+seahub_head_sha = d71e818d9463e985a7c1421ffdb60fc3d6135aa5
+exported_at     = 2026-10-29
 ```
 
 ## 各字段含义
