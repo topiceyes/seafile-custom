@@ -193,6 +193,22 @@ echo "$out" | grep -q 'ENABLE_SEAFDAV 未设为 true' \
 n=$(grep -c 'CLIENT_SSO_VIA_LOCAL_BROWSER = True' /opt/seafile/conf/seahub_settings.py)
 [ "$n" = "1" ] || fail "钩子不幂等：CLIENT_SSO_VIA_LOCAL_BROWSER 出现 $n 次（应为 1）"
 
+# [dev] 0016：cron 下 seahub.sh 需要 conf/.env（JWT_PRIVATE_KEY），否则 /etc/cron.d 的
+# manage.py 任务每小时静默失败（2026-10-29 实排：14.0 升级后 dev/198 全中，日志只有
+# 一行 "Error: .env file not found"）。带 fake JWT 跑 bootstrap 必须生成 .env，且幂等。
+rm -f /opt/seafile/conf/.env
+out=$(JWT_PRIVATE_KEY=smoke-fake-jwt-key-0016 python3 /scripts/custom_bootstrap.py) || fail "custom_bootstrap.py（带 JWT）跑失败"
+grep -q '^JWT_PRIVATE_KEY=smoke-fake-jwt-key-0016$' /opt/seafile/conf/.env \
+  || fail "bootstrap 没生成 conf/.env（cron 的 manage.py 任务会因 seahub.sh .env 检查失败）"
+md5sum /opt/seafile/conf/.env > /tmp/env.md5
+out=$(JWT_PRIVATE_KEY=smoke-fake-jwt-key-0016 python3 /scripts/custom_bootstrap.py) || fail "custom_bootstrap.py 幂等复查跑失败"
+md5sum -c /tmp/env.md5 >/dev/null 2>&1 \
+  || fail "conf/.env 生成不幂等（第二遍内容变了）"
+out=$(python3 /scripts/custom_bootstrap.py) || fail "custom_bootstrap.py（无 JWT）跑失败"
+echo "$out" | grep -q '跳过 cron .env 生成' \
+  || fail "JWT_PRIVATE_KEY 缺失时 bootstrap 没有 loud warning（cron 任务会静默失败）"
+ok "cron .env 生成（0016）：有 JWT 生成、重复跑幂等、无 JWT 时 loud warning"
+
 # ---- 升级路径：已部署机器上新增一项设置 ----
 #
 # 这一条是 2026-09-21 生产登录 403 的成因：老镜像写过的 seahub_settings.py 里

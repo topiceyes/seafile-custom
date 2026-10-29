@@ -268,7 +268,60 @@ def init_custom_settings():
     heal_stale_caches(confdir)
     apply_webdav(confdir)
     apply_nginx_server_name()
+    ensure_cron_env(confdir)
     log('完成 —— 此时 seafile/seahub 尚未启动，无需重启即已生效')
+
+
+# ---------------------------------------------------------------------------
+# cron 下 seahub.sh 的 .env 依赖（[dev] 0016，2026-10-29）
+#
+# 14.0 的 seahub.sh set_env_config()：环境里没有 JWT_PRIVATE_KEY 时强制读
+# {central_config_dir}/.env，读不到直接退出。容器主进程（start.py 拉起的服务）
+# 有完整 env 没事，但 cron 服务（phusion runit 拉起）拿不到容器 env ——
+# 于是 /etc/cron.d 里两个 manage.py 定时任务（离职同步/部门同步）自 14.0 升级以来
+# 每小时静默失败，dingtalk-sync.log 里只有一行 "Error: .env file not found"
+# （dev/198 全中，198 从装上起就没跑成过；141 同理）。
+# 这里每次启动从容器 env 幂等生成 conf/.env —— cron 的 seahub.sh 读到它即可过检。
+# conf 目录在数据卷里，写一次持久；env 里的值变了（如 JWT 轮换）下次启动自动覆盖。
+# ---------------------------------------------------------------------------
+
+def ensure_cron_env(confdir):
+    env_file = os.path.join(confdir, '.env')
+    jwt = os.environ.get('JWT_PRIVATE_KEY', '').strip()
+    if not jwt:
+        log('未设 JWT_PRIVATE_KEY，跳过 cron .env 生成（/etc/cron.d 的 manage.py '
+            '任务会因 seahub.sh 的 .env 检查失败）')
+        return
+
+    wanted = {'JWT_PRIVATE_KEY': jwt}
+    for key in ('SEAFILE_SERVER_HOSTNAME', 'SEAFILE_SERVER_LETSENCRYPT',
+                'SEAFILE_SERVER_PROTOCOL'):
+        val = os.environ.get(key, '').strip()
+        if val:
+            wanted[key] = val
+
+    existing = {}
+    if os.path.isfile(env_file):
+        with open(env_file, 'r', encoding='utf-8') as fp:
+            for line in fp:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    k, _, v = line.partition('=')
+                    existing[k.strip()] = v.strip().strip('"').strip("'")
+
+    if all(existing.get(k) == v for k, v in wanted.items()):
+        return  # 已是最新，幂等
+
+    merged = dict(existing)
+    merged.update(wanted)
+    with open(env_file, 'w', encoding='utf-8') as fp:
+        fp.write('# 由 custom_bootstrap.ensure_cron_env 生成（[dev] 0016）：\n'
+                 '# cron 服务拿不到容器 env，seahub.sh 的 set_env_config() 需要本文件\n'
+                 '# 提供 JWT_PRIVATE_KEY，否则 /etc/cron.d 的 manage.py 任务每小时失败。\n'
+                 '# 值跟随容器环境变量，每次启动幂等刷新，手改无效。\n')
+        for k, v in merged.items():
+            fp.write('%s=%s\n' % (k, v))
+    log('已生成 %s（cron 下 seahub.sh 的 .env 检查需要；0016）' % env_file)
 
 
 # ---------------------------------------------------------------------------
