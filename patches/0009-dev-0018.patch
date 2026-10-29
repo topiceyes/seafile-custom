@@ -1,0 +1,76 @@
+From 56156267c8abe5d5e6b7bbfb4c7b34d3c0ba7132 Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 20:17:24 +0800
+Subject: [PATCH 9/9] =?UTF-8?q?[dev]=200018=20=E9=83=A8=E9=97=A8=E5=85=B1?=
+ =?UTF-8?q?=E4=BA=AB=E6=94=BE=E8=A1=8C=EF=BC=9A=E9=83=A8=E9=97=A8=E6=88=90?=
+ =?UTF-8?q?=E5=91=98/=E7=B3=BB=E7=BB=9F=E7=AE=A1=E7=90=86=E5=91=98?=
+ =?UTF-8?q?=E5=8F=AF=E5=85=B1=E4=BA=AB=EF=BC=88=E4=B8=8A=E6=B8=B8=E4=BB=85?=
+ =?UTF-8?q?=E9=83=A8=E9=97=A8=E7=AE=A1=E7=90=86=E5=91=98=EF=BC=8C=E5=90=8C?=
+ =?UTF-8?q?=E6=AD=A5=E9=83=A8=E9=97=A8=E6=97=A0=E7=AE=A1=E7=90=86=E5=91=98?=
+ =?UTF-8?q?=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ seahub/api2/endpoints/dir_shared_items.py | 15 +++++++++++----
+ seahub/api2/endpoints/shareable_groups.py |  4 +++-
+ 2 files changed, 14 insertions(+), 5 deletions(-)
+
+diff --git a/seahub/api2/endpoints/dir_shared_items.py b/seahub/api2/endpoints/dir_shared_items.py
+index cce4558e..8d47dccd 100644
+--- a/seahub/api2/endpoints/dir_shared_items.py
++++ b/seahub/api2/endpoints/dir_shared_items.py
+@@ -24,7 +24,7 @@ from seahub.api2.endpoints.utils import is_org_user
+ from seahub.base.templatetags.seahub_tags import email2nickname, \
+         email2contact_email
+ from seahub.base.accounts import User
+-from seahub.group.utils import is_group_member, is_group_admin
++from seahub.group.utils import is_group_member
+ from seahub.share.models import ExtraSharePermission, ExtraGroupsSharePermission
+ from seahub.share.utils import is_repo_admin, share_dir_to_user, \
+         share_dir_to_group, update_user_dir_permission, \
+@@ -460,8 +460,10 @@ class DirSharedItemsEndpoint(APIView):
+                         })
+                     continue
+ 
++                # [dev] 0018: 系统管理员不受「必须是群组成员」限制（管理共享给任意群组/部门）
+                 if not config.ENABLE_SHARE_TO_ALL_GROUPS and \
+-                        not is_group_member(gid, username):
++                        not is_group_member(gid, username) and \
++                        not request.user.is_staff:
+                     result['failed'].append({
+                         'group_name': group.group_name,
+                         'error_msg': 'Permission denied.'
+@@ -470,9 +472,14 @@ class DirSharedItemsEndpoint(APIView):
+ 
+                 # is sharing repo to department
+                 if group.parent_group_id != 0:
+-
++                    # [dev] 0018: 上游要求「部门管理员」才能共享给部门。但 0014 解锁部门 +
++                    # 0015 钉钉同步后，部门的 owner 是 'system admin' 伪账号、成员全是普通
++                    # 成员 → 全公司没有任何部门管理员，共享给部门对所有人都是 Permission
++                    # denied（198 实测）。CE 里部门即群组，按群组语义放行：部门成员或系统
++                    # 管理员（非成员且非管理员仍拒绝，部门不能被任意人灌库）。
+                     if not ENABLE_SHARE_TO_DEPARTMENT or \
+-                            ENABLE_SHARE_TO_DEPARTMENT and not is_group_admin(gid, username):
++                            ENABLE_SHARE_TO_DEPARTMENT and \
++                            not (is_group_member(gid, username) or request.user.is_staff):
+                         result['failed'].append({
+                             'group_name': group.group_name,
+                             'error_msg': 'Permission denied.'
+diff --git a/seahub/api2/endpoints/shareable_groups.py b/seahub/api2/endpoints/shareable_groups.py
+index 0b46726f..ba7feda8 100644
+--- a/seahub/api2/endpoints/shareable_groups.py
++++ b/seahub/api2/endpoints/shareable_groups.py
+@@ -48,7 +48,9 @@ class ShareableGroups(APIView):
+     def get(self, request):
+         """ List groups that user can share a library to.
+         """
+-        if config.ENABLE_SHARE_TO_ALL_GROUPS:
++        # [dev] 0018: 系统管理员始终可见全部群组/部门。否则在 ALL_GROUPS=False 的部署里
++        # 管理员也只看到自己加入的群组——部门一个都不出现，无从「共享给部门」。
++        if config.ENABLE_SHARE_TO_ALL_GROUPS or request.user.is_staff:
+             if CUSTOM_GET_GROUPS:
+                 groups = custom_get_groups(request)
+             else:
