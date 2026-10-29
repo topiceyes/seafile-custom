@@ -23,6 +23,7 @@
 | 015 | [SSO 设备可见性](015-client-sso-device-visibility.md) | 无设备参数的客户端 SSO 补录 TokenV2（1.2.1） | ✅ 已发布灰度 |
 | 016 | [恢复钉钉解绑禁令](016-dingtalk-disconnect-ban-restore.md) | 0005 在 13/14 重放时丢失的审计与恢复（1.2.2） | ✅ 已发布灰度 |
 | 017 | [部门功能解锁到 CE](017-departments-ce-unlock.md) | Departments 去 IsProVersion 门；配额/部门资料库为 C 核心硬缺口（1.2.3） | ✅ 已发布，灰度待验收 |
+| 018 | [钉钉部门自动同步](018-dingtalk-departments-sync.md) | 钉钉组织架构→Seafile 部门树+成员每小时对齐（1.2.4） | 发布中 |
 
 ## 工作区结构
 
