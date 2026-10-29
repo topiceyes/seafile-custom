@@ -26,6 +26,7 @@
 | 018 | [钉钉部门自动同步](018-dingtalk-departments-sync.md) | 钉钉组织架构→Seafile 部门树+成员每小时对齐（1.2.4） | 发布中 |
 | 019 | [cron .env 修复](019-cron-env-fix.md) | 14.0 起 cron 无容器 env 致定时任务静默失效；bootstrap 幂等生成 conf/.env（1.2.5） | 发布中 |
 | 020 | [用户组列表 CE 守卫](020-groups-quota-ce-guard.md) | 部门进用户组列表后 /api/v2.1/groups/ 500；group_quota 补 is_pro_version 守卫（1.2.6） | 发布中 |
+| 021 | [共享给部门放行](021-share-to-department-permission.md) | 同步部门无管理员致共享必然 403；部门成员/系统管理员可共享（1.2.7） | 发布中 |
 
 ## 工作区结构
 
