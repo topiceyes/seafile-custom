@@ -63,6 +63,15 @@ grep -q 'sync_dingtalk_departments' /etc/cron.d/dingtalk-sync \
   || fail "dingtalk-sync cron 未挂 sync_dingtalk_departments（0015 部门同步将不会定时执行）"
 ok "dingtalk-sync cron 已挂 sync_dingtalk_departments（0015 部门同步定时执行在位）"
 
+# [dev] 0019 防回归：钉钉展示名取真实姓名（登录/绑定用 user/get 的 result.name），
+# 部门同步用 user/list 的 name 回填存量 Profile.nickname。补丁重放丢失时表象是
+# 「名字又变回 nick」，没有任何报错，只能靠存在性断言兜底。
+grep -q '\[dev\] 0019' "$S/seahub/dingtalk/views.py" \
+  || fail "views.py 缺 0019 真实姓名标记（补丁重放丢失？）"
+grep -q '_sync_nicknames' "$S/seahub/dingtalk/management/commands/sync_dingtalk_departments.py" \
+  || fail "部门同步缺 _sync_nicknames（0019 昵称回填未生效）"
+ok "钉钉真实姓名（0019）：登录/绑定 + 部门同步回填在位"
+
 # ---- 4) 前端：验证【真正被浏览器请求的那份】，而不是构建的中间产物 ----
 #
 # 链条：frontend/build/frontend/static/js/*  →collectstatic→  media/assets/frontend/static/js/*

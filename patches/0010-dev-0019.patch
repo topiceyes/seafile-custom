@@ -1,0 +1,349 @@
+From 532a2a7a67b87dfbd5d1456f481b718f97f07fa5 Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 12:15:40 +0800
+Subject: [PATCH 10/10] =?UTF-8?q?[dev]=200019=20=E9=92=89=E9=92=89?=
+ =?UTF-8?q?=E7=94=A8=E6=88=B7=E6=98=BE=E7=A4=BA=E5=90=8D=E5=8F=96=E7=9C=9F?=
+ =?UTF-8?q?=E5=AE=9E=E5=A7=93=E5=90=8D=EF=BC=88=E7=99=BB=E5=BD=95/?=
+ =?UTF-8?q?=E7=BB=91=E5=AE=9A=20+=20=E6=AF=8F=E5=B0=8F=E6=97=B6=E5=90=8C?=
+ =?UTF-8?q?=E6=AD=A5=E5=9B=9E=E5=A1=AB=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ .../commands/sync_dingtalk_departments.py     | 124 ++++++++++++++++--
+ seahub/dingtalk/views.py                      | 106 ++++++++++++---
+ 2 files changed, 198 insertions(+), 32 deletions(-)
+
+diff --git a/seahub/dingtalk/management/commands/sync_dingtalk_departments.py b/seahub/dingtalk/management/commands/sync_dingtalk_departments.py
+index 90d44504..2a2bad86 100644
+--- a/seahub/dingtalk/management/commands/sync_dingtalk_departments.py
++++ b/seahub/dingtalk/management/commands/sync_dingtalk_departments.py
+@@ -12,6 +12,9 @@
+ #     不在的移出；is_staff 管理员保护不删；从未登录 Seafile 的钉钉成员无账号可挂，
+ #     跳过并计数（首次扫码登录后下次同步自动挂入）
+ #   - 钉钉侧删掉的部门：仅告警不删（部门可能已挂共享资料库，用户拍板 2026-10-29）
++#   - [dev] 0019 顺手回填用户真实姓名：user/list 已返回 name（通讯录真实姓名），
++#     用它更新 Profile.nickname（展示与用户搜索都读这个字段）。钉钉姓名为权威值，
++#     每小时覆盖；空 name 跳过，绝不抹掉昵称。
+ #
+ # 用法：
+ #   docker exec seafile /opt/seafile/seafile-server-latest/seahub.sh python-env \
+@@ -34,6 +37,7 @@ from seahub.dingtalk.settings import (get_dingtalk_app_key,
+                                       get_dingtalk_app_secret,
+                                       is_dingtalk_enabled)
+ from seahub.group.utils import set_group_name_cache
++from seahub.profile.models import Profile
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -77,9 +81,13 @@ def _fetch_department_tree(token):
+     return tree
+ 
+ 
+-def _fetch_dept_union_ids(token, dept_id):
+-    """按部门分页拉成员 unionId 集合。"""
+-    union_ids = set()
++def _fetch_dept_members(token, dept_id):
++    """按部门分页拉成员 {unionId: 真实姓名}。
++
++    topapi v2 user/list 同时返回 name（通讯录真实姓名），部门同步顺手用它回填
++    Profile.nickname（0019），不需要额外 API 调用。
++    """
++    members = {}
+     cursor = 0
+     while True:
+         resp = requests.post(USER_LIST_URL,
+@@ -92,11 +100,11 @@ def _fetch_dept_union_ids(token, dept_id):
+         for member in result.get('list', []):
+             union_id = member.get('unionid', '')
+             if union_id:
+-                union_ids.add(union_id)
++                members[union_id] = str(member.get('name') or '').strip()[:64]
+         if not result.get('has_more'):
+             break
+         cursor = result.get('next_cursor', cursor + PAGE_SIZE)
+-    return union_ids
++    return members
+ 
+ 
+ class Command(BaseCommand):
+@@ -141,7 +149,8 @@ class Command(BaseCommand):
+ 
+         self.println('DingTalk departments: %d' % len(tree))
+         self._sync_tree(tree)
+-        self._sync_members(token, tree)
++        member_names = self._sync_members(token, tree)
++        self._sync_nicknames(member_names)
+         self._report_removed(tree)
+ 
+     # ---------------- 部门树 ----------------
+@@ -221,24 +230,44 @@ class Command(BaseCommand):
+ 
+     def _sync_members(self, token, tree):
+         added = removed = skipped_no_account = 0
+-        for dept_id, name, _ in tree:
+-            mapping = ExternalDepartment.objects.get_by_provider_and_outer_id(
+-                DINGTALK_PROVIDER, dept_id)
+-            if not mapping:
+-                continue  # 部门创建失败的上游，成员无处可挂
+-            group_id = mapping.group_id
++        member_names = {}
++
++        # 根部门没有对应的 Seafile 部门，但直属成员的昵称也要回填（0019）；
++        # 只取名字，不参与 group 增删。
++        try:
++            for uid, real_name in _fetch_dept_members(token, ROOT_DEPT_ID).items():
++                if real_name:
++                    member_names[uid] = real_name
++        except Exception as e:
++            logger.error(e)
++            self.stderr.write('Fetch root dept members failed, nickname sync may '
++                              'miss some users: %s' % e)
+ 
++        for dept_id, name, _ in tree:
++            # 先拉成员再查映射：即使 Seafile 侧部门创建失败（无映射），
++            # 成员的真实姓名仍可回填到已有账号（0019）。
+             try:
+-                target_union_ids = _fetch_dept_union_ids(token, dept_id)
++                dept_members = _fetch_dept_members(token, dept_id)
+             except Exception as e:
+                 logger.error(e)
+                 self.stderr.write('Fetch members failed (dept %s %r), skip: %s'
+                                   % (dept_id, name, e))
+                 continue
+ 
++            for uid, real_name in dept_members.items():
++                if real_name:
++                    member_names[uid] = real_name
++
++            mapping = ExternalDepartment.objects.get_by_provider_and_outer_id(
++                DINGTALK_PROVIDER, dept_id)
++            if not mapping:
++                continue  # 部门创建失败的上游，成员无处可挂
++
++            group_id = mapping.group_id
++
+             # unionId → Seafile 用户名（只统计已登录建过账号的）
+             target_users = set()
+-            for uid in target_union_ids:
++            for uid in dept_members:
+                 binding = SocialAuthUser.objects.filter(
+                     provider=DINGTALK_PROVIDER, uid=uid).first()
+                 if binding:
+@@ -273,6 +302,73 @@ class Command(BaseCommand):
+ 
+         self.println('Member sync: added=%d removed=%d skipped_no_account=%d'
+                      % (added, removed, skipped_no_account))
++        return member_names
++
++    # ---------------- 真实姓名回填（0019） ----------------
++
++    def _sync_nicknames(self, member_names):
++        """把钉钉真实姓名回填到 Profile.nickname。
++
++        展示（email2nickname）和用户搜索（nickname__icontains）都读这个字段。
++        只更新有绑定账号且 name 非空的用户；空 name 跳过，绝不清空昵称。
++        """
++        if not member_names:
++            self.println('Nickname sync: no DingTalk member names, skip')
++            return
++        if not any(member_names.values()):
++            self.stderr.write('WARN: DingTalk user/list returned no name field, '
++                              'skip nickname sync.')
++            return
++
++        # 按 username 去重（同一用户可能在多个部门）。批量查询后仍做精确 uid
++        # 匹配：MySQL 默认排序规则大小写不敏感，uid__in 可能多匹配。
++        desired = {}
++        bindings = SocialAuthUser.objects.filter(
++            provider=DINGTALK_PROVIDER, uid__in=list(member_names))
++        for binding in bindings:
++            if binding.uid not in member_names:
++                continue
++            real_name = (member_names.get(binding.uid) or '').strip()
++            if not real_name:
++                continue
++            old = desired.get(binding.username)
++            if old is None:
++                desired[binding.username] = real_name
++            elif old != real_name:
++                logger.warning('Conflicting DingTalk names for %s: %r vs %r, keep %r',
++                               binding.username, old, real_name, old)
++
++        skipped_empty = sum(1 for n in member_names.values() if not n)
++        if not desired:
++            self.println('Nickname sync: renamed=0 unchanged=0 skipped_empty=%d'
++                         % skipped_empty)
++            return
++
++        profiles = {p.user: p for p in Profile.objects.filter(user__in=desired.keys())}
++        renamed = unchanged = 0
++        for username, real_name in sorted(desired.items()):
++            profile = profiles.get(username)
++            current = (profile.nickname if profile else '') or ''
++            if current.strip() == real_name:
++                unchanged += 1
++                continue
++            self.println('RENAME nickname %s: %r -> %r'
++                         % (username, current, real_name))
++            if not self.dry_run:
++                if profile is None:
++                    profile = Profile(user=username)
++                profile.nickname = real_name
++                try:
++                    # Profile.save() 触发 post_save 刷新 email2nickname 缓存；
++                    # QuerySet.update() 不会，会留下 24h 旧昵称。
++                    profile.save()
++                except Exception as e:
++                    logger.error('Update nickname for %s failed: %s', username, e)
++                    continue
++            renamed += 1
++
++        self.println('Nickname sync: renamed=%d unchanged=%d skipped_empty=%d'
++                     % (renamed, unchanged, skipped_empty))
+ 
+     # ---------------- 漂移告警 ----------------
+ 
+diff --git a/seahub/dingtalk/views.py b/seahub/dingtalk/views.py
+index 9b43b5b9..60564b32 100644
+--- a/seahub/dingtalk/views.py
++++ b/seahub/dingtalk/views.py
+@@ -66,6 +66,35 @@ def get_request_scheme_and_netloc(request):
+     return request.scheme + '://' + request.get_host()
+ 
+ 
++# [dev] 0019 钉钉展示名取真实姓名（topapi v2 user/get 的 result.name）。
++# OAuth userinfo 的 nick 是钉钉昵称（常为英文名/别名），不是通讯录真实姓名；
++# Profile.nickname 同时驱动展示（email2nickname）和用户搜索（nickname__icontains）。
++def _dingtalk_detailed_name(detailed_user_info):
++    if not isinstance(detailed_user_info, dict):
++        return ''
++    if detailed_user_info.get('errcode', 0) != 0:
++        return ''
++    result = detailed_user_info.get('result') or {}
++    if not isinstance(result, dict):
++        return ''
++    return str(result.get('name') or '').strip()[:64]
++
++
++def _pick_display_name(detailed_name, oauth_nick, current_nickname):
++    """Pick the display name to write to Profile.nickname.
++
++    - 真实姓名优先；
++    - user/get 失败（detailed_name 为空）时，已有昵称保持不动——否则一次瞬时失败
++      会把已修正的真实姓名打回 nick，正是 0019 要修的 bug；
++    - 只有当前昵称为空时才用 OAuth 的 nick 兜底（首次登录场景）。
++    """
++    if detailed_name:
++        return detailed_name
++    if (current_nickname or '').strip():
++        return ''
++    return str(oauth_nick or '').strip()[:64]
++
++
+ def dingtalk_login(request):
+ 
+     if not is_dingtalk_enabled():
+@@ -417,21 +446,43 @@ def dingtalk_callback_new(request):
+     if not profile:
+         profile = Profile(user=email)
+ 
+-    name = user_info['nick'] if 'nick' in user_info else ''
+-    if name:
+-        profile.nickname = name.strip()
+-        profile.save()
+-
++    # [dev] 0019 展示名优先用钉钉通讯录真实姓名（user/get 的 result.name）；
++    # 只有当前昵称为空时才用 OAuth 的 nick 兜底，避免 user/get 瞬时失败把已修正的
++    # 真实姓名打回昵称。
++    detailed_user_info = None
++    contact_email = ''
+     try:
+         user_id = dingtalk_get_userid_by_unionid_new(union_id)
+         detailed_user_info = dingtalk_get_detailed_user_info_new(user_id)
+-        contact_email = detailed_user_info.get('result', {}).get('email', '')
+-        if contact_email:
+-            profile.contact_email = contact_email
+-            profile.save()
++        result = (detailed_user_info.get('result') or {}) \
++            if isinstance(detailed_user_info, dict) else {}
++        contact_email = str(result.get('email') or '').strip()
+     except Exception as e:
+         logger.error(e)
+ 
++    new_name = _pick_display_name(
++        _dingtalk_detailed_name(detailed_user_info),
++        user_info.get('nick', ''), profile.nickname)
++    if new_name and profile.nickname != new_name:
++        profile.nickname = new_name
++        try:
++            profile.save()
++        except Exception as e:
++            logger.error(e)
++
++    # contact_email 唯一，冲突时不能连带回滚上面已保存的昵称
++    if contact_email and profile.contact_email != contact_email:
++        existing = Profile.objects.get_profile_by_contact_email(contact_email)
++        if existing is None or existing.user == email:
++            profile.contact_email = contact_email
++            try:
++                profile.save()
++            except Exception as e:
++                logger.error(e)
++        else:
++            logger.warning('DingTalk email %s already used by %s, skip for %s',
++                           contact_email, existing.user, email)
++
+     # generate auth token for Seafile client
+     api_token = get_api_token(request)
+ 
+@@ -537,20 +588,39 @@ def dingtalk_connect_callback_new(request):
+     if not profile:
+         profile = Profile(user=username)
+ 
+-    name = user_info['nick'] if 'nick' in user_info else ''
+-    if name:
+-        profile.nickname = name.strip()
+-        profile.save()
+-
++    # [dev] 0019 绑定流程同样以钉钉真实姓名为准（回退规则见 _pick_display_name）。
++    detailed_user_info = None
++    contact_email = ''
+     try:
+         user_id = dingtalk_get_userid_by_unionid_new(union_id)
+         detailed_user_info = dingtalk_get_detailed_user_info_new(user_id)
+-        contact_email = detailed_user_info.get('result', {}).get('email', '')
+-        if contact_email:
+-            profile.contact_email = contact_email
+-            profile.save()
++        result = (detailed_user_info.get('result') or {}) \
++            if isinstance(detailed_user_info, dict) else {}
++        contact_email = str(result.get('email') or '').strip()
+     except Exception as e:
+         logger.error(e)
+ 
++    new_name = _pick_display_name(
++        _dingtalk_detailed_name(detailed_user_info),
++        user_info.get('nick', ''), profile.nickname)
++    if new_name and profile.nickname != new_name:
++        profile.nickname = new_name
++        try:
++            profile.save()
++        except Exception as e:
++            logger.error(e)
++
++    if contact_email and profile.contact_email != contact_email:
++        existing = Profile.objects.get_profile_by_contact_email(contact_email)
++        if existing is None or existing.user == username:
++            profile.contact_email = contact_email
++            try:
++                profile.save()
++            except Exception as e:
++                logger.error(e)
++        else:
++            logger.warning('DingTalk email %s already used by %s, skip for %s',
++                           contact_email, existing.user, username)
++
+     response = HttpResponseRedirect(request.session.get('dingtalk_connect_redirect', '/'))
+     return response
