@@ -22,11 +22,12 @@
 | 014 | [Seafile 14 升级](014-seafile-14-upgrade.md) | 13.0→14.0.9 升级：补丁重放 + 破坏点清查 | ✅ 已落地（1.2.0） |
 | 015 | [SSO 设备可见性](015-client-sso-device-visibility.md) | 无设备参数的客户端 SSO 补录 TokenV2（1.2.1） | ✅ 已发布灰度 |
 | 016 | [恢复钉钉解绑禁令](016-dingtalk-disconnect-ban-restore.md) | 0005 在 13/14 重放时丢失的审计与恢复（1.2.2） | ✅ 已发布灰度 |
-| 017 | [部门功能解锁到 CE](017-departments-ce-unlock.md) | Departments 去 IsProVersion 门；配额/部门资料库为 C 核心硬缺口（1.2.3） | ✅ 已发布，灰度待验收 |
-| 018 | [钉钉部门自动同步](018-dingtalk-departments-sync.md) | 钉钉组织架构→Seafile 部门树+成员每小时对齐（1.2.4） | 发布中 |
-| 019 | [cron .env 修复](019-cron-env-fix.md) | 14.0 起 cron 无容器 env 致定时任务静默失效；bootstrap 幂等生成 conf/.env（1.2.5） | 发布中 |
-| 020 | [用户组列表 CE 守卫](020-groups-quota-ce-guard.md) | 部门进用户组列表后 /api/v2.1/groups/ 500；group_quota 补 is_pro_version 守卫（1.2.6） | 发布中 |
-| 021 | [共享给部门放行](021-share-to-department-permission.md) | 同步部门无管理员致共享必然 403；部门成员/系统管理员可共享（1.2.7） | 发布中 |
+| 017 | [部门功能解锁到 CE](017-departments-ce-unlock.md) | Departments 去 IsProVersion 门；配额/部门资料库为 C 核心硬缺口（1.2.3） | ✅ 已发布灰度 |
+| 018 | [钉钉部门自动同步](018-dingtalk-departments-sync.md) | 钉钉组织架构→Seafile 部门树+成员每小时对齐（1.2.4） | ✅ 已发布灰度 |
+| 019 | [cron .env 修复](019-cron-env-fix.md) | 14.0 起 cron 无容器 env 致定时任务静默失效；bootstrap 幂等生成 conf/.env（1.2.5） | ✅ 已发布灰度 |
+| 020 | [用户组列表 CE 守卫](020-groups-quota-ce-guard.md) | 部门进用户组列表后 /api/v2.1/groups/ 500；group_quota 补 is_pro_version 守卫（1.2.6） | ✅ 已发布灰度 |
+| 021 | [共享给部门放行](021-share-to-department-permission.md) | 同步部门无管理员致共享必然 403；部门成员/系统管理员可共享（1.2.7） | ✅ 已发布灰度 |
+| 022 | [钉钉真实姓名](022-dingtalk-real-name-nickname.md) | 显示名取通讯录真实姓名（不再用 nick）；登录/绑定修正 + 每小时同步回填（1.2.8） | ✅ 已发布灰度 |
 
 ## 工作区结构
 
