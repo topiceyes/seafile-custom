@@ -83,6 +83,7 @@ RUN chmod 0755 /usr/local/bin/seafile-backup.sh \
 #    （不想动上游脚本的替代方案与代价，见 docs/007 §4.2.2。）
 COPY image/custom_bootstrap.py /scripts/custom_bootstrap.py
 COPY image/test-department-spaces.py /usr/local/libexec/test-department-spaces.py
+COPY image/test-static-i18n.py /usr/local/libexec/test-static-i18n.py
 COPY image/run-management-task.py image/test-management-task.py /usr/local/libexec/
 COPY image/patch-upstream.py /tmp/patch-upstream.py
 
@@ -124,6 +125,8 @@ RUN grep -q '^SEAFILE_VERSION = ' ${INSTALLPATH}/seahub/seahub/settings.py \
        ${INSTALLPATH}/seahub/seahub/settings.py \
  && grep -q "^SEAFILE_VERSION = \"${SEAFILE_VERSION}\"" ${INSTALLPATH}/seahub/seahub/settings.py
 
+# JavaScript 翻译另有静态生成步骤；仅编译 .mo 不会刷新浏览器读取的 djangojs.js。
+# 先重建中英文语言包，再由 collectstatic 生成内容哈希，防止新文案回退英文或命中旧缓存。
 # 3) 构建期 collectstatic：stub 配置 + 一次性环境（已实测配方，无需数据库）。
 #    全部在同一条 RUN 内完成并清理——包括临时目录本身：
 #    /opt/seafile/{conf,seafile-data} 若残留在镜像层，首启 setup 会因
@@ -138,6 +141,9 @@ RUN set -eux; \
     mkdir -p /opt/seafile/conf /opt/seafile/seafile-data; \
     printf 'SECRET_KEY = "build-time-stub"\nDATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": "/tmp/buildstub.db"}}\nSERVICE_URL = "https://build.invalid"\n' \
       > /opt/seafile/conf/seahub_settings.py; \
-    cd ${INSTALLPATH}/seahub && python3 manage.py collectstatic --noinput; \
+    cd ${INSTALLPATH}/seahub; \
+    python3 manage.py compilejsi18n -l zh-cn; \
+    python3 manage.py compilejsi18n -l en; \
+    python3 manage.py collectstatic --noinput; \
     rm -f /opt/seafile/conf/seahub_settings.py /tmp/buildstub.db; \
     rm -rf /opt/seafile/conf /opt/seafile/seafile-data

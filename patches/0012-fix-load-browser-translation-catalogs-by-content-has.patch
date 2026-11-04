@@ -1,0 +1,72 @@
+From 36927a5212f49e1c137f7c87ad7472e0c65ba892 Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 20:08:30 +0800
+Subject: [PATCH 12/12] fix: load browser translation catalogs by content hash
+
+---
+ seahub/templates/base_for_react.html                 | 4 +++-
+ seahub/templates/markdown_file_view_react.html       | 4 +++-
+ seahub/templates/plain_markdown_file_view_react.html | 4 +++-
+ seahub/templates/wiki/wiki_publish_ssr.html          | 4 +++-
+ 4 files changed, 12 insertions(+), 4 deletions(-)
+
+diff --git a/seahub/templates/base_for_react.html b/seahub/templates/base_for_react.html
+index bb4aceb3..1c8316ab 100644
+--- a/seahub/templates/base_for_react.html
++++ b/seahub/templates/base_for_react.html
+@@ -187,7 +187,9 @@
+         }
+      };
+ </script>
+-<script src="{{ STATIC_URL }}scripts/i18n/{{ LANGUAGE_CODE }}/djangojs.js?v={{ seafile_version }}"></script>
++{% with catalog_path='scripts/i18n/'|add:LANGUAGE_CODE|add:'/djangojs.js' %}
++<script src="{% static catalog_path %}"></script>
++{% endwith %}
+ {% block extra_script %}{% endblock %}
+ </body>
+ </html>
+diff --git a/seahub/templates/markdown_file_view_react.html b/seahub/templates/markdown_file_view_react.html
+index b44da658..dea795da 100644
+--- a/seahub/templates/markdown_file_view_react.html
++++ b/seahub/templates/markdown_file_view_react.html
+@@ -74,7 +74,9 @@
+             }
+         }
+         </script>
+-        <script src="{{ STATIC_URL }}scripts/i18n/{{ LANGUAGE_CODE }}/djangojs.js?v={{ seafile_version }}"></script>
++        {% with catalog_path='scripts/i18n/'|add:LANGUAGE_CODE|add:'/djangojs.js' %}
++<script src="{% static catalog_path %}"></script>
++{% endwith %}
+ 
+         {% render_bundle 'markdownEditor' 'js' %}
+     </body>
+diff --git a/seahub/templates/plain_markdown_file_view_react.html b/seahub/templates/plain_markdown_file_view_react.html
+index 627b2b2a..70f0bcaa 100644
+--- a/seahub/templates/plain_markdown_file_view_react.html
++++ b/seahub/templates/plain_markdown_file_view_react.html
+@@ -62,7 +62,9 @@
+              }
+           }
+          </script>
+-         <script src="{{ STATIC_URL }}scripts/i18n/{{ LANGUAGE_CODE }}/djangojs.js?v={{ seafile_version }}"></script>
++         {% with catalog_path='scripts/i18n/'|add:LANGUAGE_CODE|add:'/djangojs.js' %}
++<script src="{% static catalog_path %}"></script>
++{% endwith %}
+ 
+          {% render_bundle 'plainMarkdownEditor' 'js' %}
+     </body>
+diff --git a/seahub/templates/wiki/wiki_publish_ssr.html b/seahub/templates/wiki/wiki_publish_ssr.html
+index 5a7d87db..a9e1339b 100644
+--- a/seahub/templates/wiki/wiki_publish_ssr.html
++++ b/seahub/templates/wiki/wiki_publish_ssr.html
+@@ -334,7 +334,9 @@ window.wiki = {
+   }
+ };
+         </script>
+-        <script src="{{ STATIC_URL }}scripts/i18n/{{ LANGUAGE_CODE }}/djangojs.js?v={{ seafile_version }}"></script>
++        {% with catalog_path='scripts/i18n/'|add:LANGUAGE_CODE|add:'/djangojs.js' %}
++<script src="{% static catalog_path %}"></script>
++{% endwith %}
+         <script>
+ function getElement(id) {
+   return document.getElementById(id);

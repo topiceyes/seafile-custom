@@ -9,9 +9,9 @@
 ```ini
 base_commit     = 3c408439bfca54dbad61e2f6cdb706d2dcdf9f7a
 base_branch     = 14.0
-patch_count     = 11
-tree_sha        = 371951441a4ed095c994b49b899d11f37bac396f
-seahub_head_sha = abbfccfd913b6378f06f6c9101f5a24639bd1e5d
+patch_count     = 12
+tree_sha        = 039cfe921d7aec16b952b25362d5d8461e9bb1e4
+seahub_head_sha = 36927a5212f49e1c137f7c87ad7472e0c65ba892
 exported_at     = 2026-11-04
 ```
 

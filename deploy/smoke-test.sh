@@ -18,6 +18,9 @@ python3 /usr/local/libexec/test-management-task.py
 INSTALLPATH=/opt/seafile/seafile-server-14.0.9
 S="$INSTALLPATH/seahub"
 
+# Verify real browser catalogs and the hashed URLs rendered by all React templates.
+python3 /usr/local/libexec/test-static-i18n.py "$S"
+
 fail() { echo "✗ $*" >&2; exit 1; }
 ok()   { echo "✓ $*"; }
 
