@@ -1,6 +1,6 @@
 # 024 - 独立部门共享空间设计
 
-日期：2026-11-04。状态：设计已在本地落地，实施记录和当前边界见 [025](025-department-spaces-implementation.md)。设计基线：产品 1.2.8 / Seafile CE 14.0.9。
+日期：2026-11-04。状态：设计已落地并随 1.3.0 发布，实施记录和当前边界见 [025](025-department-spaces-implementation.md)。设计基线：产品 1.2.8 / Seafile CE 14.0.9。
 
 ## 1. 目标与推荐方案
 

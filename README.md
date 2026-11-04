@@ -2,7 +2,7 @@
 
 基于 [Seafile CE 14.0.9](https://github.com/haiwen/seafile) 的二次开发，核心是**把企业钉钉通讯录接入 Seafile 的账号与部门共享体系**：钉钉扫码登录、配置后台管理化、离职员工自动禁用、独立部门共享空间。
 
-1.3.0 新增独立“部门共享”入口：自动建部门资料库、成员随钉钉授权、主管管理本部门及全部下级，新的空间不创建群组。设计见 [024](docs/024-department-spaces-design.md)，实现、验证和迁移边界见 [025](docs/025-department-spaces-implementation.md)。当前为本地开发完成状态，生产尚未升级。
+1.3.0 新增独立“部门共享”入口：自动建部门资料库、成员随钉钉授权、主管管理本部门及全部下级，新的空间不创建群组。设计见 [024](docs/024-department-spaces-design.md)，实现、验证和迁移边界见 [025](docs/025-department-spaces-implementation.md)。[1.3.0.a87d48f1 已发布](https://github.com/topiceyes/seafile-custom/releases/tag/1.3.0.a87d48f1)，正式镜像构建和冒烟通过；生产服务器尚未执行升级。
 
 知识库（每个功能的需求/方案/实现/踩坑）见 [`docs/`](docs/README.md)。
 

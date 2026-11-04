@@ -1,6 +1,16 @@
 # 025 - 独立部门共享空间实现（1.3.0）
 
-日期：2026-11-04。状态：本地实现和开通完成；生产尚未升级。设计见 [024](024-department-spaces-design.md)。
+日期：2026-11-04。状态：1.3.0 正式镜像已发布；生产服务器尚未执行升级。设计见 [024](024-department-spaces-design.md)。
+
+## 正式发布记录
+
+- 发布版本：[1.3.0.a87d48f1](https://github.com/topiceyes/seafile-custom/releases/tag/1.3.0.a87d48f1)，发布时间 2026-11-04。
+- 发布提交：`eb4a28f62a96e06d268e5b78e3390ff25404cda7`，`release/1.3.0` 分支与 Release tag 均锚定该提交。
+- [CI 41815632442](https://github.com/topiceyes/seafile-custom/actions/runs/41815632442) 完成 linux/amd64 镜像构建和推送、实际镜像冒烟、通道更新与 Release 资产上传。32 项部门业务回归与 4 项任务包装回归通过，三层文件指纹与本地构建一致。
+- 镜像 `ghcr.io/topiceyes/seafile-mc:1.3.0.a87d48f1` 与 `latest` 的 digest 相同：`sha256:fb4169e4631e1cae77fe6bb84389843508d0a33424e4db993451310ece425a1e`。
+- 三个安装资产 `seafile-prod.yml`、`init-prod-env.sh`、`env.prod.example` 的 SHA256 与提交内容逐一一致；Release 已成为 latest。
+- 三个安装资产与上一版一致，已有生产部署升级无需重取 compose；在现有部署目录执行 `docker compose pull && docker compose up -d`。新表随启动迁移，部门空间随定时同步开通；需要立即执行时，可先运行上述 dry-run，再运行同步命令。
+- 本次发布未连接生产服务器执行升级。生产历史个人资料迁移与旧部门群组退役仍按后文边界处理。
 
 ## 已实现
 
@@ -76,4 +86,4 @@ python3 deploy/image/test-management-task.py
 
 源码分支为 `codex/department-spaces`，提交 `abbfccfd`。11 个补丁树校验通过，目标树为 `371951441a4ed095c994b49b899d11f37bac396f`。镜像冒烟指纹：seahub 包 `069783b3…`，实际服务前端 `f6934b6e…`，media assets `5f83f688…`。
 
-尚未进行生产发布、生产历史个人库转移或旧部门群组删除。原版客户端会将新部门库显示为普通共享资料库，Web 中的独立部门分类不等于已经修改客户端导航。
+已发布正式镜像，尚未执行生产服务器升级、生产历史个人库转移或旧部门群组删除。原版客户端会将新部门库显示为普通共享资料库，Web 中的独立部门分类不等于已经修改客户端导航。
