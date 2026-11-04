@@ -1,6 +1,6 @@
 # 027 - 部门共享中文语言包修复（1.3.1）
 
-日期：2026-11-04。
+日期：2026-11-04。修复已发布：[1.3.1.c6fed2c4](https://github.com/topiceyes/seafile-custom/releases/tag/1.3.1.c6fed2c4)。
 
 ## 问题与修复
 
@@ -15,6 +15,7 @@
 - 旧镜像在新增检查中复现 `Access pending` 缺失，证明检查能够识别本次故障。
 - 检查浏览器实际读取的普通路径与内容哈希文件是否一致，逐项对比中英文 `.mo` 与 JavaScript 目录中的单数词条。
 - 以生产使用的 `ManifestStaticFilesStorage` 渲染四个模板的语言包片段，核验实际输出的内容哈希 URL。
-- 语言包检查加入统一镜像冒烟，与 32 项部门业务回归和 4 项任务包装回归一起运行。
+- 执行最终镜像的 JavaScript `gettext`，部门共享页面及分享提示共 37 条可见文案全部返回中文。
+- 语言包检查加入统一镜像冒烟，与 32 项部门业务回归和 4 项任务包装回归一起通过；[正式 CI 41827137153](https://github.com/topiceyes/seafile-custom/actions/runs/41827137153) 成功。
 
 无新数据库迁移，不改变部门成员或主管权限规则。发布与镜像 digest 以 GitHub Release 记录为准。
