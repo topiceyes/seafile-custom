@@ -52,7 +52,7 @@ ARG SEAFILE_VERSION=14.0.9
 ARG INSTALLPATH=/opt/seafile/seafile-server-14.0.9
 
 # 6) 备份依赖（mysqldump）
-RUN apt-get update && apt-get install -y --no-install-recommends mariadb-client \
+RUN apt-get update && apt-get install -y --no-install-recommends mariadb-client gettext \
     && rm -rf /var/lib/apt/lists/*
 
 # 7) 运维脚本与 cron —— 烘进镜像，不从宿主机 bind-mount。
@@ -63,9 +63,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends mariadb-client 
 #    烘进来之后，服务器上只需要一个 compose 文件 + 一个 .env。
 #    cron 要求 /etc/cron.d/ 下的文件属主为 root 且不可被 group/other 写。
 COPY image/backup.sh /usr/local/bin/seafile-backup.sh
+COPY image/run-management-task.py /usr/local/bin/seafile-management-task
 COPY image/backup.cron /etc/cron.d/seafile-backup
 COPY image/dingtalk-sync.cron /etc/cron.d/dingtalk-sync
 RUN chmod 0755 /usr/local/bin/seafile-backup.sh \
+ && chmod 0755 /usr/local/bin/seafile-management-task \
  && chmod 0644 /etc/cron.d/seafile-backup /etc/cron.d/dingtalk-sync \
  && chown root:root /etc/cron.d/seafile-backup /etc/cron.d/dingtalk-sync
 
@@ -80,6 +82,8 @@ RUN chmod 0755 /usr/local/bin/seafile-backup.sh \
 #    而 seahub_settings.py 是导入期读的，改了要重启。所以在这里改完**直接生效**。
 #    （不想动上游脚本的替代方案与代价，见 docs/007 §4.2.2。）
 COPY image/custom_bootstrap.py /scripts/custom_bootstrap.py
+COPY image/test-department-spaces.py /usr/local/libexec/test-department-spaces.py
+COPY image/run-management-task.py image/test-management-task.py /usr/local/libexec/
 COPY image/patch-upstream.py /tmp/patch-upstream.py
 
 # 5) 定制静态 nginx conf（13.0 起上游废除 /templates/ 模板渲染，conf 构建期静态烘入）。
@@ -107,6 +111,10 @@ COPY --from=frontend /frontend/webpack-stats.pro.json ${INSTALLPATH}/seahub/fron
 
 # 1) 二开 Python 包与模板（只覆盖 seahub/seahub；thirdpart/、seahub.sh、bin/ 保持官方）
 COPY seahub/seahub/ ${INSTALLPATH}/seahub/seahub/
+COPY seahub/locale/zh_CN/LC_MESSAGES/djangojs.po ${INSTALLPATH}/seahub/locale/zh_CN/LC_MESSAGES/djangojs.po
+COPY seahub/locale/en/LC_MESSAGES/djangojs.po ${INSTALLPATH}/seahub/locale/en/LC_MESSAGES/djangojs.po
+RUN msgfmt ${INSTALLPATH}/seahub/locale/zh_CN/LC_MESSAGES/djangojs.po -o ${INSTALLPATH}/seahub/locale/zh_CN/LC_MESSAGES/djangojs.mo \
+ && msgfmt ${INSTALLPATH}/seahub/locale/en/LC_MESSAGES/djangojs.po -o ${INSTALLPATH}/seahub/locale/en/LC_MESSAGES/djangojs.mo
 # 清掉官方层遗留的 __pycache__，避免旧字节码遮蔽补丁后的源文件
 RUN find ${INSTALLPATH}/seahub/seahub -name '__pycache__' -prune -exec rm -rf {} +
 

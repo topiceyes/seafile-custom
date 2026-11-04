@@ -1,6 +1,8 @@
 # Seafile 企业定制版（二开）
 
-基于 [Seafile CE 12.0](https://github.com/haiwen/seafile) 的二次开发，核心是**把企业钉钉通讯录接入 Seafile 的账号体系**：钉钉扫码登录、配置后台管理化、离职员工自动禁用。
+基于 [Seafile CE 14.0.9](https://github.com/haiwen/seafile) 的二次开发，核心是**把企业钉钉通讯录接入 Seafile 的账号与部门共享体系**：钉钉扫码登录、配置后台管理化、离职员工自动禁用、独立部门共享空间。
+
+1.3.0 新增独立“部门共享”入口：自动建部门资料库、成员随钉钉授权、主管管理本部门及全部下级，新的空间不创建群组。设计见 [024](docs/024-department-spaces-design.md)，实现、验证和迁移边界见 [025](docs/025-department-spaces-implementation.md)。当前为本地开发完成状态，生产尚未升级。
 
 知识库（每个功能的需求/方案/实现/踩坑）见 [`docs/`](docs/README.md)。
 
@@ -51,7 +53,7 @@
 
 ## 二开代码在哪
 
-Seafile 的二开改动集中在 `seahub`（Django Web 层），共 10 个提交，以 patch 形式记录在 `patches/`：
+Seafile 的二开改动集中在 `seahub`（Django Web 层）。当前有 11 个发布补丁，以 `patches/MANIFEST.md` 为准；下面是早期功能编号，升级时已合并重放。新增独立部门空间在发布补丁 0011 中：
 
 | 补丁 | 内容 | 文档 |
 |---|---|---|
@@ -66,12 +68,12 @@ Seafile 的二开改动集中在 `seahub`（Django Web 层），共 10 个提交
 | 0009 | 站点地址 `SERVICE_URL` 挪到管理后台、免重启生效 | [011](docs/011-service-url-admin-config.md) |
 | 0010 | 钉钉 OAuth 回调跟随发起域名（多入口扫码登录） | [001](docs/001-dingtalk-login.md) |
 
-基线是 `haiwen/seahub` 分支 `12.0` 的 commit `0877ad7`（全 SHA 与目标 tree sha 记在
+基线是 `haiwen/seahub` 分支 `14.0` 的 commit `3c408439`（全 SHA 与目标 tree sha 记在
 [`patches/MANIFEST.md`](patches/MANIFEST.md)，**由脚本生成，勿手工编辑**）。应用到上游源码：
 
 ```bash
 git clone https://github.com/haiwen/seahub.git && cd seahub
-git checkout 0877ad7                      # 固定 commit，不受上游分支前进影响
+git checkout 3c408439bfca54dbad61e2f6cdb706d2dcdf9f7a   # 固定 commit
 git am /path/to/this/repo/patches/*.patch
 ```
 

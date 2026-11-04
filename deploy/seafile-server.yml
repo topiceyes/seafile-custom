@@ -65,6 +65,7 @@ services:
       # dev 用的是官方镜像（没烘 cron），所以这里仍然挂载；文件在 image/ 下，
       # 与生产镜像烘进去的是同一份，不会漂移。prod 不需要挂载（见 seafile-prod.yml）。
       - ./image/dingtalk-sync.cron:/etc/cron.d/dingtalk-sync:ro
+      - ./image/run-management-task.py:/usr/local/bin/seafile-management-task:ro
     environment:
       # 13.0 起 DB 环境变量改名（旧 DB_HOST/DB_ROOT_PASSWD 不再被读取）
       - SEAFILE_MYSQL_DB_HOST=${SEAFILE_MYSQL_DB_HOST}

@@ -1,0 +1,2317 @@
+From abbfccfd913b6378f06f6c9101f5a24639bd1e5d Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 18:05:41 +0800
+Subject: [PATCH 11/11] feat: add independent department spaces with inherited
+ supervisor management
+
+---
+ frontend/src/api/seafile-api.js               |  20 ++
+ .../src/components/dialog/share-dialog.js     |  12 +-
+ frontend/src/models/repo.js                   |   2 +
+ .../app/main-panel/department-spaces/index.js | 179 ++++++++++
+ frontend/src/pages/app/main-panel/index.js    |   3 +
+ .../pages/app/main-panel/libraries/index.js   |   2 +-
+ .../pages/app/main-panel/shared-libs/index.js |   2 +-
+ .../pages/app/side-panel/libraries-sub-nav.js |   8 +
+ .../app/side-panel/main-side-nav-folded.js    |   2 +-
+ .../src/pages/app/side-panel/main-side-nav.js |   2 +-
+ locale/en/LC_MESSAGES/djangojs.po             | 124 +++++++
+ locale/zh_CN/LC_MESSAGES/djangojs.po          | 124 +++++++
+ seahub/api2/endpoints/groups.py               |   4 +
+ seahub/api2/endpoints/repos.py                |  15 +
+ seahub/api2/endpoints/search_user.py          |   4 +
+ seahub/api2/endpoints/shareable_groups.py     |   4 +
+ seahub/base/accounts.py                       |   5 +
+ seahub/department_spaces/__init__.py          |   1 +
+ seahub/department_spaces/apps.py              |  19 +
+ seahub/department_spaces/backend.py           |  84 +++++
+ seahub/department_spaces/directory.py         | 111 ++++++
+ seahub/department_spaces/legacy.py            |  56 +++
+ .../department_spaces/management/__init__.py  |   1 +
+ .../management/commands/__init__.py           |   1 +
+ .../commands/sync_department_spaces.py        |  57 +++
+ seahub/department_spaces/middleware.py        |  36 ++
+ .../migrations/0001_initial.py                |  96 +++++
+ .../department_spaces/migrations/__init__.py  |   0
+ seahub/department_spaces/models.py            |  67 ++++
+ seahub/department_spaces/policy.py            |  47 +++
+ seahub/department_spaces/services.py          | 191 ++++++++++
+ seahub/department_spaces/signals.py           |  20 ++
+ seahub/department_spaces/test_urls.py         |   9 +
+ seahub/department_spaces/tests.py             | 333 ++++++++++++++++++
+ seahub/department_spaces/views.py             | 154 ++++++++
+ .../commands/deactivate_departed_users.py     |  15 +-
+ .../commands/sync_dingtalk_departments.py     |   5 +
+ seahub/dingtalk/utils.py                      |   2 +-
+ seahub/settings.py                            |   3 +-
+ seahub/urls.py                                |   7 +
+ 40 files changed, 1810 insertions(+), 17 deletions(-)
+ create mode 100644 frontend/src/pages/app/main-panel/department-spaces/index.js
+ create mode 100644 seahub/department_spaces/__init__.py
+ create mode 100644 seahub/department_spaces/apps.py
+ create mode 100644 seahub/department_spaces/backend.py
+ create mode 100644 seahub/department_spaces/directory.py
+ create mode 100644 seahub/department_spaces/legacy.py
+ create mode 100644 seahub/department_spaces/management/__init__.py
+ create mode 100644 seahub/department_spaces/management/commands/__init__.py
+ create mode 100644 seahub/department_spaces/management/commands/sync_department_spaces.py
+ create mode 100644 seahub/department_spaces/middleware.py
+ create mode 100644 seahub/department_spaces/migrations/0001_initial.py
+ create mode 100644 seahub/department_spaces/migrations/__init__.py
+ create mode 100644 seahub/department_spaces/models.py
+ create mode 100644 seahub/department_spaces/policy.py
+ create mode 100644 seahub/department_spaces/services.py
+ create mode 100644 seahub/department_spaces/signals.py
+ create mode 100644 seahub/department_spaces/test_urls.py
+ create mode 100644 seahub/department_spaces/tests.py
+ create mode 100644 seahub/department_spaces/views.py
+
+diff --git a/frontend/src/api/seafile-api.js b/frontend/src/api/seafile-api.js
+index f624a750..ff251a82 100644
+--- a/frontend/src/api/seafile-api.js
++++ b/frontend/src/api/seafile-api.js
+@@ -94,6 +94,26 @@ class SeafileAPI {
+     return this.req.get(url);
+   }
+ 
++  listDepartmentSpaces() {
++    return this.req.get(this.server + '/api/v2.1/department-spaces/');
++  }
++
++  getDepartmentSpace(id) {
++    return this.req.get(this.server + '/api/v2.1/department-spaces/' + id + '/');
++  }
++
++  updateDepartmentSpace(id, data) {
++    return this.req.patch(this.server + '/api/v2.1/department-spaces/' + id + '/', data);
++  }
++
++  getDepartmentSpaceTrash(id, scanStat = null) {
++    return this.req.get(this.server + '/api/v2.1/department-spaces/' + id + '/trash/', { params: { scan_stat: scanStat } });
++  }
++
++  restoreDepartmentSpaceItem(id, data) {
++    return this.req.post(this.server + '/api/v2.1/department-spaces/' + id + '/restore/', data);
++  }
++
+   listAddressBookDepartments() {
+     const url = this.server + '/api/v2.1/address-book/departments/';
+     return this.req.get(url);
+diff --git a/frontend/src/components/dialog/share-dialog.js b/frontend/src/components/dialog/share-dialog.js
+index 3d644a05..a21c1d2f 100644
+--- a/frontend/src/components/dialog/share-dialog.js
++++ b/frontend/src/components/dialog/share-dialog.js
+@@ -38,6 +38,7 @@ class ShareDialog extends React.Component {
+       activeTab: this.getInitialActiveTab(),
+       isRepoJudgemented: false,
+       isRepoOwner: false,
++      isDepartmentSpace: false,
+     };
+   }
+ 
+@@ -48,6 +49,7 @@ class ShareDialog extends React.Component {
+       this.setState({
+         isRepoJudgemented: true,
+         isRepoOwner: isRepoOwner,
++        isDepartmentSpace: res.data.business_type === 'department_space',
+       });
+     }).catch(error => {
+       let errMessage = Utils.getErrorMsg(error);
+@@ -335,8 +337,14 @@ class ShareDialog extends React.Component {
+             {this.renderExternalShareMessage()}
+           </SeahubModalHeader>
+           <ModalBody className="share-dialog-content" role="tablist">
+-            {(itemType === 'library' || itemType === 'dir') && this.renderDirContent()}
+-            {itemType === 'file' && this.renderFileContent()}
++            {!this.state.isRepoJudgemented ? <Loading /> : this.state.isDepartmentSpace ? (
++              <p className="p-4">{gettext('Department access is managed by the organization. Public links and resharing are disabled.')}</p>
++            ) : (
++              <>
++                {(itemType === 'library' || itemType === 'dir') && this.renderDirContent()}
++                {itemType === 'file' && this.renderFileContent()}
++              </>
++            )}
+           </ModalBody>
+         </Modal>
+       </div>
+diff --git a/frontend/src/models/repo.js b/frontend/src/models/repo.js
+index 6fd08a08..2341f2e5 100644
+--- a/frontend/src/models/repo.js
++++ b/frontend/src/models/repo.js
+@@ -5,6 +5,8 @@ class Repo {
+     this.repo_id = object.repo_id;
+     this.repo_name = object.repo_name;
+     this.repo_type = object.repo_type;
++    this.business_type = object.business_type;
++    this.department_space_id = object.department_space_id;
+     this.permission = object.permission;
+     this.size_original = object.size;
+     this.size = Utils.bytesToSize(object.size);
+diff --git a/frontend/src/pages/app/main-panel/department-spaces/index.js b/frontend/src/pages/app/main-panel/department-spaces/index.js
+new file mode 100644
+index 00000000..6147a21b
+--- /dev/null
++++ b/frontend/src/pages/app/main-panel/department-spaces/index.js
+@@ -0,0 +1,179 @@
++import React, { useEffect, useState } from 'react';
++import { Link } from '@gatsbyjs/reach-router';
++import PropTypes from 'prop-types';
++import { seafileAPI } from '@/api/seafile-api';
++import Loading from '@/components/loading';
++import { gettext, siteRoot } from '@/utils/constants';
++import { Utils } from '@/utils/utils';
++
++function DepartmentSpaces({ spaceID }) {
++  const [loading, setLoading] = useState(true);
++  const [error, setError] = useState('');
++  const [spaces, setSpaces] = useState([]);
++  const [detail, setDetail] = useState(null);
++  const [description, setDescription] = useState('');
++  const [saving, setSaving] = useState(false);
++  const [syncOverdue, setSyncOverdue] = useState(false);
++  const [query, setQuery] = useState('');
++  const [trash, setTrash] = useState(null);
++
++  useEffect(() => {
++    let mounted = true;
++    setLoading(true);
++    setError('');
++    setTrash(null);
++    Promise.all([
++      seafileAPI.listDepartmentSpaces(),
++      spaceID ? seafileAPI.getDepartmentSpace(spaceID) : Promise.resolve(null)
++    ]).then(([list, selected]) => {
++      if (!mounted) return;
++      setSpaces(list.data.spaces);
++      setSyncOverdue(list.data.sync_overdue);
++      setDetail(selected ? selected.data : null);
++      setDescription(selected ? selected.data.description : '');
++      setLoading(false);
++    }).catch(err => {
++      if (!mounted) return;
++      setError(Utils.getErrorMsg(err, true));
++      setLoading(false);
++    });
++    return () => { mounted = false; };
++  }, [spaceID]);
++
++  const save = async () => {
++    setSaving(true);
++    try {
++      await seafileAPI.updateDepartmentSpace(spaceID, { description });
++      setDetail({ ...detail, description });
++      setError('');
++    } catch (err) {
++      setError(Utils.getErrorMsg(err, true));
++    } finally {
++      setSaving(false);
++    }
++  };
++
++  const loadTrash = async (append = false) => {
++    try {
++      const res = await seafileAPI.getDepartmentSpaceTrash(spaceID, append && trash ? trash.next_scan_stat : null);
++      setTrash(append ? { ...res.data, items: [...trash.items, ...res.data.items] } : res.data);
++    } catch (err) {
++      setError(Utils.getErrorMsg(err, true));
++    }
++  };
++
++  const restore = async item => {
++    setSaving(true);
++    try {
++      await seafileAPI.restoreDepartmentSpaceItem(spaceID, {
++        commit_id: item.commit_id, path: item.path, type: item.type
++      });
++      await loadTrash();
++      setError('');
++    } catch (err) {
++      setError(Utils.getErrorMsg(err, true));
++    } finally {
++      setSaving(false);
++    }
++  };
++
++  const parentName = space => {
++    const names = [];
++    let current = space;
++    const visited = new Set();
++    while (current && !visited.has(current.id)) {
++      visited.add(current.id);
++      names.unshift(current.name);
++      current = spaces.find(s => s.department_id === current.parent_department_id);
++    }
++    return names.join(' / ');
++  };
++
++  return (
++    <div className="main-panel-center flex-row">
++      <div className="cur-view-container">
++        <div className="cur-view-path">
++          <Link to={`${siteRoot}department-spaces/`}>{gettext('Department sharing')}</Link>
++          {detail && <span> / {detail.name}</span>}
++        </div>
++        <div className="cur-view-content p-4">
++          {error && <div className="alert alert-danger" role="alert">{error}</div>}
++          {loading ? <Loading /> : (
++            <>
++              {syncOverdue && <div className="alert alert-warning">{gettext('Directory information has not been refreshed in over two hours. Contact your administrator.')}</div>}
++              {!detail && (
++                <>
++                  <p>{gettext('Members access their own departments. Managers also manage all descendant departments.')}</p>
++                  <label className="d-block">{gettext('Find a department')}
++                    <input className="form-control mt-2" value={query} onChange={e => setQuery(e.target.value)} placeholder={gettext('Enter a department name')} />
++                  </label>
++                  {spaces.length === 0 && <p className="text-muted mt-4">{gettext('No department spaces are available yet. They appear automatically after provisioning.')}</p>}
++                  <table className="table mt-3">
++                    <thead><tr><th>{gettext('Department')}</th><th>{gettext('My role')}</th><th>{gettext('Status')}</th></tr></thead>
++                    <tbody>{spaces.filter(s => parentName(s).includes(query)).map(space => (
++                      <tr key={space.id}>
++                        <td><Link to={`${siteRoot}department-spaces/${space.id}/`}>{parentName(space)}</Link></td>
++                        <td>{space.role === 'manager' ? gettext('Manager') : space.role === 'member' ? gettext('Member') : gettext('System administrator')}</td>
++                        <td>{space.state === 'archived' ? gettext('Archived') : space.error ? gettext('Synchronization needs attention') : space.access_ready ? gettext('Ready') : gettext('Access pending')}</td>
++                      </tr>
++                    ))}
++                    </tbody>
++                  </table>
++                </>
++              )}
++              {detail && (
++                <>
++                  <h3>{detail.name} · {gettext('Shared files')}</h3>
++                  <p>{detail.description || gettext('Shared department files remain with the department.')}</p>
++                  {detail.access_ready && detail.state === 'active' && (
++                    <Link className="btn btn-primary mb-4" to={`${siteRoot}library/${detail.repo_id}/`}>{gettext('Open department library')}</Link>
++                  )}
++                  {!detail.access_ready && <p className="text-muted">{gettext('File access requires an applied member or manager grant. Administrators can inspect space status separately.')}</p>}
++                  {detail.legacy_libraries.length > 0 && (
++                    <>
++                      <h4>{gettext('Previously shared libraries')}</h4>
++                      <p className="text-muted">{gettext('These libraries retain their original owners and permissions and have not been transferred to the department.')}</p>
++                      <ul>{detail.legacy_libraries.map(repo => (
++                        <li key={repo.repo_id}><Link to={`${siteRoot}library/${repo.repo_id}/`}>{repo.name}</Link></li>
++                      ))}
++                      </ul>
++                    </>
++                  )}
++                  <h4>{gettext('Space managers')}</h4>
++                  <ul>{detail.managers.map((manager, index) => <li key={index}>{manager.name} · {manager.inherited ? gettext('Ancestor department manager') : gettext('Department manager')}</li>)}</ul>
++                  <h4>{gettext('Direct members')}</h4>
++                  <ul>{detail.members.filter(m => m.is_member).map((member, index) => <li key={index}>{member.name || gettext('Name pending')}{member.is_manager ? ` · ${gettext('Manager')}` : ''}</li>)}</ul>
++                  {detail.can_manage && (
++                    <>
++                      <h4 className="mt-4">{gettext('Space management')}</h4>
++                      <label className="d-block">{gettext('Space description')}
++                        <textarea className="form-control mt-2" maxLength={1000} rows={3} value={description} onChange={e => setDescription(e.target.value)} />
++                      </label>
++                      <button type="button" className="btn btn-primary" disabled={saving || description === detail.description} onClick={save}>{saving ? gettext('Processing…') : gettext('Save description')}</button>
++                      <button type="button" className="btn btn-secondary ml-2" disabled={saving || detail.state !== 'active'} onClick={() => loadTrash()}>{gettext('View trash')}</button>
++                    </>
++                  )}
++                  {trash && (
++                    <>
++                      <table className="table mt-4">
++                        <thead><tr><th>{gettext('Deleted item')}</th><th>{gettext('Action')}</th></tr></thead>
++                        <tbody>{trash.items.map((item, index) => (
++                          <tr key={index}><td>{item.path}</td><td><button type="button" className="btn btn-secondary btn-sm" disabled={saving} onClick={() => restore(item)}>{gettext('Restore')}</button></td></tr>
++                        ))}
++                        </tbody>
++                      </table>
++                      {trash.next_scan_stat && <button type="button" className="btn btn-secondary" onClick={() => loadTrash(true)}>{gettext('Load more')}</button>}
++                    </>
++                  )}
++                </>
++              )}
++            </>
++          )}
++        </div>
++      </div>
++    </div>
++  );
++}
++
++DepartmentSpaces.propTypes = { spaceID: PropTypes.string };
++export default DepartmentSpaces;
+diff --git a/frontend/src/pages/app/main-panel/index.js b/frontend/src/pages/app/main-panel/index.js
+index df723235..be76ebbd 100644
+--- a/frontend/src/pages/app/main-panel/index.js
++++ b/frontend/src/pages/app/main-panel/index.js
+@@ -2,6 +2,7 @@ import React from 'react';
+ import { Router } from '@gatsbyjs/reach-router';
+ import PropTypes from 'prop-types';
+ import { siteRoot } from '@/utils/constants';
++import DepartmentSpaces from './department-spaces';
+ import FilesActivities from './files-activities';
+ import GroupView from './groups/group-view';
+ import InvitationsView from './invitations/invitations-view';
+@@ -58,6 +59,8 @@ const MainPanelRouter = ({
+     <ShareAdminLibraries path={siteRoot + 'share-admin-libs'} />
+     <ShareAdminFolders path={siteRoot + 'share-admin-folders'} />
+     <SharedLibraries path={siteRoot + 'shared-libs'} />
++    <DepartmentSpaces path={siteRoot + 'department-spaces/'} />
++    <DepartmentSpaces path={siteRoot + 'department-spaces/:spaceID/'} />
+     <ShareWithOCM path={siteRoot + 'shared-with-ocm'} />
+     <OCMViaWebdav path={siteRoot + 'ocm-via-webdav'} />
+     <OCMRepoDir
+diff --git a/frontend/src/pages/app/main-panel/libraries/index.js b/frontend/src/pages/app/main-panel/libraries/index.js
+index 54a62b51..ec04c2f6 100644
+--- a/frontend/src/pages/app/main-panel/libraries/index.js
++++ b/frontend/src/pages/app/main-panel/libraries/index.js
+@@ -76,7 +76,7 @@ class Libraries extends Component {
+     const promiseListGroups = seafileAPI.listGroups(true);
+     Promise.all([promiseListRepos, promiseListGroups]).then(res => {
+       const [resListRepos, resListGroups] = res;
+-      const repoList = resListRepos.data.repos.map((item) => new Repo(item));
++      const repoList = resListRepos.data.repos.filter(item => item.business_type !== 'department_space').map((item) => new Repo(item));
+       let groups = resListGroups.data.map(item => {
+         let group = new Group(item);
+         group.repos = item.repos.map(item => new Repo(item));
+diff --git a/frontend/src/pages/app/main-panel/shared-libs/index.js b/frontend/src/pages/app/main-panel/shared-libs/index.js
+index a8a6686d..8a5ac121 100644
+--- a/frontend/src/pages/app/main-panel/shared-libs/index.js
++++ b/frontend/src/pages/app/main-panel/shared-libs/index.js
+@@ -30,7 +30,7 @@ class SharedLibraries extends Component {
+   componentDidMount() {
+     if (!this.props.repoList) {
+       seafileAPI.listRepos({ type: 'shared' }).then((res) => {
+-        let repoList = res.data.repos.map((item) => {
++        let repoList = res.data.repos.filter(item => item.business_type !== 'department_space').map((item) => {
+           return new Repo(item);
+         });
+         this.setState({
+diff --git a/frontend/src/pages/app/side-panel/libraries-sub-nav.js b/frontend/src/pages/app/side-panel/libraries-sub-nav.js
+index 7773814f..b10ac2d1 100644
+--- a/frontend/src/pages/app/side-panel/libraries-sub-nav.js
++++ b/frontend/src/pages/app/side-panel/libraries-sub-nav.js
+@@ -69,6 +69,14 @@ class LibrariesSubNav extends React.Component {
+             </Link>
+           </li>
+         )}
++        <li className={`nav-item ${this.getActiveClass('department-spaces')}`}>
++          <Link to={siteRoot + 'department-spaces/'}
++            className={`nav-link ${this.getActiveClass('department-spaces')}`}
++            onClick={(e) => this.tabItemClick(e, 'department-spaces')}>
++            <span className="nav-icon"><Icon symbol="department" /></span>
++            <span className="nav-text">{gettext('Department sharing')}</span>
++          </Link>
++        </li>
+         {this.props.showSharedLibraries && (
+           <li className={`nav-item ${this.getActiveClass('shared-libs')}`}>
+             <Link
+diff --git a/frontend/src/pages/app/side-panel/main-side-nav-folded.js b/frontend/src/pages/app/side-panel/main-side-nav-folded.js
+index a3978762..b6cbcdfc 100644
+--- a/frontend/src/pages/app/side-panel/main-side-nav-folded.js
++++ b/frontend/src/pages/app/side-panel/main-side-nav-folded.js
+@@ -204,7 +204,7 @@ class MainSideNavFolded extends React.Component {
+     if (currentTab === 'libraries') {
+       return 'active';
+     }
+-    const filesTabs = ['my-libs', 'shared-libs', 'org', 'shared-with-ocm', 'ocm-via-webdav', 'deleted'];
++    const filesTabs = ['my-libs', 'shared-libs', 'department-spaces', 'org', 'shared-with-ocm', 'ocm-via-webdav', 'deleted'];
+     if (filesTabs.includes(currentTab)) {
+       return 'active';
+     }
+diff --git a/frontend/src/pages/app/side-panel/main-side-nav.js b/frontend/src/pages/app/side-panel/main-side-nav.js
+index 117b4216..0b0a673d 100644
+--- a/frontend/src/pages/app/side-panel/main-side-nav.js
++++ b/frontend/src/pages/app/side-panel/main-side-nav.js
+@@ -179,7 +179,7 @@ class MainSideNav extends React.Component {
+       return 'active';
+     }
+     if (!filesNavUnfolded) {
+-      const filesTabs = ['my-libs', 'shared-libs', 'org', 'shared-with-ocm', 'ocm-via-webdav', 'deleted'];
++      const filesTabs = ['my-libs', 'shared-libs', 'department-spaces', 'org', 'shared-with-ocm', 'ocm-via-webdav', 'deleted'];
+       if (filesTabs.includes(currentTab)) {
+         return 'active';
+       }
+diff --git a/locale/en/LC_MESSAGES/djangojs.po b/locale/en/LC_MESSAGES/djangojs.po
+index 28c0b47d..102c5d22 100644
+--- a/locale/en/LC_MESSAGES/djangojs.po
++++ b/locale/en/LC_MESSAGES/djangojs.po
+@@ -13557,3 +13557,127 @@ msgstr "Name cannot be double dots"
+ 
+ #~ msgid "No faces"
+ #~ msgstr "No faces"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Department sharing"
++msgstr "Department sharing"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Ancestor department manager"
++msgstr "Ancestor department manager"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Department manager"
++msgstr "Department manager"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "System administrator"
++msgstr "System administrator"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Manager"
++msgstr "Manager"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "My role"
++msgstr "My role"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Archived"
++msgstr "Archived"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Synchronization needs attention"
++msgstr "Synchronization needs attention"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Ready"
++msgstr "Ready"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Access pending"
++msgstr "Access pending"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Processing…"
++msgstr "Processing…"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Save description"
++msgstr "Save description"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Deleted item"
++msgstr "Deleted item"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "View trash"
++msgstr "View trash"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Space management"
++msgstr "Space management"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Space description"
++msgstr "Space description"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Space managers"
++msgstr "Space managers"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Direct members"
++msgstr "Direct members"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Previously shared libraries"
++msgstr "Previously shared libraries"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Open department library"
++msgstr "Open department library"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Name pending"
++msgstr "Name pending"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Shared department files remain with the department."
++msgstr "Shared department files remain with the department."
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Directory information has not been refreshed in over two hours. Contact your administrator."
++msgstr "Directory information has not been refreshed in over two hours. Contact your administrator."
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Members access their own departments. Managers also manage all descendant departments."
++msgstr "Members access their own departments. Managers also manage all descendant departments."
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Find a department"
++msgstr "Find a department"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Enter a department name"
++msgstr "Enter a department name"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "No department spaces are available yet. They appear automatically after provisioning."
++msgstr "No department spaces are available yet. They appear automatically after provisioning."
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "File access requires an applied member or manager grant. Administrators can inspect space status separately."
++msgstr "File access requires an applied member or manager grant. Administrators can inspect space status separately."
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "These libraries retain their original owners and permissions and have not been transferred to the department."
++msgstr "These libraries retain their original owners and permissions and have not been transferred to the department."
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Shared files"
++msgstr "Shared files"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Department access is managed by the organization. Public links and resharing are disabled."
++msgstr "Department access is managed by the organization. Public links and resharing are disabled."
+diff --git a/locale/zh_CN/LC_MESSAGES/djangojs.po b/locale/zh_CN/LC_MESSAGES/djangojs.po
+index 3ad2bca6..76ae0654 100644
+--- a/locale/zh_CN/LC_MESSAGES/djangojs.po
++++ b/locale/zh_CN/LC_MESSAGES/djangojs.po
+@@ -12669,3 +12669,127 @@ msgstr "名称不能是两个点"
+ 
+ #~ msgid "No faces"
+ #~ msgstr "No faces"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Department sharing"
++msgstr "部门共享"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Ancestor department manager"
++msgstr "上级主管"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Department manager"
++msgstr "直属主管"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "System administrator"
++msgstr "系统管理员"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Manager"
++msgstr "主管"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "My role"
++msgstr "我的身份"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Archived"
++msgstr "已归档"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Synchronization needs attention"
++msgstr "同步待修复"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Ready"
++msgstr "可访问"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Access pending"
++msgstr "授权待完成"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Processing…"
++msgstr "处理中…"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Save description"
++msgstr "保存说明"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Deleted item"
++msgstr "已删除项目"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "View trash"
++msgstr "查看回收站"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Space management"
++msgstr "空间管理"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Space description"
++msgstr "空间说明"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Space managers"
++msgstr "空间主管"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Direct members"
++msgstr "直属成员"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Previously shared libraries"
++msgstr "历史共享资料"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Open department library"
++msgstr "打开部门资料库"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Name pending"
++msgstr "姓名待同步"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Shared department files remain with the department."
++msgstr "部门公共资料空间，文件随部门保留。"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Directory information has not been refreshed in over two hours. Contact your administrator."
++msgstr "组织信息尚未同步或已超过两小时未成功更新，请联系管理员检查同步状态。"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Members access their own departments. Managers also manage all descendant departments."
++msgstr "部门资料由组织统一管理。成员访问所属部门，主管管理本部门及所有下级部门。"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Find a department"
++msgstr "查找部门"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Enter a department name"
++msgstr "输入部门名称"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "No department spaces are available yet. They appear automatically after provisioning."
++msgstr "暂时没有可访问的部门空间。首次开通完成后会自动显示，无需申请加入群组。"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "File access requires an applied member or manager grant. Administrators can inspect space status separately."
++msgstr "当前文件授权尚未完成。系统管理员可查看空间状态，文件访问需要实际成员或主管授权。"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "These libraries retain their original owners and permissions and have not been transferred to the department."
++msgstr "以下资料仍归原所有者，沿用原共享权限，尚未移交为部门资产。"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Shared files"
++msgstr "共享资料"
++
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Department access is managed by the organization. Public links and resharing are disabled."
++msgstr "部门资料由组织统一授权，成员和主管自动获得访问权。暂不提供外链或再次共享。"
+diff --git a/seahub/api2/endpoints/groups.py b/seahub/api2/endpoints/groups.py
+index 1a56e864..a8ca2ae2 100644
+--- a/seahub/api2/endpoints/groups.py
++++ b/seahub/api2/endpoints/groups.py
+@@ -126,7 +126,11 @@ class Groups(APIView):
+                 logger.error(e)
+                 starred_repo_id_list = []
+ 
++        from seahub.department_spaces.legacy import legacy_group_ids
++        old_department_groups = legacy_group_ids()
+         for g in user_groups:
++            if g.id in old_department_groups:
++                continue
+             group_info = get_group_info(request, g.id, avatar_size)
+ 
+             if with_repos:
+diff --git a/seahub/api2/endpoints/repos.py b/seahub/api2/endpoints/repos.py
+index edb3f09e..d7ee9f85 100644
+--- a/seahub/api2/endpoints/repos.py
++++ b/seahub/api2/endpoints/repos.py
+@@ -389,6 +389,15 @@ class ReposView(APIView):
+         except Exception as e:
+             logger.error('Error when sending user-login message: %s' % str(e))
+ 
++        # Keep native client discovery unchanged; the Web app separates these libraries.
++        from seahub.department_spaces.models import Space
++        space_ids = dict(Space.objects.filter(repo_id__in=[r['repo_id'] for r in repo_info_list])
++                         .values_list('repo_id', 'id'))
++        for item in repo_info_list:
++            if item['repo_id'] in space_ids:
++                item['business_type'] = 'department_space'
++                item['department_space_id'] = space_ids[item['repo_id']]
++                item['owner_name'] = '部门资料'
+         return Response({'repos': repo_info_list})
+ 
+ 
+@@ -483,6 +492,12 @@ class RepoView(APIView):
+         if normalize_repo_status_code(repo.status) == 'read-only':
+             result['permission'] = 'r'
+ 
++        from seahub.department_spaces.models import Space
++        managed_space = Space.objects.filter(repo_id=repo_id).first()
++        if managed_space:
++            result['business_type'] = 'department_space'
++            result['department_space_id'] = managed_space.pk
++            result['owner_name'] = managed_space.department.name
+         return Response(result)
+ 
+     def delete(self, request, repo_id):
+diff --git a/seahub/api2/endpoints/search_user.py b/seahub/api2/endpoints/search_user.py
+index e6f78794..090353e4 100644
+--- a/seahub/api2/endpoints/search_user.py
++++ b/seahub/api2/endpoints/search_user.py
+@@ -164,11 +164,15 @@ class SearchUser(APIView):
+ 
+ def format_searched_user_result(request, users):
+     results = []
++    from seahub.department_spaces.models import Space
++    custodians = set(Space.objects.exclude(owner='').values_list('owner', flat=True))
+     if ENABLE_SHOW_LOGIN_ID_WHEN_SEARCH_USER:
+         profile_queryset = Profile.objects.filter(user__in=users)
+         profile_dict = {p.user: p.login_id for p in profile_queryset if p.login_id}
+ 
+     for email in users:
++        if email in custodians:
++            continue
+         url, is_default, date_uploaded = api_avatar_url(email)
+         user_info = {
+             "email": email,
+diff --git a/seahub/api2/endpoints/shareable_groups.py b/seahub/api2/endpoints/shareable_groups.py
+index ba7feda8..59ffd275 100644
+--- a/seahub/api2/endpoints/shareable_groups.py
++++ b/seahub/api2/endpoints/shareable_groups.py
+@@ -64,7 +64,11 @@ class ShareableGroups(APIView):
+                 groups = ccnet_api.get_groups(username)
+ 
+         filtered_groups = []
++        from seahub.department_spaces.legacy import legacy_group_ids
++        old_department_groups = legacy_group_ids()
+         for group in groups:
++            if group.id in old_department_groups:
++                continue
+             if not ENABLE_SHARE_TO_DEPARTMENT and group.parent_group_id != 0:
+                 continue
+             else:
+diff --git a/seahub/base/accounts.py b/seahub/base/accounts.py
+index 3f0078de..8a20a49d 100644
+--- a/seahub/base/accounts.py
++++ b/seahub/base/accounts.py
+@@ -582,6 +582,11 @@ class User(object):
+         """
+         When delete user, we should also delete group relationships.
+         """
++        if self.username.startswith('department-space-') and self.username.endswith('@system.invalid'):
++            from seahub.department_spaces.models import Space
++            if Space.objects.filter(owner=self.username).exists():
++                from django.core.exceptions import PermissionDenied
++                raise PermissionDenied('Department custodians must be managed through department space lifecycle operations.')
+         if self.source == "DB":
+             source = "DB"
+         else:
+diff --git a/seahub/department_spaces/__init__.py b/seahub/department_spaces/__init__.py
+new file mode 100644
+index 00000000..8b137891
+--- /dev/null
++++ b/seahub/department_spaces/__init__.py
+@@ -0,0 +1 @@
++
+diff --git a/seahub/department_spaces/apps.py b/seahub/department_spaces/apps.py
+new file mode 100644
+index 00000000..d1835f7b
+--- /dev/null
++++ b/seahub/department_spaces/apps.py
+@@ -0,0 +1,19 @@
++from django.apps import AppConfig
++
++
++class DepartmentSpacesConfig(AppConfig):
++    name = 'seahub.department_spaces'
++    default_auto_field = 'django.db.models.AutoField'
++
++    def ready(self):
++        from django.apps import apps
++        from django.db.models.signals import pre_save
++        from .signals import deny_public_credentials, on_login
++        for app, model in (('share', 'FileShare'), ('share', 'UploadLinkShare'),
++                           ('repo_api_tokens', 'RepoAPITokens')):
++            if apps.is_installed('seahub.' + app):
++                pre_save.connect(deny_public_credentials, sender=apps.get_model(app, model),
++                                 dispatch_uid='department_spaces.protect.' + model)
++        if apps.is_installed('seahub.base'):
++            from seahub.auth.signals import user_logged_in
++            user_logged_in.connect(on_login, dispatch_uid='department_spaces.login')
+diff --git a/seahub/department_spaces/backend.py b/seahub/department_spaces/backend.py
+new file mode 100644
+index 00000000..c86e7864
+--- /dev/null
++++ b/seahub/department_spaces/backend.py
+@@ -0,0 +1,84 @@
++"""CE adapter: ordinary libraries and per-user shares, without department groups."""
++import secrets
++
++
++class SeafileBackend:
++    def sync_legacy_members(self, snapshot, accounts):
++        from .legacy import sync_existing_members
++        sync_existing_members(snapshot, accounts)
++
++    def ensure_owner(self, provision_id):
++        from seahub.base.accounts import User
++        username = 'department-space-%s@system.invalid' % provision_id
++        try:
++            user = User.objects.get(email=username)
++        except User.DoesNotExist:
++            user = User(email=username)
++            user.is_staff = False
++            user.is_active = True
++            user.set_password(secrets.token_urlsafe(48))
++            if user.save() != 0:
++                raise RuntimeError('Unable to create department custodian')
++        if user.is_staff or not user.is_active:
++            raise RuntimeError('Department custodian is inactive or unexpectedly has staff privileges')
++        return username
++
++    def ensure_repo(self, space):
++        from seaserv import seafile_api
++        from seahub.profile.models import Profile
++        # Native clients use the owner's profile for their shared-library label.
++        Profile.objects.add_or_update(username=space.owner,
++                                      nickname=space.department.name[:64],
++                                      list_in_address_book='false')
++        marker = 'department-space:%s' % space.provision_id
++        if space.repo_id:
++            repo = seafile_api.get_repo(space.repo_id)
++            if not repo or seafile_api.get_repo_owner(space.repo_id) != space.owner:
++                raise RuntimeError('Managed library is missing or its ownership changed')
++        else:
++            # CE's owned-library listing omits desc; read each library's details.
++            owned = [seafile_api.get_repo(r.id) for r in seafile_api.get_owned_repo_list(space.owner)]
++            candidates = [r for r in owned if r and r.desc == marker]
++            if len(candidates) > 1:
++                raise RuntimeError('Multiple libraries match department provisioning marker')
++            if candidates:
++                repo = candidates[0]
++            else:
++                repo_id = seafile_api.create_repo(space.department.name + '共享资料',
++                                                  marker, space.owner, None)
++                repo = seafile_api.get_repo(repo_id)
++                if not repo:
++                    raise RuntimeError('Library creation did not produce a library')
++        name = space.department.name + '共享资料'
++        if repo.name != name:
++            seafile_api.edit_repo(repo.id, name, marker, space.owner)
++        return repo.id
++
++    def grant(self, space, username, permission='rw'):
++        from seaserv import seafile_api
++        result = seafile_api.share_repo(space.repo_id, space.owner, username, permission)
++        if result not in (None, 0):
++            raise RuntimeError('Core rejected department share')
++
++    def revoke(self, space, username):
++        from seaserv import seafile_api
++        result = seafile_api.remove_share(space.repo_id, space.owner, username)
++        if result not in (None, 0):
++            raise RuntimeError('Core rejected department access revocation')
++
++
++def resolve_accounts(union_ids):
++    from seahub.auth.models import SocialAuthUser
++    from seahub.base.accounts import User
++    result = {}
++    # Exact matching after database lookup protects case-sensitive union IDs.
++    for binding in SocialAuthUser.objects.filter(provider='dingtalk', uid__in=union_ids):
++        if binding.uid not in union_ids or binding.provider != 'dingtalk':
++            continue
++        try:
++            user = User.objects.get(email=binding.username)
++        except User.DoesNotExist:
++            continue
++        if user.is_active:
++            result[binding.uid] = binding.username
++    return result
+diff --git a/seahub/department_spaces/directory.py b/seahub/department_spaces/directory.py
+new file mode 100644
+index 00000000..66d2ebef
+--- /dev/null
++++ b/seahub/department_spaces/directory.py
+@@ -0,0 +1,111 @@
++"""Fetch a complete DingTalk snapshot before making any local changes."""
++import requests
++import time
++
++from .policy import InvalidDirectory, validate_snapshot
++
++BASE_URL = 'https://oapi.dingtalk.com/topapi/v2/'
++
++
++def _org_token():
++    from seahub.dingtalk.utils import dingtalk_get_orgapp_token
++    try:
++        return dingtalk_get_orgapp_token()
++    except requests.RequestException:
++        raise InvalidDirectory('DingTalk token request failed') from None
++
++
++def fetch_snapshot():
++    with requests.Session() as session:
++        return _fetch_snapshot(session)
++
++
++def _fetch_snapshot(session):
++    token = _org_token()
++    if not token:
++        raise InvalidDirectory('Unable to obtain DingTalk directory token')
++
++    def post(endpoint, body, result_type=dict):
++        for attempt in range(3):
++            try:
++                response = session.post(BASE_URL + endpoint,
++                                        params={'access_token': token}, json=body,
++                                        timeout=(5, 30))
++                response.raise_for_status()
++                data = response.json()
++                break
++            except (requests.RequestException, ValueError):
++                if attempt == 2:
++                    raise InvalidDirectory('%s request or response failed' % endpoint) from None
++                time.sleep(2 ** attempt)
++        if data.get('errcode') != 0 or not isinstance(data.get('result'), result_type):
++            # Never log request URLs, tokens or the full personnel response.
++            raise InvalidDirectory('%s failed (code %s)' % (endpoint, data.get('errcode')))
++        return data['result']
++
++    def department(dept_id):
++        result = post('department/get', {'dept_id': int(dept_id)})
++        if str(result.get('dept_id')) != dept_id or not result.get('name'):
++            raise InvalidDirectory('Incomplete department detail for %s' % dept_id)
++        # Real topapi v2 responses omit empty arrays (including the root's empty
++        # supervisor list). Normalize only after validating the detail envelope.
++        managers = result.get('dept_manager_userid_list', [])
++        if not isinstance(managers, list):
++            raise InvalidDirectory('Invalid supervisor list for department %s' % dept_id)
++        return result, [str(u) for u in managers]
++
++    identity_cache = {}
++
++    def identity(member):
++        userid = str(member.get('userid') or '')
++        union_id = str(member.get('unionid') or '')
++        if not userid or not union_id:
++            raise InvalidDirectory('Directory member is missing userid or unionid')
++        value = {'userid': userid, 'name': str(member.get('name') or '')[:64]}
++        identity_cache[userid] = (union_id, value)
++        return union_id, value
++
++    snapshot = {}
++    queue = ['1']
++    supervisor_ids = {}
++    while queue:
++        dept_id = queue.pop(0)
++        if dept_id in snapshot:
++            raise InvalidDirectory('Duplicate or cyclic department %s' % dept_id)
++        info, managers = department(dept_id)
++        members = {}
++        cursor = 0
++        visited_cursors = set()
++        while True:
++            if cursor in visited_cursors:
++                raise InvalidDirectory('Repeated member page cursor')
++            visited_cursors.add(cursor)
++            page = post('user/list', {'dept_id': int(dept_id), 'cursor': cursor, 'size': 100})
++            rows = page.get('list', [])
++            if (not isinstance(rows, list) or not isinstance(page.get('has_more'), bool)
++                    or (page['has_more'] and not rows)):
++                raise InvalidDirectory('Incomplete member page for department %s' % dept_id)
++            for member in rows:
++                uid, value = identity(member)
++                members[uid] = value
++            if not page['has_more']:
++                break
++            cursor = page.get('next_cursor')
++            if cursor is None:
++                raise InvalidDirectory('Missing next member cursor')
++        snapshot[dept_id] = {'name': str(info.get('name') or ''),
++                             'parent_id': str(info.get('parent_id') or ''),
++                             'members': members, 'managers': {}}
++        supervisor_ids[dept_id] = managers
++        # listsub has an array result, unlike the other topapi v2 endpoints.
++        children = post('department/listsub', {'dept_id': int(dept_id)}, list)
++        queue.extend(str(item['dept_id']) for item in children)
++
++    for dept_id, userids in supervisor_ids.items():
++        for userid in userids:
++            if userid not in identity_cache:
++                identity(post('user/get', {'userid': userid}))
++            uid, value = identity_cache[userid]
++            snapshot[dept_id]['managers'][uid] = value
++    validate_snapshot(snapshot)
++    return snapshot
+diff --git a/seahub/department_spaces/legacy.py b/seahub/department_spaces/legacy.py
+new file mode 100644
+index 00000000..6c837e9f
+--- /dev/null
++++ b/seahub/department_spaces/legacy.py
+@@ -0,0 +1,56 @@
++"""Compatibility for existing personal libraries shared to old DingTalk groups.
++
++New spaces never create groups. Keep existing ACLs until library owners decide
++whether to transfer their personal libraries, but move their UI out of groups.
++"""
++from .models import Space
++
++
++def legacy_group_ids():
++    from seahub.auth.models import ExternalDepartment
++    dept_ids = set(Space.objects.values_list(
++        'department__external_id', flat=True))
++    return {m.group_id for m in ExternalDepartment.objects.filter(provider='dingtalk')
++            if str(m.outer_id) in dept_ids}
++
++
++def list_legacy_libraries(space, username):
++    from seaserv import seafile_api
++    from seahub.auth.models import ExternalDepartment
++    if not space.department.external_id.isdecimal():
++        return []  # The legacy schema only accepts numeric DingTalk department IDs.
++    mapping = ExternalDepartment.objects.get_by_provider_and_outer_id(
++        'dingtalk', space.department.external_id)
++    if not mapping:
++        return []
++    result = []
++    for repo in seafile_api.get_repos_by_group(mapping.group_id):
++        permission = seafile_api.check_permission(repo.id, username)
++        if permission:
++            result.append({'repo_id': repo.id, 'name': repo.name, 'permission': permission})
++    return result
++
++
++def sync_existing_members(snapshot, accounts):
++    from seaserv import ccnet_api
++    from seahub.auth.models import ExternalDepartment
++    from seahub.base.accounts import User
++    for mapping in ExternalDepartment.objects.filter(provider='dingtalk'):
++        data = snapshot.get(str(mapping.outer_id))
++        if not data:
++            # Removed departments remain a deliberate archival decision.
++            continue
++        group = ccnet_api.get_group(mapping.group_id)
++        if not group:
++            continue
++        target = {accounts[uid] for uid in data['members'] if uid in accounts}
++        current = {m.user_name for m in ccnet_api.get_group_members(mapping.group_id)}
++        for username in target - current:
++            ccnet_api.group_add_member(mapping.group_id, 'system admin', username)
++        for username in current - target:
++            try:
++                if User.objects.get(email=username).is_staff:
++                    continue  # Preserve pre-existing legacy administrator exceptions.
++            except User.DoesNotExist:
++                pass
++            ccnet_api.group_remove_member(mapping.group_id, 'system admin', username)
+diff --git a/seahub/department_spaces/management/__init__.py b/seahub/department_spaces/management/__init__.py
+new file mode 100644
+index 00000000..8b137891
+--- /dev/null
++++ b/seahub/department_spaces/management/__init__.py
+@@ -0,0 +1 @@
++
+diff --git a/seahub/department_spaces/management/commands/__init__.py b/seahub/department_spaces/management/commands/__init__.py
+new file mode 100644
+index 00000000..8b137891
+--- /dev/null
++++ b/seahub/department_spaces/management/commands/__init__.py
+@@ -0,0 +1 @@
++
+diff --git a/seahub/department_spaces/management/commands/sync_department_spaces.py b/seahub/department_spaces/management/commands/sync_department_spaces.py
+new file mode 100644
+index 00000000..291c569d
+--- /dev/null
++++ b/seahub/department_spaces/management/commands/sync_department_spaces.py
+@@ -0,0 +1,57 @@
++import fcntl
++import json
++import os
++import tempfile
++
++from django.core.management.base import BaseCommand, CommandError
++from django.utils import timezone
++
++from ...directory import fetch_snapshot
++from ...services import reconcile_access, sync_directory
++from ...models import SyncRun
++
++
++class Command(BaseCommand):
++    help = 'Sync independent DingTalk department spaces, supervisors and CE user shares.'
++
++    def add_arguments(self, parser):
++        parser.add_argument('--dry-run', action='store_true')
++        parser.add_argument('--reconcile-only', action='store_true')
++        parser.add_argument('--allow-large-changes', action='store_true',
++                            help='Explicitly accept a reviewed change exceeding the 25%% removal threshold.')
++
++    def handle(self, *args, **options):
++        if options['dry_run'] and options['reconcile_only']:
++            raise CommandError('--dry-run and --reconcile-only cannot be combined')
++        fd = os.open(os.path.join(tempfile.gettempdir(), 'seafile-department-spaces.lock'),
++                     os.O_CREAT | os.O_RDWR, 0o600)
++        with os.fdopen(fd, 'w') as lock:
++            started = timezone.now()
++            try:
++                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
++            except BlockingIOError:
++                raise CommandError('A department space sync is already running')
++            try:
++                if options['reconcile_only']:
++                    summary = {'errors': reconcile_access()}
++                else:
++                    snapshot = fetch_snapshot()
++                    summary = sync_directory(snapshot, dry_run=options['dry_run'],
++                                             allow_large_changes=options['allow_large_changes'])
++                    if not options['dry_run']:
++                        # Preserve the existing real-name backfill without writing any group.
++                        from seahub.dingtalk.management.commands.sync_dingtalk_departments import Command as Legacy
++                        names = {uid: value['name'] for dept in snapshot.values()
++                                 for uid, value in {**dept['members'], **dept['managers']}.items()}
++                        legacy = Legacy()
++                        legacy.dry_run = False
++                        legacy._sync_nicknames(names)
++                self.stdout.write(json.dumps(summary, ensure_ascii=False))
++                if summary.get('errors'):
++                    raise CommandError('Department access reconciliation is incomplete; rerun --reconcile-only')
++            except CommandError:
++                raise
++            except Exception as error:
++                if not options['dry_run'] and not SyncRun.objects.filter(started_at__gte=started).exists():
++                    SyncRun.objects.create(state='failed', finished_at=timezone.now(), error=str(error))
++                raise CommandError(str(error)) from error
+diff --git a/seahub/department_spaces/middleware.py b/seahub/department_spaces/middleware.py
+new file mode 100644
+index 00000000..6fd85481
+--- /dev/null
++++ b/seahub/department_spaces/middleware.py
+@@ -0,0 +1,36 @@
++import json
++
++from django.http import JsonResponse
++from django.utils.deprecation import MiddlewareMixin
++
++from .models import Space
++
++
++class SpacePolicyMiddleware(MiddlewareMixin):
++    """Guard old sharing endpoints. Singular upload-link is file transfer, not public sharing."""
++    def process_view(self, request, view_func, view_args, view_kwargs):
++        if request.method not in ('POST', 'PUT', 'PATCH', 'DELETE'):
++            return
++        path = request.path_info
++        sensitive = any(part in path for part in (
++            '/share-links/', '/multi-share-links/', '/upload-links/', '/shared-repos/',
++            '/shared-items/', '/shared_items/', '/user-share/', '/group-share/',
++            '/repo-api-token', '/api-tokens/', '/owner/', '/transfer/'))
++        if not sensitive:
++            return
++        ids = {str(view_kwargs.get('repo_id', ''))}
++        ids.update(request.GET.getlist('repo_id'))
++        if request.content_type == 'application/json':
++            try:
++                data = json.loads(request.body)
++            except (ValueError, UnicodeDecodeError):
++                return
++        else:
++            data = request.POST
++        if isinstance(data, dict) or hasattr(data, 'get'):
++            ids.add(str(data.get('repo_id', '')))
++            batch = data.get('repo_ids', [])
++            if isinstance(batch, list):
++                ids.update(str(value) for value in batch)
++        if Space.objects.filter(repo_id__in=ids).exists():
++            return JsonResponse({'error_msg': '部门资料由组织统一授权，暂不允许外链、再共享或转移所有权。'}, status=403)
+diff --git a/seahub/department_spaces/migrations/0001_initial.py b/seahub/department_spaces/migrations/0001_initial.py
+new file mode 100644
+index 00000000..65bd8e8b
+--- /dev/null
++++ b/seahub/department_spaces/migrations/0001_initial.py
+@@ -0,0 +1,96 @@
++# Generated by Django 5.2.18 on 2026-11-04 09:31
++
++import django.db.models.deletion
++import uuid
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++
++    initial = True
++
++    dependencies = [
++    ]
++
++    operations = [
++        migrations.CreateModel(
++            name='Department',
++            fields=[
++                ('id', models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('external_id', models.CharField(max_length=64, unique=True)),
++                ('parent_external_id', models.CharField(blank=True, max_length=64)),
++                ('name', models.CharField(max_length=255)),
++                ('active', models.BooleanField(default=True)),
++                ('updated_at', models.DateTimeField(auto_now=True)),
++            ],
++            options={
++                'ordering': ('name', 'external_id'),
++            },
++        ),
++        migrations.CreateModel(
++            name='SyncRun',
++            fields=[
++                ('id', models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('started_at', models.DateTimeField(auto_now_add=True)),
++                ('finished_at', models.DateTimeField(null=True)),
++                ('state', models.CharField(default='running', max_length=24)),
++                ('summary', models.JSONField(default=dict)),
++                ('error', models.TextField(blank=True)),
++            ],
++        ),
++        migrations.CreateModel(
++            name='Space',
++            fields=[
++                ('id', models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('provision_id', models.UUIDField(default=uuid.uuid4, editable=False, unique=True)),
++                ('owner', models.CharField(blank=True, max_length=255)),
++                ('repo_id', models.CharField(blank=True, max_length=36, null=True, unique=True)),
++                ('description', models.CharField(blank=True, max_length=1000)),
++                ('state', models.CharField(default='pending', max_length=24)),
++                ('error', models.TextField(blank=True)),
++                ('department', models.OneToOneField(on_delete=django.db.models.deletion.PROTECT, to='department_spaces.department')),
++            ],
++        ),
++        migrations.CreateModel(
++            name='AuditEvent',
++            fields=[
++                ('id', models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('created_at', models.DateTimeField(auto_now_add=True)),
++                ('actor', models.CharField(max_length=255)),
++                ('action', models.CharField(max_length=64)),
++                ('detail', models.JSONField(default=dict)),
++                ('space', models.ForeignKey(null=True, on_delete=django.db.models.deletion.SET_NULL, to='department_spaces.space')),
++            ],
++        ),
++        migrations.CreateModel(
++            name='Membership',
++            fields=[
++                ('id', models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('union_id', models.CharField(max_length=255)),
++                ('userid', models.CharField(blank=True, max_length=255)),
++                ('name', models.CharField(blank=True, max_length=64)),
++                ('is_member', models.BooleanField(default=False)),
++                ('is_manager', models.BooleanField(default=False)),
++                ('department', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='department_spaces.department')),
++            ],
++            options={
++                'constraints': [models.UniqueConstraint(fields=('department', 'union_id'), name='deptspace_membership_unique')],
++            },
++        ),
++        migrations.CreateModel(
++            name='AccessGrant',
++            fields=[
++                ('id', models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('username', models.CharField(max_length=255)),
++                ('role', models.CharField(default='member', max_length=16)),
++                ('sources', models.JSONField(default=list)),
++                ('desired', models.BooleanField(default=True)),
++                ('applied', models.BooleanField(default=False)),
++                ('error', models.TextField(blank=True)),
++                ('space', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='department_spaces.space')),
++            ],
++            options={
++                'constraints': [models.UniqueConstraint(fields=('space', 'username'), name='deptspace_access_unique')],
++            },
++        ),
++    ]
+diff --git a/seahub/department_spaces/migrations/__init__.py b/seahub/department_spaces/migrations/__init__.py
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/seahub/department_spaces/models.py b/seahub/department_spaces/models.py
+new file mode 100644
+index 00000000..b12b50ad
+--- /dev/null
++++ b/seahub/department_spaces/models.py
+@@ -0,0 +1,67 @@
++import uuid
++
++from django.db import models
++
++
++class Department(models.Model):
++    external_id = models.CharField(max_length=64, unique=True)
++    parent_external_id = models.CharField(max_length=64, blank=True)
++    name = models.CharField(max_length=255)
++    active = models.BooleanField(default=True)
++    updated_at = models.DateTimeField(auto_now=True)
++
++    class Meta:
++        ordering = ('name', 'external_id')
++
++
++class Membership(models.Model):
++    department = models.ForeignKey(Department, on_delete=models.CASCADE)
++    union_id = models.CharField(max_length=255)
++    userid = models.CharField(max_length=255, blank=True)
++    name = models.CharField(max_length=64, blank=True)
++    is_member = models.BooleanField(default=False)
++    is_manager = models.BooleanField(default=False)
++
++    class Meta:
++        constraints = [models.UniqueConstraint(
++            fields=('department', 'union_id'), name='deptspace_membership_unique')]
++
++
++class Space(models.Model):
++    department = models.OneToOneField(Department, on_delete=models.PROTECT)
++    provision_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
++    owner = models.CharField(max_length=255, blank=True)
++    repo_id = models.CharField(max_length=36, null=True, blank=True, unique=True)
++    description = models.CharField(max_length=1000, blank=True)
++    state = models.CharField(max_length=24, default='pending')
++    error = models.TextField(blank=True)
++
++
++class AccessGrant(models.Model):
++    space = models.ForeignKey(Space, on_delete=models.CASCADE)
++    username = models.CharField(max_length=255)
++    role = models.CharField(max_length=16, default='member')
++    sources = models.JSONField(default=list)
++    desired = models.BooleanField(default=True)
++    applied = models.BooleanField(default=False)
++    error = models.TextField(blank=True)
++
++    class Meta:
++        constraints = [models.UniqueConstraint(
++            fields=('space', 'username'), name='deptspace_access_unique')]
++
++
++class SyncRun(models.Model):
++    started_at = models.DateTimeField(auto_now_add=True)
++    finished_at = models.DateTimeField(null=True)
++    state = models.CharField(max_length=24, default='running')
++    summary = models.JSONField(default=dict)
++    error = models.TextField(blank=True)
++
++
++class AuditEvent(models.Model):
++    created_at = models.DateTimeField(auto_now_add=True)
++    space = models.ForeignKey(Space, null=True, on_delete=models.SET_NULL)
++    actor = models.CharField(max_length=255)
++    action = models.CharField(max_length=64)
++    detail = models.JSONField(default=dict)
+diff --git a/seahub/department_spaces/policy.py b/seahub/department_spaces/policy.py
+new file mode 100644
+index 00000000..be043ecf
+--- /dev/null
++++ b/seahub/department_spaces/policy.py
+@@ -0,0 +1,47 @@
++"""Pure directory validation and role calculation; no database or RPC side effects."""
++
++
++class InvalidDirectory(ValueError):
++    pass
++
++
++def validate_snapshot(snapshot):
++    if not snapshot or '1' not in snapshot or len(snapshot) < 2:
++        raise InvalidDirectory('Empty or incomplete department tree')
++    for dept_id, dept in snapshot.items():
++        if str(dept_id) != dept_id or not dept.get('name'):
++            raise InvalidDirectory('Invalid department identifier or name')
++        if not isinstance(dept.get('members'), dict) or not isinstance(dept.get('managers'), dict):
++            raise InvalidDirectory('Missing member or manager list for %s' % dept_id)
++        seen = set()
++        current = dept_id
++        while current != '1':
++            if current in seen:
++                raise InvalidDirectory('Department cycle at %s' % current)
++            seen.add(current)
++            if current not in snapshot:
++                raise InvalidDirectory('Missing parent department %s' % current)
++            current = str(snapshot[current].get('parent_id', ''))
++        for uid, identity in {**dept['members'], **dept['managers']}.items():
++            if not uid or not isinstance(identity, dict):
++                raise InvalidDirectory('Missing union ID or identity in %s' % dept_id)
++
++
++def effective_roles(snapshot):
++    validate_snapshot(snapshot)
++    result = {}
++    for dept_id, dept in snapshot.items():
++        if dept_id == '1':
++            continue
++        roles = {uid: {'role': 'member', 'sources': [dept_id]}
++                 for uid in dept['members']}
++        current = dept_id
++        while current:
++            for uid in snapshot[current]['managers']:
++                entry = roles.setdefault(uid, {'role': 'manager', 'sources': []})
++                entry['role'] = 'manager'
++                if current not in entry['sources']:
++                    entry['sources'].append(current)
++            current = '' if current == '1' else str(snapshot[current]['parent_id'])
++        result[dept_id] = roles
++    return result
+diff --git a/seahub/department_spaces/services.py b/seahub/department_spaces/services.py
+new file mode 100644
+index 00000000..5f479413
+--- /dev/null
++++ b/seahub/department_spaces/services.py
+@@ -0,0 +1,191 @@
++import logging
++
++from django.conf import settings
++from django.db import transaction
++from django.utils import timezone
++
++from .backend import SeafileBackend, resolve_accounts
++from .models import AccessGrant, AuditEvent, Department, Membership, Space, SyncRun
++from .policy import InvalidDirectory, effective_roles, validate_snapshot
++
++logger = logging.getLogger(__name__)
++
++
++def snapshot_from_database():
++    snapshot = {d.external_id: {'name': d.name, 'parent_id': d.parent_external_id,
++                               'members': {}, 'managers': {}}
++                for d in Department.objects.filter(active=True)}
++    for m in Membership.objects.filter(department__active=True).select_related('department'):
++        dept = snapshot[m.department.external_id]
++        value = {'userid': m.userid, 'name': m.name}
++        if m.is_member:
++            dept['members'][m.union_id] = value
++        if m.is_manager:
++            dept['managers'][m.union_id] = value
++    return snapshot
++
++
++def _desired_access(snapshot, accounts):
++    desired = {}
++    for dept_id, roles in effective_roles(snapshot).items():
++        users = desired.setdefault(dept_id, {})
++        for uid, role in roles.items():
++            if uid not in accounts:
++                continue
++            entry = users.setdefault(accounts[uid], {'role': 'member', 'sources': []})
++            if role['role'] == 'manager':
++                entry['role'] = 'manager'
++            entry['sources'] = sorted(set(entry['sources']) | set(role['sources']))
++    return desired
++
++
++def sync_directory(snapshot, backend=None, accounts=None, dry_run=False, actor='directory-sync', allow_large_changes=False):
++    validate_snapshot(snapshot)
++    union_ids = set().union(*(set(d['members']) | set(d['managers']) for d in snapshot.values()))
++    accounts = resolve_accounts(union_ids) if accounts is None else accounts
++    desired = _desired_access(snapshot, accounts)
++    old_departments = Department.objects.filter(active=True).exclude(external_id='1').count()
++    old_members = Membership.objects.filter(is_member=True, department__active=True).count()
++    new_members = sum(len(d['members']) for d in snapshot.values())
++    # A narrowed contact permission scope may return a valid but partial directory.
++    ratio = 1.0 if allow_large_changes else getattr(settings, 'DEPARTMENT_SPACES_MAX_REMOVAL_RATIO', 0.25)
++    if old_departments and (old_departments - (len(snapshot) - 1)) / old_departments > ratio:
++        raise InvalidDirectory('Department count dropped beyond the safety threshold')
++    if old_members and (old_members - new_members) / old_members > ratio:
++        raise InvalidDirectory('Directory membership count dropped beyond the safety threshold')
++    current = set(AccessGrant.objects.filter(desired=True).values_list(
++        'space__department__external_id', 'username'))
++    target = {(dept, username) for dept, users in desired.items() for username in users}
++    if current and len(current - target) / len(current) > ratio:
++        raise InvalidDirectory('Access revocation count exceeds the safety threshold')
++    summary = {'departments': len(snapshot) - 1, 'memberships': new_members,
++               'access': len(target), 'grant': len(target - current),
++               'revoke': len(current - target), 'pending_identities': len(union_ids - set(accounts))}
++    if dry_run:
++        return summary
++
++    run = SyncRun.objects.create()
++    try:
++        with transaction.atomic():
++            # Serialize directory publication against first-login compensation.
++            Department.objects.select_for_update().filter(external_id='1').first()
++            Department.objects.exclude(external_id__in=snapshot).update(active=False)
++            for dept_id, data in snapshot.items():
++                dept, _ = Department.objects.update_or_create(external_id=dept_id, defaults={
++                    'name': data['name'], 'parent_external_id': str(data['parent_id']), 'active': True})
++                identities = {**data['members'], **data['managers']}
++                Membership.objects.filter(department=dept).exclude(union_id__in=identities).delete()
++                for uid, identity in identities.items():
++                    Membership.objects.update_or_create(department=dept, union_id=uid, defaults={
++                        'userid': identity.get('userid', ''), 'name': identity.get('name', ''),
++                        'is_member': uid in data['members'], 'is_manager': uid in data['managers']})
++                if dept_id != '1':
++                    Space.objects.get_or_create(department=dept)
++            # Retired spaces keep their files and are explicitly marked for archival.
++            Space.objects.filter(department__active=False).update(state='archived')
++            AccessGrant.objects.update(desired=False)
++            for space in Space.objects.filter(department__active=True).select_related('department'):
++                for username, role in desired.get(space.department.external_id, {}).items():
++                    AccessGrant.objects.update_or_create(space=space, username=username, defaults={
++                        'desired': True, 'role': role['role'], 'sources': role['sources']})
++        actual_backend = backend or SeafileBackend()
++        if hasattr(actual_backend, 'sync_legacy_members'):
++            actual_backend.sync_legacy_members(snapshot, accounts)
++        summary['errors'] = reconcile_access(backend=actual_backend)
++        run.state = 'failed' if summary['errors'] else 'success'
++        run.summary = summary
++        AuditEvent.objects.create(actor=actor, action='sync', detail=summary)
++    except Exception as error:
++        run.state = 'failed'
++        run.error = str(error)
++        raise
++    finally:
++        run.finished_at = timezone.now()
++        run.save()
++    return summary
++
++
++def reconcile_access(backend=None, username=None):
++    backend = backend or SeafileBackend()
++    errors = 0
++    # Revoke first, including grants left unapplied by an interrupted earlier run.
++    grants = AccessGrant.objects.select_related('space__department')
++    if username:
++        grants = grants.filter(username=username)
++    for candidate in grants.filter(desired=False):
++        with transaction.atomic():
++            grant = AccessGrant.objects.select_for_update().select_related('space').get(pk=candidate.pk)
++            if grant.desired:
++                continue
++            try:
++                if grant.space.repo_id:
++                    backend.revoke(grant.space, grant.username)
++                grant.applied = False
++                grant.error = ''
++            except Exception as error:
++                grant.error = str(error)
++                errors += 1
++            grant.save(update_fields=('applied', 'error'))
++    # Do not introduce new grants while revocations failed.
++    if errors:
++        return errors
++    spaces = Space.objects.filter(department__active=True).select_related('department')
++    if username:
++        spaces = spaces.filter(accessgrant__username=username, accessgrant__desired=True).distinct()
++    for candidate in spaces:
++        try:
++            # Serialize provisioning, including login compensation, on the space row.
++            with transaction.atomic():
++                space = Space.objects.select_for_update().select_related('department').get(pk=candidate.pk)
++                space.owner = space.owner or backend.ensure_owner(space.provision_id)
++                space.save(update_fields=('owner',))
++                space.repo_id = backend.ensure_repo(space)
++                space.state, space.error = 'active', ''
++                space.save(update_fields=('repo_id', 'state', 'error'))
++        except Exception as error:
++            Space.objects.filter(pk=candidate.pk).update(state='degraded', error=str(error))
++            errors += 1
++            continue
++        pending = AccessGrant.objects.filter(space=space, desired=True)
++        if username:
++            pending = pending.filter(username=username)
++        for candidate_grant in pending:
++            with transaction.atomic():
++                grant = AccessGrant.objects.select_for_update().get(pk=candidate_grant.pk)
++                if not grant.desired:
++                    continue
++                try:
++                    # Reassert shares even when marked applied: repair drift in the core.
++                    backend.grant(space, grant.username)
++                    grant.applied, grant.error = True, ''
++                except Exception as error:
++                    grant.applied, grant.error = False, str(error)
++                    errors += 1
++                grant.save(update_fields=('applied', 'error'))
++        if AccessGrant.objects.filter(space=space, desired=True).exclude(error='').exists():
++            Space.objects.filter(pk=space.pk).update(state='degraded', error='Member access reconciliation requires retry')
++    return errors
++
++
++def compensate_login(username):
++    """Grant a newly bound account using the last complete directory snapshot."""
++    from seahub.auth.models import SocialAuthUser
++    if not Department.objects.exists():
++        return
++    bindings = list(SocialAuthUser.objects.filter(provider='dingtalk', username=username))
++    uids = {b.uid for b in bindings if b.provider == 'dingtalk'}
++    with transaction.atomic():
++        Department.objects.select_for_update().filter(external_id='1').first()
++        snapshot = snapshot_from_database()
++        roles = effective_roles(snapshot)
++        AccessGrant.objects.filter(username=username).update(desired=False)
++        for space in Space.objects.filter(department__active=True).select_related('department'):
++            matches = [role for uid, role in roles.get(space.department.external_id, {}).items() if uid in uids]
++            if not matches:
++                continue
++            AccessGrant.objects.update_or_create(space=space, username=username, defaults={
++                'desired': True,
++                'role': 'manager' if any(r['role'] == 'manager' for r in matches) else 'member',
++                'sources': sorted(set().union(*(set(r['sources']) for r in matches)))})
++    if reconcile_access(username=username):
++        logger.error('Department access login compensation requires retry')
+diff --git a/seahub/department_spaces/signals.py b/seahub/department_spaces/signals.py
+new file mode 100644
+index 00000000..421ed9de
+--- /dev/null
++++ b/seahub/department_spaces/signals.py
+@@ -0,0 +1,20 @@
++import logging
++
++from django.core.exceptions import PermissionDenied
++
++from .models import Space
++
++logger = logging.getLogger(__name__)
++
++
++def deny_public_credentials(sender, instance, **kwargs):
++    if Space.objects.filter(repo_id=instance.repo_id).exists():
++        raise PermissionDenied('Public links and independent API tokens are disabled for department libraries.')
++
++
++def on_login(sender, user, **kwargs):
++    from .services import compensate_login
++    try:
++        compensate_login(user.username)
++    except Exception:
++        logger.exception('Department space login compensation failed; directory reconcile must retry')
+diff --git a/seahub/department_spaces/test_urls.py b/seahub/department_spaces/test_urls.py
+new file mode 100644
+index 00000000..6f102864
+--- /dev/null
++++ b/seahub/department_spaces/test_urls.py
+@@ -0,0 +1,9 @@
++from django.urls import path
++
++from .views import SpacesView, SpaceDetailView, SpaceRestoreView
++
++urlpatterns = [
++    path('spaces/', SpacesView.as_view()),
++    path('spaces/<int:space_id>/', SpaceDetailView.as_view()),
++    path('spaces/<int:space_id>/restore/', SpaceRestoreView.as_view()),
++]
+diff --git a/seahub/department_spaces/tests.py b/seahub/department_spaces/tests.py
+new file mode 100644
+index 00000000..93b5ced6
+--- /dev/null
++++ b/seahub/department_spaces/tests.py
+@@ -0,0 +1,333 @@
++from copy import deepcopy
++from types import SimpleNamespace
++from unittest.mock import patch
++
++from django.core.exceptions import PermissionDenied
++from django.test import SimpleTestCase, TestCase, RequestFactory, override_settings
++from rest_framework.test import APIRequestFactory, force_authenticate
++
++from .middleware import SpacePolicyMiddleware
++from .models import AccessGrant, AuditEvent, Department, Membership, Space, SyncRun
++from .policy import InvalidDirectory, effective_roles
++from .services import reconcile_access, sync_directory
++from .signals import deny_public_credentials
++from .views import SpaceDetailView, SpacesView, SpaceRestoreView, SpaceTrashView
++
++
++def directory():
++    def dept(name, parent, members=(), managers=()):
++        identity = lambda uid: {'name': uid, 'userid': 'ding-' + uid}
++        return {'name': name, 'parent_id': parent,
++                'members': {uid: identity(uid) for uid in members},
++                'managers': {uid: identity(uid) for uid in managers}}
++    return {'1': dept('Company', ''),
++            '2': dept('Engineering', '1', ['parent-member'], ['director']),
++            '3': dept('Platform', '2', ['alice'], ['lead']),
++            '4': dept('Applications', '2', ['bob']),
++            '5': dept('Finance', '1', ['carol'], ['finance-director'])}
++
++
++ACCOUNTS = {name: name + '@example.test' for name in (
++    'parent-member', 'director', 'alice', 'lead', 'bob', 'carol', 'finance-director')}
++
++
++class FakeBackend:
++    def __init__(self):
++        self.calls = []
++        self.fail_revoke = False
++        self.fail_grant = False
++        self.libraries = {}
++
++    def ensure_owner(self, provision_id):
++        return 'custodian-%s@system.invalid' % provision_id
++
++    def ensure_repo(self, space):
++        return self.libraries.setdefault(str(space.provision_id), 'repo-%s' % space.pk)
++
++    def grant(self, space, username, permission='rw'):
++        self.calls.append(('grant', space.pk, username))
++        if self.fail_grant:
++            raise RuntimeError('test RPC grant failed')
++
++    def revoke(self, space, username):
++        self.calls.append(('revoke', space.pk, username))
++        if self.fail_revoke:
++            raise RuntimeError('test RPC revoke failed')
++
++
++class PolicyTests(SimpleTestCase):
++    def test_supervisors_inherit_downwards_but_members_do_not(self):
++        roles = effective_roles(directory())
++        self.assertEqual(roles['3']['director']['role'], 'manager')
++        self.assertEqual(roles['3']['lead']['role'], 'manager')
++        self.assertEqual(roles['3']['alice']['role'], 'member')
++        self.assertNotIn('parent-member', roles['3'])
++        self.assertNotIn('lead', roles['4'])
++        self.assertNotIn('lead', roles['2'])
++        self.assertNotIn('director', roles['5'])
++
++    def test_root_supervisor_is_manager_not_root_member(self):
++        snapshot = directory()
++        snapshot['1']['managers']['ceo'] = {}
++        snapshot['1']['members']['employee'] = {}
++        roles = effective_roles(snapshot)
++        self.assertTrue(all(r['ceo']['role'] == 'manager' for r in roles.values()))
++        self.assertTrue(all('employee' not in r for r in roles.values()))
++
++    def test_cyclic_or_disconnected_tree_is_rejected(self):
++        for parent in ('3', 'missing'):
++            snapshot = directory()
++            snapshot['2']['parent_id'] = parent
++            with self.assertRaises(InvalidDirectory):
++                effective_roles(snapshot)
++
++    def test_missing_manager_field_is_not_treated_as_no_supervisor(self):
++        snapshot = directory()
++        del snapshot['3']['managers']
++        with self.assertRaises(InvalidDirectory):
++            effective_roles(snapshot)
++
++
++class DirectoryFetchTests(SimpleTestCase):
++    def responses(self):
++        return [
++            {'dept_id': 1, 'name': 'Company'},
++            {'has_more': False},  # DingTalk omits empty arrays.
++            [{'dept_id': 2}],
++            {'dept_id': 2, 'name': 'Team', 'parent_id': 1, 'dept_manager_userid_list': ['manager']},
++            {'has_more': False, 'list': [{'userid': 'manager', 'unionid': 'uid', 'name': 'Manager'}]},
++            [],
++        ]
++
++    def run_fetch(self, values):
++        from .directory import fetch_snapshot
++        def respond(*args, **kwargs):
++            self.assertEqual(kwargs['timeout'], (5, 30))
++            value = values.pop(0)
++            if isinstance(value, Exception):
++                raise value
++            return SimpleNamespace(raise_for_status=lambda: None,
++                                   json=lambda: {'errcode': 0, 'result': value})
++        with patch('seahub.department_spaces.directory._org_token', return_value='secret-token'), \
++                patch('seahub.department_spaces.directory.requests.Session.post', side_effect=respond), \
++                patch('seahub.department_spaces.directory.time.sleep'):
++            return fetch_snapshot()
++
++    def test_empty_arrays_are_normalized_and_manager_identity_is_mapped(self):
++        snapshot = self.run_fetch(self.responses())
++        self.assertEqual(snapshot['1']['managers'], {})
++        self.assertIn('uid', snapshot['2']['managers'])
++
++    def test_mid_snapshot_failure_aborts_without_returning_partial_data(self):
++        import requests
++        values = self.responses()
++        values[4:] = [requests.Timeout('https://service?access_token=secret-token')] * 3
++        with self.assertRaises(InvalidDirectory) as error:
++            self.run_fetch(values)
++        self.assertNotIn('secret-token', str(error.exception))
++
++    def test_transient_timeout_is_retried_before_accepting_complete_snapshot(self):
++        import requests
++        values = self.responses()
++        values.insert(4, requests.Timeout('temporary'))
++        self.assertIn('uid', self.run_fetch(values)['2']['members'])
++
++    def test_malformed_department_detail_cannot_clear_managers(self):
++        values = self.responses()
++        values[3] = {}
++        with self.assertRaises(InvalidDirectory):
++            self.run_fetch(values)
++
++
++@override_settings(DEPARTMENT_SPACES_MAX_REMOVAL_RATIO=1.0)
++class SyncTests(TestCase):
++    def setUp(self):
++        self.backend = FakeBackend()
++        self.snapshot = directory()
++
++    def sync(self, snapshot=None, accounts=None, **kwargs):
++        return sync_directory(snapshot or self.snapshot, self.backend,
++                              ACCOUNTS if accounts is None else accounts, **kwargs)
++
++    def test_provisioning_is_idempotent_and_does_not_create_groups(self):
++        self.sync()
++        ids = list(Space.objects.values_list('repo_id', flat=True))
++        self.sync()
++        self.assertEqual(Space.objects.count(), 4)
++        self.assertEqual(ids, list(Space.objects.values_list('repo_id', flat=True)))
++        self.assertEqual(SyncRun.objects.filter(state='success').count(), 2)
++        self.assertTrue(all(g.applied for g in AccessGrant.objects.filter(desired=True)))
++
++    def test_dry_run_has_no_database_or_rpc_writes(self):
++        summary = self.sync(dry_run=True)
++        self.assertEqual(summary['departments'], 4)
++        self.assertEqual(Department.objects.count(), 0)
++        self.assertEqual(SyncRun.objects.count(), 0)
++        self.assertEqual(self.backend.calls, [])
++
++    def test_reparent_changes_inherited_supervisors_and_preserves_repo(self):
++        self.sync()
++        space = Space.objects.get(department__external_id='3')
++        old_repo = space.repo_id
++        moved = deepcopy(self.snapshot)
++        moved['3']['parent_id'] = '5'
++        self.sync(moved)
++        space.refresh_from_db()
++        self.assertEqual(space.repo_id, old_repo)
++        self.assertFalse(AccessGrant.objects.get(space=space, username=ACCOUNTS['director']).desired)
++        self.assertTrue(AccessGrant.objects.get(space=space, username=ACCOUNTS['finance-director']).desired)
++        self.assertTrue(AccessGrant.objects.get(space=space, username=ACCOUNTS['alice']).desired)
++
++    def test_supervisor_demotion_retains_direct_member_access(self):
++        self.snapshot['3']['members']['lead'] = self.snapshot['3']['managers']['lead']
++        self.sync()
++        self.snapshot['3']['managers'] = {}
++        self.sync()
++        grant = AccessGrant.objects.get(space__department__external_id='3', username=ACCOUNTS['lead'])
++        self.assertTrue(grant.desired)
++        self.assertEqual(grant.role, 'member')
++
++    def test_unregistered_member_is_saved_and_can_be_authorized_later(self):
++        self.sync(accounts={})
++        self.assertGreater(Membership.objects.count(), 0)
++        self.assertEqual(AccessGrant.objects.count(), 0)
++        self.sync()
++        self.assertTrue(AccessGrant.objects.filter(username=ACCOUNTS['alice'], applied=True).exists())
++
++    def test_revoke_failure_stops_new_grants_and_retry_repairs_it(self):
++        self.sync()
++        self.backend.calls.clear()
++        self.backend.fail_revoke = True
++        changed = deepcopy(self.snapshot)
++        changed['3']['members'] = {'new-user': {'userid': 'new', 'name': 'New'}}
++        accounts = {**ACCOUNTS, 'new-user': 'new@example.test'}
++        summary = self.sync(changed, accounts)
++        self.assertGreater(summary['errors'], 0)
++        self.assertFalse(any(c[0] == 'grant' for c in self.backend.calls))
++        self.assertEqual(SyncRun.objects.latest('id').state, 'failed')
++        self.backend.fail_revoke = False
++        self.assertEqual(reconcile_access(self.backend), 0)
++        self.assertTrue(AccessGrant.objects.get(username='new@example.test').applied)
++
++    @override_settings(DEPARTMENT_SPACES_MAX_REMOVAL_RATIO=0.25)
++    def test_suspicious_partial_directory_never_mutates_existing_access(self):
++        self.sync()
++        before = list(AccessGrant.objects.values_list('id', 'desired', 'applied'))
++        partial = {k: v for k, v in self.snapshot.items() if k in ('1', '5')}
++        with self.assertRaises(InvalidDirectory):
++            self.sync(partial)
++        self.assertEqual(before, list(AccessGrant.objects.values_list('id', 'desired', 'applied')))
++
++    def test_retired_department_keeps_repo_and_revokes_daily_access(self):
++        self.sync()
++        space = Space.objects.get(department__external_id='4')
++        repo_id = space.repo_id
++        del self.snapshot['4']
++        self.sync()
++        space.refresh_from_db()
++        self.assertEqual(space.state, 'archived')
++        self.assertEqual(space.repo_id, repo_id)
++        self.assertFalse(space.accessgrant_set.filter(desired=True).exists())
++
++    def test_failed_grant_remains_pending_and_reconciles(self):
++        self.backend.fail_grant = True
++        self.assertGreater(self.sync()['errors'], 0)
++        self.assertFalse(AccessGrant.objects.filter(applied=True).exists())
++        self.backend.fail_grant = False
++        self.assertEqual(reconcile_access(self.backend), 0)
++
++
++class APITests(TestCase):
++    def setUp(self):
++        sync_directory(directory(), FakeBackend(), ACCOUNTS)
++        self.factory = APIRequestFactory()
++        self.alice = SimpleNamespace(username=ACCOUNTS['alice'], is_staff=False, is_authenticated=True)
++        self.director = SimpleNamespace(username=ACCOUNTS['director'], is_staff=False, is_authenticated=True)
++        self.platform = Space.objects.get(department__external_id='3')
++        self.finance = Space.objects.get(department__external_id='5')
++
++    def call(self, view, method='get', user=None, space=None, data=None):
++        request = getattr(self.factory, method)('/spaces/', data, format='json')
++        if user:
++            force_authenticate(request, user=user)
++        return view.as_view()(request, **({'space_id': space.pk} if space else {}))
++
++    def test_anonymous_cannot_list_spaces(self):
++        self.assertIn(self.call(SpacesView).status_code, (401, 403))
++
++    def test_member_only_sees_own_space(self):
++        response = self.call(SpacesView, user=self.alice)
++        self.assertEqual([s['department_id'] for s in response.data['spaces']], ['3'])
++
++    def test_inherited_manager_can_edit_child_description(self):
++        response = self.call(SpaceDetailView, 'patch', self.director, self.platform,
++                             {'description': 'Team reference documents'})
++        self.assertEqual(response.status_code, 200)
++        self.assertTrue(AuditEvent.objects.filter(action='update_description').exists())
++
++    def test_member_cannot_edit_settings(self):
++        response = self.call(SpaceDetailView, 'patch', self.alice, self.platform, {'description': 'bad'})
++        self.assertEqual(response.status_code, 403)
++
++    def test_manager_cannot_manage_unrelated_department(self):
++        response = self.call(SpaceDetailView, 'patch', self.director, self.finance, {'description': 'bad'})
++        self.assertEqual(response.status_code, 404)
++
++    def test_cannot_change_members_or_owner_through_settings(self):
++        response = self.call(SpaceDetailView, 'patch', self.director, self.platform, {'owner': 'attacker'})
++        self.assertEqual(response.status_code, 400)
++
++    def test_revoked_manager_immediately_loses_settings_access(self):
++        AccessGrant.objects.filter(space=self.platform, username=self.director.username).update(desired=False)
++        response = self.call(SpaceDetailView, 'patch', self.director, self.platform, {'description': 'bad'})
++        self.assertEqual(response.status_code, 404)
++
++    def test_restore_is_scoped_and_records_real_actor(self):
++        api = SimpleNamespace(revert_file=lambda *a: None, revert_dir=lambda *a: None)
++        with patch.object(api, 'revert_file', return_value=0) as revert, \
++                patch.dict('sys.modules', {'seaserv': SimpleNamespace(seafile_api=api)}):
++            response = self.call(SpaceRestoreView, 'post', self.director, self.platform,
++                                 {'commit_id': 'a' * 40, 'path': '/report.txt', 'type': 'file'})
++        self.assertEqual(response.status_code, 200)
++        revert.assert_called_once_with(self.platform.repo_id, 'a' * 40, '/report.txt', self.director.username)
++
++    def test_member_cannot_use_management_restore(self):
++        response = self.call(SpaceRestoreView, 'post', self.alice, self.platform,
++                             {'commit_id': 'a' * 40, 'path': '/report.txt', 'type': 'file'})
++        self.assertEqual(response.status_code, 403)
++
++    def test_restore_cannot_escape_space_with_repo_parameter(self):
++        response = self.call(SpaceRestoreView, 'post', self.director, self.finance,
++                             {'commit_id': 'a' * 40, 'path': '/report.txt', 'type': 'file',
++                              'repo_id': self.platform.repo_id})
++        self.assertEqual(response.status_code, 404)
++
++    def test_restore_rejects_parent_traversal(self):
++        response = self.call(SpaceRestoreView, 'post', self.director, self.platform,
++                             {'commit_id': 'a' * 40, 'path': '/../report.txt', 'type': 'file'})
++        self.assertEqual(response.status_code, 400)
++
++
++class SharePolicyTests(TestCase):
++    def setUp(self):
++        dept = Department.objects.create(external_id='2', name='Test')
++        self.space = Space.objects.create(department=dept, repo_id='a' * 36)
++        self.middleware = SpacePolicyMiddleware(lambda r: None)
++        self.factory = RequestFactory()
++
++    def test_old_json_share_endpoint_is_denied(self):
++        request = self.factory.post('/api/v2.1/share-links/',
++                                    {'repo_id': self.space.repo_id}, content_type='application/json')
++        self.assertEqual(self.middleware.process_view(request, None, (), {}).status_code, 403)
++
++    def test_native_upload_transfer_is_not_blocked(self):
++        request = self.factory.post('/api2/repos/%s/upload-link/' % self.space.repo_id)
++        self.assertIsNone(self.middleware.process_view(request, None, (), {'repo_id': self.space.repo_id}))
++
++    def test_other_personal_library_sharing_is_unchanged(self):
++        request = self.factory.post('/api/v2.1/share-links/', {'repo_id': 'personal'})
++        self.assertIsNone(self.middleware.process_view(request, None, (), {}))
++
++    def test_model_guard_also_blocks_link_creation(self):
++        with self.assertRaises(PermissionDenied):
++            deny_public_credentials(None, SimpleNamespace(repo_id=self.space.repo_id))
+diff --git a/seahub/department_spaces/views.py b/seahub/department_spaces/views.py
+new file mode 100644
+index 00000000..d986f380
+--- /dev/null
++++ b/seahub/department_spaces/views.py
+@@ -0,0 +1,154 @@
++from datetime import timedelta
++
++from django.utils import timezone
++from rest_framework.authentication import BaseAuthentication, SessionAuthentication
++from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
++from rest_framework.permissions import IsAuthenticated
++from rest_framework.response import Response
++from rest_framework.views import APIView
++
++from .models import AccessGrant, AuditEvent, Department, Membership, Space, SyncRun
++
++
++class NativeTokenAuthentication(BaseAuthentication):
++    def authenticate(self, request):
++        if not request.META.get('HTTP_AUTHORIZATION'):
++            return None
++        from seahub.api2.authentication import TokenAuthentication
++        return TokenAuthentication().authenticate(request)
++
++
++def can_manage(user, space):
++    return bool(user.is_staff or AccessGrant.objects.filter(
++        space=space, username=user.username, desired=True, role='manager').exists())
++
++
++def get_space(user, space_id):
++    try:
++        space = Space.objects.select_related('department').get(pk=space_id)
++    except Space.DoesNotExist:
++        raise NotFound()
++    if not user.is_staff and not AccessGrant.objects.filter(
++            space=space, username=user.username, desired=True).exists():
++        raise NotFound()
++    return space
++
++
++def serialize_space(space, user, grant=None):
++    return {'id': space.pk, 'department_id': space.department.external_id,
++            'parent_department_id': space.department.parent_external_id,
++            'name': space.department.name, 'description': space.description,
++            'state': space.state, 'repo_id': space.repo_id,
++            'role': grant.role if grant else 'system_admin',
++            'sources': grant.sources if grant else [],
++            'can_manage': can_manage(user, space),
++            'access_ready': bool(grant and grant.applied and grant.desired),
++            'error': bool(space.error or (grant and grant.error))}
++
++
++class SpaceAPIView(APIView):
++    authentication_classes = (NativeTokenAuthentication, SessionAuthentication)
++    permission_classes = (IsAuthenticated,)
++
++
++class SpacesView(SpaceAPIView):
++    def get(self, request):
++        grants = {g.space_id: g for g in AccessGrant.objects.filter(
++            username=request.user.username, desired=True)}
++        spaces = Space.objects.select_related('department')
++        if not request.user.is_staff:
++            spaces = spaces.filter(pk__in=grants)
++        last = SyncRun.objects.filter(state='success').order_by('-finished_at').first()
++        return Response({'spaces': [serialize_space(s, request.user, grants.get(s.pk))
++                                    for s in spaces.order_by('department__name')],
++                         'last_success': last.finished_at if last else None,
++                         'sync_overdue': not last or timezone.now() - last.finished_at > timedelta(hours=2)})
++
++
++class SpaceDetailView(SpaceAPIView):
++    def get(self, request, space_id):
++        space = get_space(request.user, space_id)
++        grant = AccessGrant.objects.filter(space=space, username=request.user.username, desired=True).first()
++        result = serialize_space(space, request.user, grant)
++        result['members'] = list(Membership.objects.filter(department=space.department).values(
++            'name', 'is_member', 'is_manager'))
++        # External union IDs and service-account identities are not UI identities.
++        result['managers'] = []
++        ancestors = set()
++        current = space.department
++        while current and current.external_id not in ancestors:
++            ancestors.add(current.external_id)
++            current = Department.objects.filter(external_id=current.parent_external_id, active=True).first()
++        seen_managers = set()
++        for manager in Membership.objects.filter(
++                department__external_id__in=ancestors, is_manager=True).select_related('department'):
++            if manager.union_id in seen_managers:
++                continue
++            seen_managers.add(manager.union_id)
++            result['managers'].append({'name': manager.name,
++                                        'source_department': manager.department.name,
++                                        'inherited': manager.department_id != space.department_id})
++        result['last_success'] = SyncRun.objects.filter(state='success').order_by(
++            '-finished_at').values_list('finished_at', flat=True).first()
++        from .legacy import list_legacy_libraries
++        result['legacy_libraries'] = list_legacy_libraries(space, request.user.username)
++        return Response(result)
++
++    def patch(self, request, space_id):
++        space = get_space(request.user, space_id)
++        if not can_manage(request.user, space):
++            raise PermissionDenied()
++        if set(request.data) != {'description'}:
++            raise ValidationError('Only the space description is editable; organization data comes from DingTalk.')
++        description = request.data['description']
++        if not isinstance(description, str) or len(description) > 1000:
++            raise ValidationError('Description must contain at most 1000 characters.')
++        previous = space.description
++        space.description = description.strip()
++        space.save(update_fields=('description',))
++        AuditEvent.objects.create(space=space, actor=request.user.username,
++                                  action='update_description',
++                                  detail={'before': previous, 'after': space.description})
++        return Response({'description': space.description})
++
++
++class SpaceRestoreView(SpaceAPIView):
++    def post(self, request, space_id):
++        import re
++        space = get_space(request.user, space_id)
++        if not can_manage(request.user, space) or space.state != 'active':
++            raise PermissionDenied()
++        commit_id = request.data.get('commit_id', '')
++        path = request.data.get('path', '')
++        kind = request.data.get('type')
++        if (not re.fullmatch(r'[a-f0-9]{40}', str(commit_id)) or not isinstance(path, str)
++                or not path.startswith('/') or path == '/' or '..' in path.split('/')
++                or kind not in ('file', 'dir')):
++            raise ValidationError('Invalid restore target.')
++        from seaserv import seafile_api
++        method = seafile_api.revert_file if kind == 'file' else seafile_api.revert_dir
++        result = method(space.repo_id, commit_id, path, request.user.username)
++        if result not in (None, 0):
++            raise ValidationError('Unable to restore the selected item.')
++        AuditEvent.objects.create(space=space, actor=request.user.username, action='restore',
++                                  detail={'commit_id': commit_id, 'path': path, 'type': kind})
++        return Response({'success': True})
++
++
++class SpaceTrashView(SpaceAPIView):
++    def get(self, request, space_id):
++        import posixpath
++        import stat
++        space = get_space(request.user, space_id)
++        if not can_manage(request.user, space) or space.state != 'active':
++            raise PermissionDenied()
++        from seaserv import seafile_api
++        scan_stat = request.GET.get('scan_stat')
++        entries = seafile_api.get_deleted(space.repo_id, 90, '/', scan_stat)
++        if not entries:
++            return Response({'items': [], 'next_scan_stat': None})
++        items = [{'path': posixpath.join(item.basedir, item.obj_name),
++                  'type': 'dir' if stat.S_ISDIR(item.mode) else 'file',
++                  'commit_id': item.commit_id, 'deleted_time': item.delete_time}
++                 for item in entries[:-1]]
++        return Response({'items': items, 'next_scan_stat': entries[-1].scan_stat})
+diff --git a/seahub/dingtalk/management/commands/deactivate_departed_users.py b/seahub/dingtalk/management/commands/deactivate_departed_users.py
+index f1ea63cf..d3938be4 100644
+--- a/seahub/dingtalk/management/commands/deactivate_departed_users.py
++++ b/seahub/dingtalk/management/commands/deactivate_departed_users.py
+@@ -19,7 +19,7 @@
+ import logging
+ 
+ import requests
+-from django.core.management.base import BaseCommand
++from django.core.management.base import BaseCommand, CommandError
+ 
+ from seahub.auth.models import SocialAuthUser
+ from seahub.base.accounts import User
+@@ -50,7 +50,7 @@ def _all_department_ids(token):
+         dept_id = stack.pop()
+         resp = requests.post(DEPARTMENT_LIST_SUB_URL,
+                              params={'access_token': token},
+-                             json={'dept_id': dept_id}).json()
++                             json={'dept_id': dept_id}, timeout=(5, 30)).json()
+         if resp.get('errcode') != 0:
+             raise RuntimeError('department/listsub failed: %s' % resp)
+         for dept in resp.get('result', []):
+@@ -68,7 +68,7 @@ def _active_union_ids(token, dept_ids):
+             resp = requests.post(USER_LIST_URL,
+                                  params={'access_token': token},
+                                  json={'dept_id': dept_id, 'cursor': cursor,
+-                                       'size': PAGE_SIZE}).json()
++                                       'size': PAGE_SIZE}, timeout=(5, 30)).json()
+             if resp.get('errcode') != 0:
+                 raise RuntimeError('user/list failed (dept %s): %s' % (dept_id, resp))
+             result = resp.get('result', {})
+@@ -102,24 +102,21 @@ class Command(BaseCommand):
+ 
+         token = _get_orgapp_token()
+         if not token:
+-            self.stderr.write('Failed to get DingTalk orgapp token, abort.')
+-            return
++            raise CommandError('Failed to get DingTalk orgapp token, abort.')
+ 
+         try:
+             dept_ids = _all_department_ids(token)
+             active_union_ids = _active_union_ids(token, dept_ids)
+         except Exception as e:
+             logger.error(e)
+-            self.stderr.write('Failed to fetch corp members, abort: %s' % e)
+-            return
++            raise CommandError('Failed to fetch corp members, abort.') from e
+ 
+         self.stdout.write('Departments: %d, active members: %d' % (len(dept_ids), len(active_union_ids)))
+ 
+         # 安全阀：拉到空集合大概率是钉钉侧异常（token/权限），绝不能把所有人禁了
+         if not active_union_ids:
+             logger.error('Empty active member set from DingTalk, abort.')
+-            self.stderr.write('Empty active member set from DingTalk, abort.')
+-            return
++            raise CommandError('Empty active member set from DingTalk, abort.')
+ 
+         deactivated = 0
+         for binding in SocialAuthUser.objects.filter(provider='dingtalk'):
+diff --git a/seahub/dingtalk/management/commands/sync_dingtalk_departments.py b/seahub/dingtalk/management/commands/sync_dingtalk_departments.py
+index 2a2bad86..f9c5aa2a 100644
+--- a/seahub/dingtalk/management/commands/sync_dingtalk_departments.py
++++ b/seahub/dingtalk/management/commands/sync_dingtalk_departments.py
+@@ -118,6 +118,11 @@ class Command(BaseCommand):
+         self.stdout.write(msg)
+ 
+     def handle(self, *args, **options):
++        # Preserve installed cron names while stopping new ccnet department groups.
++        from django.core.management import call_command
++        return call_command('sync_department_spaces', dry_run=bool(options['dry_run']))
++
++    def legacy_handle(self, *args, **options):
+         self.dry_run = bool(options['dry_run'])
+         if self.dry_run:
+             self.println('DRY-RUN: 不做任何写操作')
+diff --git a/seahub/dingtalk/utils.py b/seahub/dingtalk/utils.py
+index c71c8348..b684b4b2 100644
+--- a/seahub/dingtalk/utils.py
++++ b/seahub/dingtalk/utils.py
+@@ -36,7 +36,7 @@ def dingtalk_get_orgapp_token():
+         'appsecret': get_dingtalk_app_secret(),
+     }
+     resp_json = requests.get(DINGTALK_GET_ORGAPP_TOKEN_URL,
+-                             params=data).json()
++                             params=data, timeout=(5, 30)).json()
+ 
+     access_token = resp_json.get('access_token', '')
+     if not access_token:
+diff --git a/seahub/settings.py b/seahub/settings.py
+index c4207ade..b66577f8 100644
+--- a/seahub/settings.py
++++ b/seahub/settings.py
+@@ -144,6 +144,7 @@ MIDDLEWARE = [
+     'django.middleware.csrf.CsrfViewMiddleware',
+     'django.contrib.messages.middleware.MessageMiddleware',
+     'seahub.auth.middleware.AuthenticationMiddleware',
++    'seahub.department_spaces.middleware.SpacePolicyMiddleware',
+     'seahub.base.middleware.BaseMiddleware',
+     'seahub.base.middleware.InfobarMiddleware',
+     'seahub.password_session.middleware.CheckPasswordHash',
+@@ -283,6 +284,7 @@ INSTALLED_APPS = [
+     'seahub.work_weixin',
+     'seahub.weixin',
+     'seahub.dingtalk',
++    'seahub.department_spaces',
+     'seahub.file_participants',
+     'seahub.repo_api_tokens',
+     'seahub.repo_metadata',
+@@ -1519,4 +1521,3 @@ if ENABLE_LDAP:
+ # [dev] 发布构建时会在打包阶段注入此变量；源码运行（挂载进容器）时需手动提供，
+ # 否则 seahub.base.context_processors 的 import 会失败
+ SEAFILE_VERSION = "12.0.14-dev"
+-
+diff --git a/seahub/urls.py b/seahub/urls.py
+index e0d9ff7a..7a8b5197 100644
+--- a/seahub/urls.py
++++ b/seahub/urls.py
+@@ -69,6 +69,7 @@ from seahub.api2.endpoints.repos_batch import BatchMoveItemsUpdatePath, ReposBat
+         ReposSyncBatchCopyItemView, ReposSyncBatchMoveItemView, \
+         ReposBatchDeleteItemView, RepoFoldersItemBatchDelete
+ from seahub.api2.endpoints.repos import RepoView, ReposView, RepoShareInfoView, RepoImageRotateView
++from seahub.department_spaces.views import SpacesView, SpaceDetailView, SpaceRestoreView, SpaceTrashView
+ from seahub.api2.endpoints.file import FileView, FileBatchLockView, FileBatchUnlockView
+ from seahub.api2.endpoints.file_access_log import FileAccessLogView
+ from seahub.api2.endpoints.file_history import FileHistoryView, NewFileHistoryView
+@@ -314,6 +315,12 @@ urlpatterns = [
+     path('share-admin-share-links/', react_fake_view, name="share_admin_share_links"),
+     path('share-admin-upload-links/', react_fake_view, name="share_admin_upload_links"),
+     path('shared-libs/', react_fake_view, name="shared_libs"),
++    path('department-spaces/', react_fake_view, name='department_spaces'),
++    path('department-spaces/<int:space_id>/', react_fake_view, name='department_space'),
++    path('api/v2.1/department-spaces/', SpacesView.as_view()),
++    path('api/v2.1/department-spaces/<int:space_id>/', SpaceDetailView.as_view()),
++    path('api/v2.1/department-spaces/<int:space_id>/restore/', SpaceRestoreView.as_view()),
++    path('api/v2.1/department-spaces/<int:space_id>/trash/', SpaceTrashView.as_view()),
+     path('shared-with-ocm/', react_fake_view, name="shared_with_ocm"),
+     path('libraries/', react_fake_view, name="libs"),
+     path('my-libs/', react_fake_view, name="my_libs"),

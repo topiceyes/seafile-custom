@@ -272,6 +272,29 @@ def init_custom_settings():
     log('完成 —— 此时 seafile/seahub 尚未启动，无需重启即已生效')
 
 
+def migrate_department_spaces():
+    """Apply only this app's additive schema before workers/cron use it.
+
+    seahub.sh python-env can swallow the Python exit code. Require an explicit
+    completion sentinel in addition to the subprocess return code.
+    """
+    import subprocess
+    base = '/opt/seafile/seafile-server-latest'
+    program = (
+        'import os; os.environ.setdefault("DJANGO_SETTINGS_MODULE", "seahub.settings"); '
+        'from django.core.management import execute_from_command_line; '
+        'execute_from_command_line(["manage.py", "migrate", "department_spaces", "--noinput"]); '
+        'print("DEPARTMENT_SPACES_SCHEMA_OK")'
+    )
+    result = subprocess.run([base + '/seahub.sh', 'python-env', 'python3', '-c', program],
+                            cwd=base + '/seahub', text=True, capture_output=True, timeout=180)
+    if result.returncode or 'DEPARTMENT_SPACES_SCHEMA_OK' not in result.stdout.splitlines():
+        log(result.stdout[-4000:])
+        log(result.stderr[-4000:])
+        raise RuntimeError('Department space schema migration did not complete')
+    log('部门共享数据库迁移已完成（仅 department_spaces）')
+
+
 # ---------------------------------------------------------------------------
 # cron 下 seahub.sh 的 .env 依赖（[dev] 0016，2026-10-29）
 #

@@ -3,7 +3,7 @@
 # dev ：官方镜像没烘 cron，由 seafile-server.yml 从同一路径挂载，两边内容不会漂移
 # 日志：数据卷内的 /shared/seafile/logs/dingtalk-sync.log
 #       （开发机 = deploy/seafile-data/seafile/logs/，生产 = $SEAFILE_VOLUME/seafile/logs/）
-17 * * * * root cd /opt/seafile/seafile-server-latest/seahub && /opt/seafile/seafile-server-latest/seahub.sh python-env python3 manage.py deactivate_departed_users >> /shared/seafile/logs/dingtalk-sync.log 2>&1 || echo "$(date -Is) dingtalk-sync FAILED (cd 或命令非零退出，检查 seafile-server-latest 符号链接)" >> /shared/seafile/logs/dingtalk-sync.log
-# [dev] 0015 钉钉组织架构 → Seafile 部门同步（树 + 成员完全对齐；部门只增/改名，钉钉侧
-# 删掉的部门仅告警）。放在离职同步后同一时刻顺序执行。
-23 * * * * root cd /opt/seafile/seafile-server-latest/seahub && /opt/seafile/seafile-server-latest/seahub.sh python-env python3 manage.py sync_dingtalk_departments >> /shared/seafile/logs/dingtalk-sync.log 2>&1 || echo "$(date -Is) dingtalk-departments-sync FAILED (cd 或命令非零退出，检查 seafile-server-latest 符号链接)" >> /shared/seafile/logs/dingtalk-sync.log
+17 * * * * root cd /opt/seafile/seafile-server-latest/seahub && /usr/local/bin/seafile-management-task deactivate_departed_users >> /shared/seafile/logs/dingtalk-sync.log 2>&1 || echo "$(date -Is) dingtalk-sync FAILED" >> /shared/seafile/logs/dingtalk-sync.log
+# sync_dingtalk_departments 保留旧命令名，已委托独立部门空间同步，不再创建群组。
+# 成员和主管按钉钉对齐；现有个人库保留原所有权，旧部门群组仅兼容已有共享。
+23 * * * * root cd /opt/seafile/seafile-server-latest/seahub && /usr/local/bin/seafile-management-task sync_dingtalk_departments >> /shared/seafile/logs/dingtalk-sync.log 2>&1 || echo "$(date -Is) department-spaces-sync FAILED" >> /shared/seafile/logs/dingtalk-sync.log

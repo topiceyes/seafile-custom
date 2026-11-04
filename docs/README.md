@@ -28,6 +28,9 @@
 | 020 | [用户组列表 CE 守卫](020-groups-quota-ce-guard.md) | 部门进用户组列表后 /api/v2.1/groups/ 500；group_quota 补 is_pro_version 守卫（1.2.6） | ✅ 已发布灰度 |
 | 021 | [共享给部门放行](021-share-to-department-permission.md) | 同步部门无管理员致共享必然 403；部门成员/系统管理员可共享（1.2.7） | ✅ 已发布灰度 |
 | 022 | [钉钉真实姓名](022-dingtalk-real-name-nickname.md) | 显示名取通讯录真实姓名（不再用 nick）；登录/绑定修正 + 每小时同步回填（1.2.8） | ✅ 已发布灰度 |
+| 023 | [项目复盘](023-project-retrospective.md) | 演进过程、技术取舍、离线验证与遗留问题优先级 | 已完成（2026-11-04，未核验当前生产状态） |
+| 024 | [独立部门共享空间设计](024-department-spaces-design.md) | 自动部门空间、主管管理、CE 用户授权与旧部门群组迁移 | 设计已落地，实施结果见 025 |
+| 025 | [独立部门共享空间实现](025-department-spaces-implementation.md) | 独立空间、自动建库、主管继承、成员授权、历史共享兼容 | 本地实现完成（1.3.0，生产未升级） |
 
 ## 工作区结构
 
@@ -57,6 +60,6 @@
 ## 关键约定（重要）
 
 1. seahub 源码以 bind-mount 方式挂进容器（只挂 `seahub/seahub` Python 包目录，**不能**挂整个 `seahub/`，容器内 `thirdpart/` 是已装依赖含 gunicorn）
-2. 二开分支基于 **12.0 维护分支**（容器运行 12.0.14，Django 4.2），不要直接用 master（13.x 线，Django 5.2，不兼容）
+2. 二开基于 **14.0 维护分支**（容器 14.0.9，Django 5.2）；固定上游 SHA 与补丁树见 patches/MANIFEST.md，不要直接替换成上游 master
 3. 源码运行需手动提供 `SEAFILE_VERSION`（发布构建时才注入的变量，缺失导致 ImportError）
 4. 升级 Seafile 镜像版本时：compose 里的版本目录硬编码路径、源码基线都要同步处理
