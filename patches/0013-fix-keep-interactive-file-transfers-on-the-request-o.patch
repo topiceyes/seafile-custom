@@ -1,0 +1,861 @@
+From 3d1f237bccb77c60ad7ddf27d5862003da39db8a Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
+Date: Thu, 5 Nov 2026 13:25:57 +0800
+Subject: [PATCH 13/13] fix: keep interactive file transfers on the request
+ origin
+
+---
+ .../api2/endpoints/admin/library_dirents.py   |   2 +-
+ seahub/api2/endpoints/admin/share_links.py    |   6 +-
+ seahub/api2/endpoints/admin/system_library.py |   4 +-
+ seahub/api2/endpoints/admin/upload_links.py   |   2 +-
+ seahub/api2/endpoints/file.py                 |   4 +-
+ seahub/api2/endpoints/repos.py                |   2 +-
+ seahub/api2/endpoints/share_links.py          |   4 +-
+ seahub/api2/endpoints/upload_links.py         |   2 +-
+ seahub/api2/endpoints/via_repo_token.py       |   6 +-
+ seahub/api2/endpoints/wiki2.py                |   2 +-
+ seahub/api2/views.py                          |  20 +-
+ seahub/base/context_processors.py             |   4 +-
+ seahub/seadoc/views.py                        |   4 +-
+ seahub/settings.py                            |   4 +-
+ seahub/utils/__init__.py                      |  52 +++--
+ seahub/views/__init__.py                      |   2 +-
+ seahub/views/ajax.py                          |   2 +-
+ seahub/views/file.py                          |  32 +--
+ seahub/views/sysadmin.py                      |   2 +-
+ seahub/wiki2/views.py                         |   2 +-
+ tests/seahub/utils/test_fileserver_origin.py  | 199 ++++++++++++++++++
+ 21 files changed, 277 insertions(+), 80 deletions(-)
+ create mode 100644 tests/seahub/utils/test_fileserver_origin.py
+
+diff --git a/seahub/api2/endpoints/admin/library_dirents.py b/seahub/api2/endpoints/admin/library_dirents.py
+index fdcc7723..c8c43800 100644
+--- a/seahub/api2/endpoints/admin/library_dirents.py
++++ b/seahub/api2/endpoints/admin/library_dirents.py
+@@ -203,7 +203,7 @@ class AdminLibraryDirent(APIView):
+                 error_msg = 'Internal Server Error'
+                 return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, error_msg)
+ 
+-            dl_url = gen_file_get_url(token, dirent.obj_name)
++            dl_url = gen_file_get_url(token, dirent.obj_name, request=request)
+             send_file_access_msg(request, repo, path, 'web')
+             return Response({'download_url': dl_url})
+ 
+diff --git a/seahub/api2/endpoints/admin/share_links.py b/seahub/api2/endpoints/admin/share_links.py
+index 78478f5f..3a180bee 100644
+--- a/seahub/api2/endpoints/admin/share_links.py
++++ b/seahub/api2/endpoints/admin/share_links.py
+@@ -361,7 +361,7 @@ class AdminShareLinkDownload(APIView):
+                 return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, error_msg)
+ 
+             obj_name = os.path.basename(obj_path.rstrip('/'))
+-            result['download_link'] = gen_file_get_url(download_token, obj_name)
++            result['download_link'] = gen_file_get_url(download_token, obj_name, request=request)
+         else:
+             # download (sub) file/folder in shared dir
+             obj_id = seafile_api.get_dir_id_by_path(repo_id, obj_path)
+@@ -404,7 +404,7 @@ class AdminShareLinkDownload(APIView):
+                     return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, error_msg)
+ 
+                 file_name = os.path.basename(real_path.rstrip('/'))
+-                result['download_link'] = gen_file_get_url(download_token, file_name)
++                result['download_link'] = gen_file_get_url(download_token, file_name, request=request)
+             else:
+                 # download sub folder in shared dir
+                 if real_path[-1] != '/':
+@@ -444,7 +444,7 @@ class AdminShareLinkDownload(APIView):
+                 except Exception as e:
+                     logger.error(e)
+ 
+-                result['download_link'] = gen_dir_zip_download_url(zip_token)
++                result['download_link'] = gen_dir_zip_download_url(zip_token, request=request)
+ 
+         return Response(result)
+ 
+diff --git a/seahub/api2/endpoints/admin/system_library.py b/seahub/api2/endpoints/admin/system_library.py
+index 83e0010d..fa5f309c 100644
+--- a/seahub/api2/endpoints/admin/system_library.py
++++ b/seahub/api2/endpoints/admin/system_library.py
+@@ -92,9 +92,9 @@ class AdminSystemLibraryUploadLink(APIView):
+             return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, error_msg)
+ 
+         if req_from == 'api':
+-            url = gen_file_upload_url(token, 'upload-api')
++            url = gen_file_upload_url(token, 'upload-api', request=request)
+         else:
+-            url = gen_file_upload_url(token, 'upload-aj')
++            url = gen_file_upload_url(token, 'upload-aj', request=request)
+ 
+         result = {}
+         result['upload_link'] = url
+diff --git a/seahub/api2/endpoints/admin/upload_links.py b/seahub/api2/endpoints/admin/upload_links.py
+index c1c4ff3b..6419955a 100644
+--- a/seahub/api2/endpoints/admin/upload_links.py
++++ b/seahub/api2/endpoints/admin/upload_links.py
+@@ -241,7 +241,7 @@ class AdminUploadLinkUpload(APIView):
+             return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, error_msg)
+ 
+         result = {}
+-        result['upload_link'] = gen_file_upload_url(upload_token, 'upload-api')
++        result['upload_link'] = gen_file_upload_url(upload_token, 'upload-api', request=request)
+ 
+         return Response(result)
+ 
+diff --git a/seahub/api2/endpoints/file.py b/seahub/api2/endpoints/file.py
+index 9e5797d0..b631bdb6 100644
+--- a/seahub/api2/endpoints/file.py
++++ b/seahub/api2/endpoints/file.py
+@@ -615,7 +615,7 @@ class FileView(APIView):
+                                                                      file_id,
+                                                                      'download',
+                                                                      username)
+-            download_url = gen_file_get_url(download_token, filename)
++            download_url = gen_file_get_url(download_token, filename, request=request)
+ 
+             obj_id = json.dumps({'parent_dir': parent_dir})
+             upload_token = seafile_api.get_fileserver_access_token(repo_id,
+@@ -624,7 +624,7 @@ class FileView(APIView):
+                                                                    username,
+                                                                    use_onetime=True)
+ 
+-            upload_url = gen_file_upload_url(upload_token, 'upload-api')
++            upload_url = gen_file_upload_url(upload_token, 'upload-api', request=request)
+ 
+             if extension == '.sdoc':
+                 doc_uuid = get_seadoc_file_uuid(repo, path)
+diff --git a/seahub/api2/endpoints/repos.py b/seahub/api2/endpoints/repos.py
+index d7ee9f85..becdcb2d 100644
+--- a/seahub/api2/endpoints/repos.py
++++ b/seahub/api2/endpoints/repos.py
+@@ -701,7 +701,7 @@ class RepoImageRotateView(APIView):
+             logger.error(e)
+             error_msg = 'Internal Server Error'
+             return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, error_msg)
+-        upload_link = gen_file_upload_url(token, 'upload-api')
++        upload_link = gen_file_upload_url(token, 'upload-api', request=request)
+ 
+         # upload
+         try:
+diff --git a/seahub/api2/endpoints/share_links.py b/seahub/api2/endpoints/share_links.py
+index d408a3d4..d3abc161 100644
+--- a/seahub/api2/endpoints/share_links.py
++++ b/seahub/api2/endpoints/share_links.py
+@@ -302,7 +302,7 @@ class ShareLinks(APIView):
+             link_info['is_dir'] = True if s_type == 'd' else False
+             link_info['token'] = token
+             link_info['link'] = gen_shared_link(token, s_type)
+-            link_info['download_link'] = gen_file_get_url_by_sharelink(token)
++            link_info['download_link'] = gen_file_get_url_by_sharelink(token, request=request)
+             link_info['show_download_link'] = fs.show_download_link
+             link_info['view_cnt'] = fs.view_cnt
+             link_info['ctime'] = datetime_to_isoformat_timestr(fs.ctime) if fs.ctime else ''
+@@ -1125,7 +1125,7 @@ class ShareLinkUpload(APIView):
+             return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, error_msg)
+ 
+         result = {}
+-        result['upload_link'] = gen_file_upload_url(token, 'upload-api')
++        result['upload_link'] = gen_file_upload_url(token, 'upload-api', request=request)
+         return Response(result)
+ 
+ 
+diff --git a/seahub/api2/endpoints/upload_links.py b/seahub/api2/endpoints/upload_links.py
+index 1d7ffda0..e86f5b5a 100644
+--- a/seahub/api2/endpoints/upload_links.py
++++ b/seahub/api2/endpoints/upload_links.py
+@@ -550,7 +550,7 @@ class UploadLinkUpload(APIView):
+             return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, error_msg)
+ 
+         result = {}
+-        result['upload_link'] = gen_file_upload_url(token, 'upload-api')
++        result['upload_link'] = gen_file_upload_url(token, 'upload-api', request=request)
+         return Response(result)
+ 
+ 
+diff --git a/seahub/api2/endpoints/via_repo_token.py b/seahub/api2/endpoints/via_repo_token.py
+index 6914bab0..5cfff1e3 100644
+--- a/seahub/api2/endpoints/via_repo_token.py
++++ b/seahub/api2/endpoints/via_repo_token.py
+@@ -457,9 +457,9 @@ class ViaRepoUploadLinkView(APIView):
+                 replace = to_python_boolean(request.GET.get('replace', '0'))
+             except ValueError:
+                 replace = False
+-            url = gen_file_upload_url(token, 'upload-api', replace)
++            url = gen_file_upload_url(token, 'upload-api', replace, request=request)
+         elif req_from == 'web':
+-            url = gen_file_upload_url(token, 'upload-aj')
++            url = gen_file_upload_url(token, 'upload-aj', request=request)
+         else:
+             error_msg = 'from invalid.'
+             return api_error(status.HTTP_400_BAD_REQUEST, error_msg)
+@@ -493,7 +493,7 @@ class ViaRepoDownloadLinkView(APIView):
+         token = seafile_api.get_fileserver_access_token(
+             repo_id, file_id, 'download', request.repo_api_token_obj.app_name,
+             use_onetime=settings.FILESERVER_TOKEN_ONCE_ONLY)
+-        download_url = gen_file_get_url(token, filename)
++        download_url = gen_file_get_url(token, filename, request=request)
+         return Response(download_url)
+ 
+ 
+diff --git a/seahub/api2/endpoints/wiki2.py b/seahub/api2/endpoints/wiki2.py
+index 14e5399d..104ce17f 100644
+--- a/seahub/api2/endpoints/wiki2.py
++++ b/seahub/api2/endpoints/wiki2.py
+@@ -1847,7 +1847,7 @@ class WikiPageExport(APIView):
+             file_id = seafile_api.get_file_id_by_path(repo_id, page_path)
+             filename = os.path.basename(page_path)
+             download_token = seafile_api.get_fileserver_access_token(repo_id, file_id, 'download', username)
+-            download_url = gen_file_get_url(download_token, filename)
++            download_url = gen_file_get_url(download_token, filename, request=request)
+         except Exception as e:
+             logger.error(e)
+             return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, 'Internal Server Error')
+diff --git a/seahub/api2/views.py b/seahub/api2/views.py
+index 764ba154..a7d91b03 100644
+--- a/seahub/api2/views.py
++++ b/seahub/api2/views.py
+@@ -2022,7 +2022,7 @@ class FileBlockDownloadLinkView(APIView):
+             error_msg = 'Internal Server Error'
+             return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, error_msg)
+ 
+-        url = gen_block_get_url(token, block_id)
++        url = gen_block_get_url(token, block_id, request=request)
+         return Response(url)
+ 
+ class UploadLinkView(APIView):
+@@ -2080,9 +2080,9 @@ class UploadLinkView(APIView):
+                     replace = False
+             except ValueError:
+                 replace = False
+-            url = gen_file_upload_url(token, 'upload-api', replace)
++            url = gen_file_upload_url(token, 'upload-api', replace, request=request)
+         elif req_from == 'web':
+-            url = gen_file_upload_url(token, 'upload-aj')
++            url = gen_file_upload_url(token, 'upload-aj', request=request)
+         else:
+             error_msg = 'from invalid.'
+             return api_error(status.HTTP_400_BAD_REQUEST, error_msg)
+@@ -2126,9 +2126,9 @@ class UpdateLinkView(APIView):
+ 
+         req_from = request.GET.get('from', 'api')
+         if req_from == 'api':
+-            url = gen_file_upload_url(token, 'update-api')
++            url = gen_file_upload_url(token, 'update-api', request=request)
+         elif req_from == 'web':
+-            url = gen_file_upload_url(token, 'update-aj')
++            url = gen_file_upload_url(token, 'update-aj', request=request)
+         else:
+             error_msg = 'from invalid.'
+             return api_error(status.HTTP_400_BAD_REQUEST, error_msg)
+@@ -2169,7 +2169,7 @@ class UploadBlksLinkView(APIView):
+             error_msg = 'Internal Server Error'
+             return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, error_msg)
+ 
+-        url = gen_file_upload_url(token, 'upload-blks-api')
++        url = gen_file_upload_url(token, 'upload-blks-api', request=request)
+         return Response(url)
+ 
+ 
+@@ -2215,9 +2215,9 @@ class UploadBlksLinkView(APIView):
+             error_msg = 'Internal Server Error'
+             return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, error_msg)
+ 
+-        blksurl = gen_file_upload_url(token, 'upload-raw-blks-api')
++        blksurl = gen_file_upload_url(token, 'upload-raw-blks-api', request=request)
+         commiturl = '%s?commitonly=true&ret-json=true' %  gen_file_upload_url(
+-            token, 'upload-blks-api')
++            token, 'upload-blks-api', request=request)
+         blks = request.POST.get('blklist', None)
+         blklist = self.get_blklist_missing(repo_id, blks)
+         res = {
+@@ -2263,7 +2263,7 @@ class UpdateBlksLinkView(APIView):
+             error_msg = 'Internal Server Error'
+             return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, error_msg)
+ 
+-        url = gen_file_upload_url(token, 'update-blks-api')
++        url = gen_file_upload_url(token, 'update-blks-api', request=request)
+         return Response(url)
+ 
+ def _collect_dir_file_recursively(username, repo_id, path, all_dirs):
+@@ -2515,7 +2515,7 @@ def get_repo_file(request, repo_id, file_id, file_name, op,
+             error_msg = 'Internal Server Error'
+             return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, error_msg)
+ 
+-        redirect_url = gen_file_get_url(token, file_name)
++        redirect_url = gen_file_get_url(token, file_name, request=request)
+         response = HttpResponse(json.dumps(redirect_url), status=200,
+                                 content_type=json_content_type)
+         response["oid"] = file_id
+diff --git a/seahub/base/context_processors.py b/seahub/base/context_processors.py
+index c27728f4..46c0b3d3 100644
+--- a/seahub/base/context_processors.py
++++ b/seahub/base/context_processors.py
+@@ -32,7 +32,7 @@ from seahub.settings import SEAFILE_VERSION, SITE_DESCRIPTION, \
+     ENABLE_FACE_RECOGNITION, ENABLE_STORAGE_CLASSES, SHARE_LINK_ALWAYS_SEND_PASSWORD_SEPARATELY
+ 
+ # [dev] FILE_SERVER_ROOT 不再从这里 import——它是启动期绑定，后台改了不生效。
+-# 改走 seahub.utils.get_fileserver_root()，该项由 SERVICE_URL 推导（补丁 0009）。
++# 交互式文件传输跟随 request，避免内网页面把文件流量送到外网入口。
+ from seahub.organizations.models import OrgAdminSettings
+ from seahub.organizations.settings import ORG_ENABLE_ADMIN_CUSTOM_LOGO
+ from seahub.onlyoffice.settings import ENABLE_ONLYOFFICE, \
+@@ -88,7 +88,7 @@ def base(request):
+     repo_id_patt = r".*/([a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})/.*"
+     m = re.match(repo_id_patt, request.get_full_path())
+     search_repo_id = m.group(1) if m is not None else None
+-    file_server_root = get_fileserver_root()
++    file_server_root = get_fileserver_root(request=request)
+     if not file_server_root.endswith('/'):
+         file_server_root += '/'
+ 
+diff --git a/seahub/seadoc/views.py b/seahub/seadoc/views.py
+index fa24ce58..12a968a7 100644
+--- a/seahub/seadoc/views.py
++++ b/seahub/seadoc/views.py
+@@ -179,7 +179,7 @@ def sdoc_to_docx(request, repo_id):
+     doc_uuid = get_seadoc_file_uuid(repo, file_path)
+     download_token = seafile_api.get_fileserver_access_token(repo_id, file_id,
+                                                              'download', username)
+-    download_url = gen_file_get_url(download_token, filename)
++    download_url = gen_file_get_url(download_token, filename, request=request)
+ 
+     src_type = 'sdoc'
+     dst_type = 'docx'
+@@ -225,7 +225,7 @@ def sdoc_to_markdown(request, repo_id):
+     doc_uuid = get_seadoc_file_uuid(repo, file_path)
+     download_token = seafile_api.get_fileserver_access_token(repo_id, file_id,
+                                                              'download', username)
+-    download_url = gen_file_get_url(download_token, filename)
++    download_url = gen_file_get_url(download_token, filename, request=request)
+ 
+     src_type = 'sdoc'
+     dst_type = 'md'
+diff --git a/seahub/settings.py b/seahub/settings.py
+index b66577f8..7e037056 100644
+--- a/seahub/settings.py
++++ b/seahub/settings.py
+@@ -1434,8 +1434,8 @@ IS_PRO_VERSION = os.environ.get('IS_PRO_VERSION', 'false').lower() == 'true'
+ CONSTANCE_ENABLED = ENABLE_SETTINGS_VIA_WEB
+ CONSTANCE_CONFIG = {
+     # [dev] 站点公开地址。默认值来自 seahub_settings.py / SEAFILE_SERVER_* 环境变量，
+-    # 后台「系统管理 → 设置」保存后覆盖。FILE_SERVER_ROOT 不单独注册——由它推导
+-    # （见 utils.get_fileserver_root），避免同一个域名要填两处。
++    # 后台「系统管理 → 设置」保存后覆盖。用于邮件、分享等规范链接；
++    # 交互式文件传输由 utils.get_fileserver_root(request) 跟随当前入口。
+     'SERVICE_URL': (SERVICE_URL, ''),
+     'DISABLE_SYNC_WITH_ANY_FOLDER': (DISABLE_SYNC_WITH_ANY_FOLDER, ''),
+ 
+diff --git a/seahub/utils/__init__.py b/seahub/utils/__init__.py
+index 76fc22aa..a649d5f0 100644
+--- a/seahub/utils/__init__.py
++++ b/seahub/utils/__init__.py
+@@ -187,19 +187,17 @@ def list_to_string(l):
+     """
+     return ','.join(l)
+ 
+-def get_fileserver_root():
+-    """ Construct seafile fileserver address and port.
+-
+-    [dev] 不再单独配置，由 SERVICE_URL 的 scheme+netloc 推导（+ /seafhttp）。
+-    上游让 SERVICE_URL 与 FILE_SERVER_ROOT 分开填是冗余，多一处能填错的地方：
+-    改了域名只改一处，另一处忘了就成了「页面能开、上传下载坏」的隐蔽故障。
+-    推导与上游语义一致——上游 settings.py 里 FILE_SERVER_ROOT 取的就是
+-    host_url（不带 SITE_ROOT），而 SERVICE_URL 在 SITE_ROOT 场景下才带路径。
+-    容器内部访问走 get_inner_fileserver_root()（127.0.0.1:8082），不受影响。
+-
+-    Returns:
+-    	Constructed fileserver root.
++def get_fileserver_root(request=None):
++    """Return the file-transfer origin for this request.
++
++    Interactive transfers must stay on the entry used by the browser/client,
++    including its port. Django validates Host and handles the trusted proxy
++    scheme; do not read forwarded headers directly or change global settings.
++    Calls without a request (background jobs and office-server callbacks) keep
++    the canonical SERVICE_URL origin. Internal RPC/HTTP URLs are separate.
+     """
++    if request is not None:
++        return request.build_absolute_uri('/seafhttp')
+     return get_site_scheme_and_netloc() + '/seafhttp'
+ 
+ def get_inner_fileserver_root():
+@@ -520,56 +518,56 @@ def get_max_upload_file_size():
+     """
+     return seaserv.MAX_UPLOAD_FILE_SIZE
+ 
+-def gen_block_get_url(token, blkid):
++def gen_block_get_url(token, blkid, request=None):
+     """
+     Generate fileserver block url.
+     Format: http://<domain:port>/blks/<token>/<blkid>
+     """
+     if blkid:
+-        return '%s/blks/%s/%s' % (get_fileserver_root(), token, blkid)
++        return '%s/blks/%s/%s' % (get_fileserver_root(request), token, blkid)
+     else:
+-        return '%s/blks/%s/' % (get_fileserver_root(), token)
++        return '%s/blks/%s/' % (get_fileserver_root(request), token)
+ 
+-def gen_file_get_url(token, filename):
++def gen_file_get_url(token, filename, request=None):
+     """
+     Generate fileserver file url.
+     Format: http://<domain:port>/files/<token>/<filename>
+     """
+-    return '%s/files/%s/%s' % (get_fileserver_root(), token, quote(filename))
++    return '%s/files/%s/%s' % (get_fileserver_root(request), token, quote(filename))
+ 
+ 
+-def gen_file_get_url_by_sharelink(token):
++def gen_file_get_url_by_sharelink(token, request=None):
+     """
+     Generate fileserver file url by sharelink.
+     Format: http://<domain:port>/f/<token>/
+     """
+-    return '%s/f/%s/' % (get_fileserver_root(), token)
++    return '%s/f/%s/' % (get_fileserver_root(request), token)
+ 
+-def gen_file_get_url_new(repo_id, filepath, op='download'):
++def gen_file_get_url_new(repo_id, filepath, op='download', request=None):
+     """
+     Generate fileserver file url.
+     Format: http://<domain:port>/repos/<repo_id>files/<filepath>/?op=download
+     """
+ 
+     return '%s/repos/%s/files/%s/?op=%s' % (
+-        get_fileserver_root(),
++        get_fileserver_root(request),
+         repo_id,
+         quote(filepath.strip('/')),
+         op
+     )
+ 
+-def gen_file_upload_url(token, op, replace=False):
+-    url = '%s/%s/%s' % (get_fileserver_root(), op, token)
++def gen_file_upload_url(token, op, replace=False, request=None):
++    url = '%s/%s/%s' % (get_fileserver_root(request), op, token)
+     if replace is True:
+         url += '?replace=1'
+     return url
+ 
+-def gen_dir_zip_download_url(token):
++def gen_dir_zip_download_url(token, request=None):
+     """
+     Generate fileserver file url.
+     Format: http://<domain:port>/files/<token>/<filename>
+     """
+-    return '%s/zip/%s' % (get_fileserver_root(), token)
++    return '%s/zip/%s' % (get_fileserver_root(request), token)
+ 
+ def string2list(string):
+     """
+@@ -954,8 +952,8 @@ def get_service_url():
+     默认值来自 seahub_settings.py / 环境变量，后台保存后覆盖；后台清空则回落默认。
+     读这个值必须走本函数，不要在模块级 `from seahub.settings import SERVICE_URL`
+     ——那样会在启动期固化，后台改了不生效（context_processors 与 OCM 都踩过）。
+-    所有派生地址都跟着它走：分享链接、下载链接、邮件里的链接，以及钉钉回调
+-    地址（get_site_scheme_and_netloc() 从这里取 scheme+netloc）。
++    邮件、分享链接及无请求上下文的文件服务地址使用此规范地址。
++    交互式上传下载和钉钉回调跟随当前请求入口。
+     """
+     try:
+         from constance import config
+diff --git a/seahub/views/__init__.py b/seahub/views/__init__.py
+index f74b355e..5e628547 100644
+--- a/seahub/views/__init__.py
++++ b/seahub/views/__init__.py
+@@ -843,7 +843,7 @@ def repo_download_dir(request, repo_id):
+     else:
+         return render_error(request, _('Unable to download "%s"') % dirname )
+ 
+-    url = gen_file_get_url(token, dirname)
++    url = gen_file_get_url(token, dirname, request=request)
+     from seahub.views.file import send_file_access_msg
+     send_file_access_msg(request, repo, path, 'web')
+     return redirect(url)
+diff --git a/seahub/views/ajax.py b/seahub/views/ajax.py
+index 33dd1819..ece14beb 100644
+--- a/seahub/views/ajax.py
++++ b/seahub/views/ajax.py
+@@ -402,7 +402,7 @@ def get_file_upload_url_ul(request, token):
+         return HttpResponse(json.dumps({"error": _("Internal Server Error")}),
+                             status=500, content_type=content_type)
+ 
+-    url = gen_file_upload_url(acc_token, 'upload-aj')
++    url = gen_file_upload_url(acc_token, 'upload-aj', request=request)
+     return HttpResponse(json.dumps({"url": url}), content_type=content_type)
+ 
+ @login_required_ajax
+diff --git a/seahub/views/file.py b/seahub/views/file.py
+index 4ad264c6..33ddc10f 100644
+--- a/seahub/views/file.py
++++ b/seahub/views/file.py
+@@ -295,7 +295,7 @@ def get_file_view_path_and_perm(request, repo_id, obj_id, path,
+         if not token:
+             return ('', '', None)
+ 
+-        outer_url = gen_file_get_url(token, filename)
++        outer_url = gen_file_get_url(token, filename, request=request)
+         inner_url = gen_inner_file_get_url(token, filename)
+         return (outer_url, inner_url, user_perm)
+ 
+@@ -509,7 +509,7 @@ def view_lib_file_via_smart_link(request, dirent_uuid, dirent_name):
+                                                     'view', username,
+                                                     use_onetime=use_onetime)
+         if token:
+-            raw_path = gen_file_get_url(token, filename)
++            raw_path = gen_file_get_url(token, filename, request=request)
+ 
+         obj_id = get_file_id_by_path(repo_id, req_path)
+         file_size = seafile_api.get_file_size(repo.store_id, repo.version, file_id)
+@@ -623,7 +623,7 @@ def view_lib_file(request, repo_id, path):
+ 
+         operation = 'download' if dl else 'view'
+         if dl:
+-            dl_or_raw_url = gen_file_get_url_new(repo_id, path)
++            dl_or_raw_url = gen_file_get_url_new(repo_id, path, request=request)
+         else:
+             token = seafile_api.get_fileserver_access_token(
+                 repo_id, file_id, operation, username,
+@@ -632,7 +632,7 @@ def view_lib_file(request, repo_id, path):
+             if not token:
+                 return render_permission_error(request, _('Unable to view file'))
+ 
+-            dl_or_raw_url = gen_file_get_url(token, filename)
++            dl_or_raw_url = gen_file_get_url(token, filename, request=request)
+ 
+         # send stats message
+         send_file_access_msg(request, repo, path, 'web')
+@@ -697,7 +697,7 @@ def view_lib_file(request, repo_id, path):
+         'share_link_expire_days_min': SHARE_LINK_EXPIRE_DAYS_MIN,
+         'share_link_expire_days_max': SHARE_LINK_EXPIRE_DAYS_MAX,
+         'can_download_file': can_download_file,
+-        'file_download_url': gen_file_get_url_new(repo_id, path),
++        'file_download_url': gen_file_get_url_new(repo_id, path, request=request),
+         'mobile_login': mobile_login,
+         'enable_onlyoffice': ENABLE_ONLYOFFICE,
+         'is_email_configured': IS_EMAIL_CONFIGURED,
+@@ -758,7 +758,7 @@ def view_lib_file(request, repo_id, path):
+                                                     'view', username,
+                                                     use_onetime=use_onetime)
+     if token:
+-        raw_path = gen_file_get_url(token, filename)
++        raw_path = gen_file_get_url(token, filename, request=request)
+         inner_path = gen_inner_file_get_url(token, filename)
+ 
+     # handle file preview/edit according to file extension
+@@ -767,7 +767,7 @@ def view_lib_file(request, repo_id, path):
+     template = '%s_file_view_react.html' % filetype.lower()
+ 
+     if filetype in FILE_TYPE_FOR_NEW_FILE_LINK:
+-        raw_path = gen_file_get_url_new(repo_id, path)
++        raw_path = gen_file_get_url_new(repo_id, path, request=request)
+ 
+     if filetype in (IMAGE, VIDEO, AUDIO, PDF, SVG, EPUB, 'Unknown'):
+         template = 'common_file_view_react.html'
+@@ -1295,9 +1295,9 @@ def _download_file_from_share_link(request, fileshare, use_tmp_token=False):
+         if not dl_token:
+             messages.error(request, _('Unable to download file.'))
+ 
+-        return HttpResponseRedirect(gen_file_get_url(dl_token, filename))
++        return HttpResponseRedirect(gen_file_get_url(dl_token, filename, request=request))
+ 
+-    return HttpResponseRedirect(gen_file_get_url_by_sharelink(fileshare.token))
++    return HttpResponseRedirect(gen_file_get_url_by_sharelink(fileshare.token, request=request))
+ 
+ 
+ @ensure_csrf_cookie
+@@ -1392,7 +1392,7 @@ def view_shared_file(request, fileshare):
+     if not access_token:
+         return render_error(request, _('Unable to view file'))
+ 
+-    raw_path = gen_file_get_url(access_token, filename)
++    raw_path = gen_file_get_url(access_token, filename, request=request)
+ 
+     if request.GET.get('raw', '') == '1':
+         if can_download is False:
+@@ -1411,7 +1411,7 @@ def view_shared_file(request, fileshare):
+                 'file_encoding_list': [], 'filetype': filetype}
+ 
+     if filetype in FILE_TYPE_FOR_NEW_FILE_LINK:
+-        raw_path = gen_file_get_url_by_sharelink(fileshare.token)
++        raw_path = gen_file_get_url_by_sharelink(fileshare.token, request=request)
+ 
+     if filetype == SEADOC:
+         file_uuid = get_seadoc_file_uuid(repo, path)
+@@ -1526,7 +1526,7 @@ def view_shared_file(request, fileshare):
+ 
+     file_size = seafile_api.get_file_size(repo.store_id, repo.version, obj_id)
+     can_preview, err_msg = can_preview_file(filename, file_size, repo)
+-    shared_file_download_url = gen_file_get_url_by_sharelink(fileshare.token)
++    shared_file_download_url = gen_file_get_url_by_sharelink(fileshare.token, request=request)
+     if can_preview:
+ 
+         # send file audit message
+@@ -1707,7 +1707,7 @@ def view_file_via_shared_dir(request, fileshare):
+         return render_error(request, _('Unable to view file'))
+ 
+     filename = os.path.basename(req_path)
+-    raw_path = gen_file_get_url(access_token, filename)
++    raw_path = gen_file_get_url(access_token, filename, request=request)
+ 
+     if request.GET.get('raw', '0') == '1':
+         if fileshare.get_permissions()['can_download'] is False:
+@@ -2001,7 +2001,7 @@ def download_file(request, repo_id, obj_id):
+     path = request.GET.get('p', '')
+     send_file_access_msg(request, repo, path, 'web') # send stats message
+     file_name = os.path.basename(path.rstrip('/'))
+-    redirect_url = gen_file_get_url(token, file_name) # generate download link
++    redirect_url = gen_file_get_url(token, file_name, request=request) # generate download link
+ 
+     return HttpResponseRedirect(redirect_url)
+ 
+@@ -2169,7 +2169,7 @@ def view_media_file_via_share_link(request):
+     access_token = seafile_api.get_fileserver_access_token(repo_id,
+             obj_id, 'view', '', use_onetime=False)
+ 
+-    dl_or_raw_url = gen_file_get_url(access_token, image_file_name)
++    dl_or_raw_url = gen_file_get_url(access_token, image_file_name, request=request)
+ 
+     return HttpResponseRedirect(dl_or_raw_url)
+ 
+@@ -2211,7 +2211,7 @@ def view_media_file_via_public_wiki(request):
+     access_token = seafile_api.get_fileserver_access_token(repo_id,
+             obj_id, 'view', '', use_onetime=False)
+ 
+-    dl_or_raw_url = gen_file_get_url(access_token, image_file_name)
++    dl_or_raw_url = gen_file_get_url(access_token, image_file_name, request=request)
+ 
+     return HttpResponseRedirect(dl_or_raw_url)
+ 
+diff --git a/seahub/views/sysadmin.py b/seahub/views/sysadmin.py
+index e309e182..e74c8677 100644
+--- a/seahub/views/sysadmin.py
++++ b/seahub/views/sysadmin.py
+@@ -190,7 +190,7 @@ def sysadmin_snapshot_download_file(request, repo_id):
+     file_name = os.path.basename(file_path)
+     send_file_access_msg(request, repo, file_path, 'web')
+ 
+-    return HttpResponseRedirect(gen_file_get_url(token, file_name))
++    return HttpResponseRedirect(gen_file_get_url(token, file_name, request=request))
+ 
+ 
+ def populate_user_info(user):
+diff --git a/seahub/wiki2/views.py b/seahub/wiki2/views.py
+index f62dd09f..d3193862 100644
+--- a/seahub/wiki2/views.py
++++ b/seahub/wiki2/views.py
+@@ -336,7 +336,7 @@ def wiki_publish_view(request, publish_url, page_id=None):
+         dst_type = 'html'
+         filename = os.path.basename(file_path)
+         doc_uuid = get_seadoc_file_uuid(repo, file_path)
+-        download_url = gen_file_get_url(download_token, filename)
++        download_url = gen_file_get_url(download_token, filename, request=request)
+ 
+         def get_page_id_name_dict(wiki_config):
+             page_id_name_dict = {}
+diff --git a/tests/seahub/utils/test_fileserver_origin.py b/tests/seahub/utils/test_fileserver_origin.py
+new file mode 100644
+index 00000000..94968bd6
+--- /dev/null
++++ b/tests/seahub/utils/test_fileserver_origin.py
+@@ -0,0 +1,199 @@
++"""Request-local file transfer URLs must not use another entry's SERVICE_URL."""
++import json
++from concurrent.futures import ThreadPoolExecutor
++from types import SimpleNamespace
++from unittest.mock import patch
++
++from django.core.exceptions import DisallowedHost
++from django.test import RequestFactory, SimpleTestCase, override_settings
++from rest_framework.test import APIRequestFactory, force_authenticate
++
++from seahub import utils
++from seahub.api2 import views
++
++
++@override_settings(
++    ALLOWED_HOSTS=['m-disc.example.test', 'i-disc.example.test', '192.0.2.10'],
++    USE_X_FORWARDED_HOST=False,
++    SECURE_PROXY_SSL_HEADER=('HTTP_X_FORWARDED_PROTO', 'https'),
++)
++class FileserverOriginFixtures(SimpleTestCase):
++    def setUp(self):
++        self.factory = RequestFactory()
++        self.canonical = patch('seahub.utils.get_service_url',
++                               return_value='https://canonical.example.test/site/')
++        self.canonical_mock = self.canonical.start()
++        self.addCleanup(self.canonical.stop)
++
++    def request(self, host='m-disc.example.test', secure=True, **headers):
++        return self.factory.get('/api2/example/?p=/nested', HTTP_HOST=host,
++                                secure=secure, **headers)
++
++
++class FileserverOriginTest(FileserverOriginFixtures):
++    def test_all_transfer_url_helpers_use_request_origin(self):
++        for origin, host, secure in [
++            ('https://m-disc.example.test', 'm-disc.example.test', True),
++            ('https://i-disc.example.test:7443', 'i-disc.example.test:7443', True),
++            ('http://192.0.2.10:9800', '192.0.2.10:9800', False),
++        ]:
++            request = self.request(host, secure)
++            root = origin + '/seafhttp'
++            urls = [
++                (utils.get_fileserver_root(request), root),
++                (utils.gen_file_upload_url('token', 'upload-api', request=request),
++                 root + '/upload-api/token'),
++                (utils.gen_file_upload_url('token', 'update-api', True, request=request),
++                 root + '/update-api/token?replace=1'),
++                (utils.gen_file_get_url('token', '报告 1.txt', request=request),
++                 root + '/files/token/%E6%8A%A5%E5%91%8A%201.txt'),
++                (utils.gen_block_get_url('token', 'block', request=request),
++                 root + '/blks/token/block'),
++                (utils.gen_block_get_url('token', None, request=request),
++                 root + '/blks/token/'),
++                (utils.gen_file_get_url_by_sharelink('share', request=request),
++                 root + '/f/share/'),
++                (utils.gen_file_get_url_new('repo', '/folder/file.txt', request=request),
++                 root + '/repos/repo/files/folder/file.txt/?op=download'),
++                (utils.gen_dir_zip_download_url('token', request=request), root + '/zip/token'),
++            ]
++            for actual, expected in urls:
++                with self.subTest(origin=origin, expected=expected):
++                    self.assertEqual(actual, expected)
++        self.canonical_mock.assert_not_called()
++
++    def test_trusted_proxy_scheme_and_ignored_forwarded_host(self):
++        request = self.request(secure=False, HTTP_X_FORWARDED_PROTO='https',
++                               HTTP_X_FORWARDED_HOST='i-disc.example.test:7443')
++        self.assertEqual(utils.get_fileserver_root(request),
++                         'https://m-disc.example.test/seafhttp')
++
++    def test_invalid_or_unallowed_host_is_rejected(self):
++        for host in ['evil.example.test', 'm-disc.example.test/evil']:
++            with self.subTest(host=host), self.assertRaises(DisallowedHost):
++                utils.get_fileserver_root(self.request(host))
++
++    def test_background_and_shared_links_keep_canonical_origin(self):
++        self.assertEqual(utils.get_fileserver_root(),
++                         'https://canonical.example.test/seafhttp')
++        self.assertEqual(utils.gen_file_upload_url('token', 'upload-api'),
++                         'https://canonical.example.test/seafhttp/upload-api/token')
++        self.assertEqual(utils.gen_shared_link('share', 'f'),
++                         'https://canonical.example.test/site/f/share/')
++        with patch.object(utils.seahub.settings, 'INNER_FILE_SERVER_ROOT',
++                          'http://127.0.0.1:8082'):
++            self.assertEqual(utils.gen_inner_file_get_url('token', 'file'),
++                             'http://127.0.0.1:8082/files/token/file')
++
++    def test_concurrent_origins_do_not_change_global_settings(self):
++        hosts = ['m-disc.example.test', 'i-disc.example.test:7443'] * 20
++        canonical_before = utils.seahub.settings.SERVICE_URL
++        def generate(host):
++            return utils.gen_file_upload_url('token', 'upload-api',
++                                             request=self.request(host))
++        with ThreadPoolExecutor(max_workers=4) as pool:
++            actual = list(pool.map(generate, hosts))
++        self.assertEqual(actual, ['https://%s/seafhttp/upload-api/token' % h for h in hosts])
++        self.assertEqual(utils.seahub.settings.SERVICE_URL, canonical_before)
++
++    def test_web_context_uses_request_origin_and_keeps_canonical_service_url(self):
++        from seahub.base import context_processors
++        defaults = SimpleNamespace(**{
++            key: value[0] for key, value in utils.seahub.settings.CONSTANCE_CONFIG.items()})
++        request = self.request()
++        request.user = SimpleNamespace(username='member@example.test', is_staff=False)
++        request.cloud_mode = False
++        # This is an API path, so base() does not fetch avatars. Settings here
++        # replace only unrelated site options, never the URL helper under test.
++        with patch.object(context_processors, 'config', defaults), \
++                patch.object(context_processors, 'get_service_url', return_value='https://canonical.example.test'), \
++                patch.object(context_processors, 'get_site_name', return_value='Test'), \
++                patch.object(context_processors, 'is_dingtalk_enabled', return_value=False), \
++                patch.object(context_processors, 'verify_chat_ai_config', return_value=False):
++            context = context_processors.base(request)
++        self.assertEqual(context['FILE_SERVER_ROOT'], 'https://m-disc.example.test/seafhttp/')
++        self.assertEqual(context['service_url'], 'https://canonical.example.test')
++
++
++class TransferEndpointOriginTest(FileserverOriginFixtures):
++    def setUp(self):
++        super().setUp()
++        self.api_factory = APIRequestFactory()
++        self.rpc = self.enterContext(patch.object(views, 'seafile_api'))
++        self.rpc.get_repo.return_value = SimpleNamespace(id='repo')
++        self.rpc.get_dir_id_by_path.return_value = 'directory'
++        self.rpc.get_fileserver_access_token.return_value = 'test-transfer-token'
++        self.permission = self.enterContext(patch.object(views, 'check_folder_permission', return_value='rw'))
++        self.enterContext(patch.object(views, 'check_quota', return_value=0))
++
++    def call(self, view, host, method='get', query='', authenticated=True):
++        request = getattr(self.api_factory, method)(
++            '/api2/repos/repo/upload-link/' + query, HTTP_HOST=host, secure=True)
++        if authenticated:
++            force_authenticate(request, user=SimpleNamespace(
++                username='member@example.test', is_authenticated=True))
++        return view.as_view(throttle_classes=[])(request, repo_id='repo')
++
++    def test_client_web_update_and_block_endpoints(self):
++        cases = [
++            (views.UploadLinkView, '', 'upload-api'),
++            (views.UploadLinkView, '?from=web', 'upload-aj'),
++            (views.UploadLinkView, '?replace=1', 'upload-api'),
++            (views.UpdateLinkView, '', 'update-api'),
++            (views.UpdateLinkView, '?from=web', 'update-aj'),
++            (views.UploadBlksLinkView, '', 'upload-blks-api'),
++            (views.UpdateBlksLinkView, '', 'update-blks-api'),
++        ]
++        for host in ['m-disc.example.test', 'i-disc.example.test:7443']:
++            for view, query, operation in cases:
++                with self.subTest(host=host, endpoint=view.__name__, query=query):
++                    response = self.call(view, host, query=query)
++                    self.assertEqual(response.status_code, 200)
++                    expected = 'https://%s/seafhttp/%s/test-transfer-token' % (host, operation)
++                    if query == '?replace=1':
++                        expected += '?replace=1'
++                    self.assertEqual(response.data, expected)
++
++    def test_raw_block_and_commit_urls_keep_the_same_origin(self):
++        response = self.call(views.UploadBlksLinkView, 'm-disc.example.test', method='post')
++        self.assertEqual(response.status_code, 200)
++        self.assertEqual(json.loads(response.content), {
++            'rawblksurl': 'https://m-disc.example.test/seafhttp/upload-raw-blks-api/test-transfer-token',
++            'commiturl': 'https://m-disc.example.test/seafhttp/upload-blks-api/test-transfer-token?commitonly=true&ret-json=true',
++            'blklist': [],
++        })
++
++    def test_download_response_and_block_endpoint_keep_request_origin(self):
++        request = self.request()
++        request.user = SimpleNamespace(username='member@example.test')
++        response = views.get_repo_file(request, 'repo', 'file-id', 'file.txt', 'download')
++        self.assertEqual(json.loads(response.content),
++                         'https://m-disc.example.test/seafhttp/files/test-transfer-token/file.txt')
++        force_authenticate(request, user=SimpleNamespace(
++            username='member@example.test', is_authenticated=True))
++        response = views.FileBlockDownloadLinkView.as_view(throttle_classes=[])(
++            request, repo_id='repo', file_id='file-id', block_id='block-id')
++        self.assertEqual(response.data,
++                         'https://m-disc.example.test/seafhttp/blks/test-transfer-token/block-id')
++
++    def test_permission_denied_does_not_mint_a_transfer_token(self):
++        self.permission.return_value = None
++        response = self.call(views.UploadLinkView, 'm-disc.example.test')
++        self.assertEqual(response.status_code, 403)
++        self.rpc.get_fileserver_access_token.assert_not_called()
++
++    def test_anonymous_request_does_not_mint_a_transfer_token(self):
++        response = self.call(views.UploadLinkView, 'm-disc.example.test', authenticated=False)
++        self.assertIn(response.status_code, [401, 403])
++        self.rpc.get_fileserver_access_token.assert_not_called()
++
++    def test_missing_library_does_not_mint_a_transfer_token(self):
++        self.rpc.get_repo.return_value = None
++        response = self.call(views.UploadLinkView, 'm-disc.example.test')
++        self.assertEqual(response.status_code, 404)
++        self.rpc.get_fileserver_access_token.assert_not_called()
++
++    def test_failed_token_creation_does_not_return_a_transfer_url(self):
++        self.rpc.get_fileserver_access_token.return_value = None
++        response = self.call(views.UploadLinkView, 'm-disc.example.test')
++        self.assertEqual(response.status_code, 500)

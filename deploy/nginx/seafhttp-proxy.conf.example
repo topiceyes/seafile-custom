@@ -1,0 +1,24 @@
+# 宿主机 Nginx / 宝塔：放在 m-disc.moresec.cn 的 server 块内。
+# 已按用户提供的宝塔站点配置核对；不会随 Seafile 镜像更新自动部署。
+# 插入 #PROXY-CONF-START 后、现有 location ^~ / 前。
+# 如果已有 /seafhttp location，请合并或替换，不能重复声明。
+# 当前 198 实例的容器端口是 9800；代理不在同一台机器时保留实际后端地址。
+location ^~ /seafhttp {
+    # 此处转到容器 Nginx，保留 /seafhttp 前缀；不要加 rewrite 或尾部 /。
+    proxy_pass http://127.0.0.1:9800;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    client_max_body_size 0;
+    proxy_request_buffering off;
+    proxy_buffering off;
+
+    # 与容器文件服务的长请求设置对齐；这些是相邻读写之间的空闲超时。
+    proxy_read_timeout 36000s;
+    proxy_send_timeout 36000s;
+    client_body_timeout 300s;
+}
