@@ -63,6 +63,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends mariadb-client 
 #    烘进来之后，服务器上只需要一个 compose 文件 + 一个 .env。
 #    cron 要求 /etc/cron.d/ 下的文件属主为 root 且不可被 group/other 写。
 COPY image/backup.sh /usr/local/bin/seafile-backup.sh
+COPY image/backup-status.py /usr/local/libexec/backup-status.py
 COPY image/run-management-task.py /usr/local/bin/seafile-management-task
 COPY image/backup.cron /etc/cron.d/seafile-backup
 COPY image/dingtalk-sync.cron /etc/cron.d/dingtalk-sync
