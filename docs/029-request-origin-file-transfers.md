@@ -1,8 +1,17 @@
 # 029 - 文件传输跟随当前访问入口（1.3.2）
 
-日期：2026-11-05。状态：源码修复、13 项回归及本地真实文件服务验证通过；未发布，未部署生产。
+日期：2026-11-05。状态：1.3.2 已正式发布；198 部署被备份磁盘空间保护拦截，应用尚未切换。
 
 本地候选镜像：`seafile-mc-devbuild:1.3.2.2efab1af`，完整构建成功，统一冒烟结果 `SMOKE_OK`（32 项部门业务回归、4 项任务包装回归、13 项文件传输入口回归，以及静态资源、Nginx、启动配置检查通过）。Seahub 修复提交 `3d1f237bccb77c60ad7ddf27d5862003da39db8a`，已导出第 13 个发布补丁并通过树哈希一致性校验。
+
+## 正式发布及部署进度
+
+- 发布提交：`523cedb41033eedd8ebbf3a1887896c918209796`；main、`release/1.3.2` 和 Release tag 锚定该提交。
+- [CI 41974444528](https://github.com/topiceyes/seafile-custom/actions/runs/41974444528) 成功完成构建、正式镜像冒烟和发布；包含 13 项入口测试。三层文件指纹与本地镜像逐一一致。
+- [Release 1.3.2.2efab1af](https://github.com/topiceyes/seafile-custom/releases/tag/1.3.2.2efab1af) 已发布；不可变镜像与 latest 均为 `sha256:fc3e662d657486512b124e0916c171754495aebb3f1102d63e2b06d2e743fcac`。三个安装资产的发布摘要与仓库文件逐一相同。
+- 部署前，通过本机已登录 m-disc 客户端账号读取新的 upload-link，仍返回 `https://i-disc.moresec.cn:7443`，确认线上旧版的地址缺陷。
+- 用户已授权提交、推送、发布、部署。198 的受限 `upgrade` 入口已拉取且校验新镜像，但在备份前报告 `Insufficient free disk for an upgrade backup plus 2 GiB reserve.`，未进入容器替换。尚未执行生产大文件上传验收。
+- 后续需要管理员提供备份目录占用和磁盘状态，扩容或按明确保留策略释放空间后，用同一固定版本与摘要重试。现有项目 SSH 入口没有任意 Shell 或备份清理动作；未绕过保护或删除旧备份。
 
 ## 问题与原因
 

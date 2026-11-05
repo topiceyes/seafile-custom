@@ -33,7 +33,7 @@
 | 025 | [独立部门共享空间实现](025-department-spaces-implementation.md) | 独立空间、自动建库、主管继承、成员授权、历史共享兼容 | 1.3.0 已发布（CI 通过，生产服务器未升级） |
 | 027 | [部门共享中文语言包修复](027-department-sharing-chinese.md) | 重建静态中英文目录，修复新文案回退英文与旧缓存 | 1.3.1 |
 | 028 | [大文件上传排查](028-large-file-upload.md) | m-disc 缓冲修正；客户端实际走 i-disc:7443 且返回 413 | 外网入口大小限制待修复 |
-| 029 | [文件传输跟随访问入口](029-request-origin-file-transfers.md) | 修复全局 Site URL 将内网上传导向外网的问题 | 1.3.2 本地验证通过，未发布 |
+| 029 | [文件传输跟随访问入口](029-request-origin-file-transfers.md) | 修复全局 Site URL 将内网上传导向外网的问题 | 1.3.2 已发布，部署被备份空间检查拦截 |
 
 ## 工作区结构
 
