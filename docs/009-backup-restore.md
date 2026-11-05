@@ -29,11 +29,15 @@
 
 残余风险：备份期间新写入的数据不在本次备份里（下次备份覆盖）；在线 tar 是 Seafile 官方手册认可的做法。要求绝对一致的话用停服窗口方案，本期不做。
 
-### 每日备份迁到 /home（198，待服务器执行）
+### 每日备份独立挂载（198，2026-11-05 已完成）
+
+服务器源路径实际为 `/home/seafile/backup`，本来已使用 `/dev/sda4`；本次将它独立挂载到 `/home/seafile-daily-backups`，容器输出路径仍为 `/shared/backup`，目录权限为 root:root 700。迁移时源目录为空，没有历史每日备份；未删除源目录。Compose 回退文件为 `/opt/seafile-custom/deploy/seafile-prod.yml.before-daily-backup-20261105-191917`。Seafile 重建后仍运行 1.3.4，网页返回 200，挂载验证通过。
+
+另在实际容器中使用精简 cron 环境，运行真实三库导出与临时小型文件归档，确认新挂载中生成 `COMPLETE` 并能读取归档测试文件，测试产物已清理。这不等同于下一次 03:30 的完整生产文件备份；首轮定时备份完成情况仍需核验。
 
 迁移脚本为 `deploy/migrate-daily-backup.py`，需要在 198 的 root 终端运行，依赖 Python 3、rsync 和 Docker。无参数仅检查计划，`--apply` 才执行。脚本读取现有容器的 `/shared` 挂载，复制其 `backup/` 到 `/home/seafile-daily-backups`，逐文件校验内容，并在 `/opt/seafile-custom/deploy/seafile-prod.yml` 中添加 `/home/seafile-daily-backups:/shared/backup`。现有镜像固定不变，仅重建应用容器，网页就绪和挂载检查失败时尝试回退 Compose 与容器。
 
-迁移持有升级运维锁，并使用备份锁阻止并发 cron；发现正在运行的备份或非空目标目录会停止。源备份不删除，原 Compose 保存为同目录的 `seafile-prod.yml.before-daily-backup-*`，目录权限收紧为 700。迁移复制内容的校验不替代数据库恢复演练。脚本本地测试覆盖计划、成功、复制不一致、备份占锁以及切换后检查失败的回退；服务器实际迁移与下一次 cron 完成仍需核验。
+迁移持有升级运维锁，并使用备份锁阻止并发 cron；发现正在运行的备份或非空目标目录会停止。源备份不删除，原 Compose 保存为同目录的 `seafile-prod.yml.before-daily-backup-*`，目录权限收紧为 700。迁移复制内容的校验不替代数据库恢复演练。脚本本地测试覆盖计划、成功、复制不一致、备份占锁以及切换后检查失败的回退。
 
 此方案由 Compose 保存持久挂载，无需为备份目录新增 fstab 项。后续若重新下载并覆盖生产 Compose，需要保留这条本机挂载配置。升级前备份仍使用 `/var/lib/seafile-project-ops`，与每日备份分开。`/home` 与根分区同在 `/dev/sda`，解决容量问题，异地副本仍需另行配置。
 
@@ -83,7 +87,7 @@ docker compose up -d
 ## 4. 运维建议
 
 - **磁盘监控**：`data.tar.gz` 随库增长（当前 dev 环境 <1M，生产随文件量线性增长），`/shared/backup` 至少留 7 份的空间
-- **异地容灾**（后续项）：`/shared/backup` 目前在系统盘上，建议 rsync/rclone 定期同步到 NAS 或对象存储
+- **异地容灾**（后续项）：198 的 `/shared/backup` 已独立挂载到 `/home/seafile-daily-backups`，但同机同盘不能替代异地副本，建议 rsync/rclone 定期同步到 NAS 或对象存储
 - **演练**：每次大版本升级前做一次恢复演练（彩排环境即是现成的演练场）
 
 ## 5. 验证记录（本地彩排，2026-09-20）
