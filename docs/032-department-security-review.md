@@ -1,5 +1,11 @@
 # 部门空间共享权限检查与加固
 
+## 发布与验收
+
+2026-11-05，安全修复以 [1.3.4.bf5defd2](https://github.com/topiceyes/seafile-custom/releases/tag/1.3.4.bf5defd2) 发布并部署到 198；提交为 `db09708`，正式镜像 CI 构建与冒烟通过。升级前备份位于 `/var/lib/seafile-project-ops/backup-20261105-181740`，三库和文件归档的 gzip 完整性与 SHA256 校验通过。运维目录已 bind mount 到 `/home/seafile-project-ops`，服务器核实使用 `/dev/sda4`；重启后的持久挂载尚未实测。每日自动备份路径未在本轮迁移。
+
+部署后登录页返回 200，Django 系统检查无问题，195 个部门空间全部 active，191 条 desired 授权全部 applied，grant_errors=0，数据库和 Redis 健康；本次部署未额外触发组织同步。用户随后反馈“测试通过”，记录为本次上线验收通过；未提供逐项测试清单，不据此认定 WebDAV、撤权时效或历史授权盘点已经完成。
+
 ## 范围和结果
 
 部门资料库由组织同步授权；部门成员、主管及管理员都不能通过普通共享入口另行创建访问授权或转移该资料库。同步服务自己的授权、撤权使用 `SeafileBackend` 的专用 RPC 路径，不经过普通分享操作。
