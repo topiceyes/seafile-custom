@@ -33,6 +33,10 @@ docker exec seafile python3 /usr/local/libexec/backup-status.py check
 
 用户选择暂不推送通知，本轮只提供状态文件和监控检查命令，没有配置主动消息或定时监控。修复后的第一次 03:30 尚未到达，旧日志中的 `DB_ROOT_PASSWD` 缺失属于升级前记录，不能作为新版本定时任务的结果。
 
+2026-11-05，修复以 [1.3.5.70c7f317](https://github.com/topiceyes/seafile-custom/releases/tag/1.3.5.70c7f317) 发布并部署 198（提交 `f56ec03`，[CI](https://github.com/topiceyes/seafile-custom/actions/runs/42019933456) 构建及完整冒烟通过，备份测试 12 项；本地真实 MariaDB 三库与文件恢复通过）。应用源码树及静态指纹与 1.3.4 相同，未改数据库模式；本次应用工具更新保存了新三库快照和配置 `/var/lib/seafile-project-ops/app-update-20261105-194359`，保留已校验的完整文件备份 `/var/lib/seafile-project-ops/backup-20261105-181740`，没有重复打包全部生产文件。
+
+部署后网页 200、Django 检查通过、每日备份独立挂载保持。实际生产镜像中以独立临时目录验证真实三库导出、保留最近 7 份、成功/失败退出码、缺失文件检测以及失败后保留最近成功时间，临时产物已清理。正式每日目录当时尚无完成备份，检查返回 `no_successful_backup`（退出码 1），没有伪造成功状态；首次真实定时任务完成后需再次检查。
+
 备份包含数据库、文件和敏感配置，必须限制访问并复制到独立位置。此脚本只写本地卷，不提供异地、不可变或加密副本；上线后必须核实实际 cron 运行，并在隔离环境完成恢复验证。
 
 ## 2. 一致性设计
