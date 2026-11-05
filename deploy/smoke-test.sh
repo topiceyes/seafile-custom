@@ -14,9 +14,14 @@ set -eu
 python3 /usr/local/libexec/test-department-spaces.py \
   --source /opt/seafile/seafile-server-14.0.9/seahub
 python3 /usr/local/libexec/test-management-task.py
+python3 /scripts/test-backup.py
 python3 /usr/local/libexec/test-fileserver-origin.py \
   --source /opt/seafile/seafile-server-14.0.9/seahub
 python3 /usr/local/libexec/test-client-sso-origin.py \
+  --source /opt/seafile/seafile-server-14.0.9/seahub
+python3 /usr/local/libexec/test-dingtalk-cookie.py \
+  --source /opt/seafile/seafile-server-14.0.9/seahub
+python3 /usr/local/libexec/test-department-policy.py \
   --source /opt/seafile/seafile-server-14.0.9/seahub
 
 INSTALLPATH=/opt/seafile/seafile-server-14.0.9

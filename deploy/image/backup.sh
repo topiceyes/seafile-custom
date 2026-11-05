@@ -1,34 +1,48 @@
 #!/usr/bin/env bash
-# Seafile 每日备份（容器内 cron 触发，见 backup.cron；镜像内含 mariadb-client）。
-#
-# 产物：/shared/backup/<时间戳>/{all-dbs.sql.gz, data.tar.gz}，保留 RETENTION 份。
-# 恢复步骤见 docs/009-backup-restore.md。
-#
-# 一致性设计（重要）：
-#   1. 先 mysqldump（元数据快照 T1），后 tar 数据目录（T2 > T1）。
-#      Seafile 的 commit/fs/block 对象不可变、只增不改（删除仅发生在 seafile-gc），
-#      因此 T1 快照引用的对象在 T2 的 tar 中必然存在；反序（先 tar 后 dump）可能缺块。
-#   2. 三库一次 --single-transaction 导出 = 同一一致性时间点。
-#   3. 备份窗口内禁止运行 seafile-gc（可能在 T1~T2 之间删掉快照仍引用的对象）。
+# Daily online backup: database snapshot first, then immutable Seafile objects.
+# Never run seafile-gc while this backup is in progress; see docs/009.
 set -euo pipefail
+umask 077
 
 RETENTION=7
+BACKUP_ROOT="${SEAFILE_BACKUP_ROOT:-/shared/backup}"
+DATA_ROOT="${SEAFILE_BACKUP_DATA_ROOT:-/shared/seafile}"
+CREDENTIALS="${SEAFILE_BACKUP_CREDENTIALS:-$DATA_ROOT/conf/.backup-mysql.cnf}"
 STAMP=$(date +%Y%m%d-%H%M%S)
-DEST=/shared/backup/$STAMP
-: "${DB_ROOT_PASSWD:?缺少 DB_ROOT_PASSWD（应由 compose environment 注入）}"
-DB_HOST="${DB_HOST:-db}"
-
-mkdir -p "$DEST"
+mkdir -p "$BACKUP_ROOT"
+[ -r "$CREDENTIALS" ] || { echo "Backup credentials unavailable: $CREDENTIALS" >&2; exit 1; }
+LOCK="$BACKUP_ROOT/.backup-lock"
+mkdir "$LOCK" || { echo "Backup already running or lock requires inspection: $LOCK" >&2; exit 1; }
+STAGE=''
+cleanup() {
+  if [ -n "$STAGE" ] && [ -d "$STAGE" ]; then rm -rf "$STAGE"; fi
+  rmdir "$LOCK" || true
+}
+trap cleanup EXIT
+STAGE=$(mktemp -d "$BACKUP_ROOT/.incomplete-$STAMP.XXXXXX")
+DEST="$BACKUP_ROOT/$STAMP"
+[ ! -e "$DEST" ] || { echo "Backup destination already exists: $DEST" >&2; exit 1; }
 
 echo "[$STAMP] mysqldump ccnet_db seafile_db seahub_db"
-mysqldump -h"$DB_HOST" -uroot -p"$DB_ROOT_PASSWD" \
+mysqldump --defaults-extra-file="$CREDENTIALS" \
   --single-transaction --quick --routines --triggers --hex-blob \
-  --databases ccnet_db seafile_db seahub_db | gzip > "$DEST/all-dbs.sql.gz"
+  --databases ccnet_db seafile_db seahub_db | gzip > "$STAGE/all-dbs.sql.gz"
 
-echo "[$STAMP] tar /shared/seafile/{conf,seafile-data,seahub-data}"
-tar -C /shared/seafile -cf - conf seafile-data seahub-data | gzip > "$DEST/data.tar.gz"
+echo "[$STAMP] tar conf, seafile-data, seahub-data"
+tar -C "$DATA_ROOT" -cf - conf seafile-data seahub-data | gzip > "$STAGE/data.tar.gz"
+gzip -t "$STAGE/all-dbs.sql.gz" "$STAGE/data.tar.gz"
+printf '%s\n' "$STAMP" > "$STAGE/COMPLETE"
+mv "$STAGE" "$DEST"
+STAGE=''
+echo "[$STAMP] backup complete: $DEST"
 
-echo "[$STAMP] done: $(du -sh "$DEST" | cut -f1)"
-
-# 只保留最近 RETENTION 份
-ls -1dt /shared/backup/*/ | tail -n +$((RETENTION + 1)) | xargs -r rm -rf
+# Only completed backups are candidates for retention; legacy backups are untouched.
+count=0
+dirs=("$BACKUP_ROOT"/20????????-??????)
+for ((i=${#dirs[@]}-1; i>=0; i--)); do
+  dir="${dirs[i]}"
+  [ -d "$dir" ] || continue
+  [ -f "$dir/COMPLETE" ] || continue
+  count=$((count + 1))
+  if [ "$count" -gt "$RETENTION" ]; then rm -rf "$dir"; fi
+done

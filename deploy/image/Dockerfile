@@ -82,10 +82,13 @@ RUN chmod 0755 /usr/local/bin/seafile-backup.sh \
 #    而 seahub_settings.py 是导入期读的，改了要重启。所以在这里改完**直接生效**。
 #    （不想动上游脚本的替代方案与代价，见 docs/007 §4.2.2。）
 COPY image/custom_bootstrap.py /scripts/custom_bootstrap.py
+COPY image/test-backup.py /scripts/test-backup.py
 COPY image/test-department-spaces.py /usr/local/libexec/test-department-spaces.py
 COPY image/test-static-i18n.py /usr/local/libexec/test-static-i18n.py
 COPY image/test-fileserver-origin.py /usr/local/libexec/test-fileserver-origin.py
 COPY image/test-client-sso-origin.py /usr/local/libexec/test-client-sso-origin.py
+COPY image/test-dingtalk-cookie.py /usr/local/libexec/test-dingtalk-cookie.py
+COPY image/test-department-policy.py /usr/local/libexec/test-department-policy.py
 COPY image/run-management-task.py image/test-management-task.py /usr/local/libexec/
 COPY image/patch-upstream.py /tmp/patch-upstream.py
 

@@ -55,6 +55,7 @@ import os
 import re
 import sys
 import time
+import tempfile
 
 # setup 写配置的目录。优先用 /opt/seafile/conf（upstream 的 central_config_dir，
 # create_data_links.sh 把它软链到 /shared/seafile/conf）；软链没建起来时退回真实路径。
@@ -269,6 +270,7 @@ def init_custom_settings():
     apply_webdav(confdir)
     apply_nginx_server_name()
     ensure_cron_env(confdir)
+    ensure_backup_credentials(confdir)
     log('完成 —— 此时 seafile/seahub 尚未启动，无需重启即已生效')
 
 
@@ -333,18 +335,50 @@ def ensure_cron_env(confdir):
                     existing[k.strip()] = v.strip().strip('"').strip("'")
 
     if all(existing.get(k) == v for k, v in wanted.items()):
+        os.chmod(env_file, 0o600)
         return  # 已是最新，幂等
 
     merged = dict(existing)
     merged.update(wanted)
-    with open(env_file, 'w', encoding='utf-8') as fp:
-        fp.write('# 由 custom_bootstrap.ensure_cron_env 生成（[dev] 0016）：\n'
-                 '# cron 服务拿不到容器 env，seahub.sh 的 set_env_config() 需要本文件\n'
-                 '# 提供 JWT_PRIVATE_KEY，否则 /etc/cron.d 的 manage.py 任务每小时失败。\n'
-                 '# 值跟随容器环境变量，每次启动幂等刷新，手改无效。\n')
-        for k, v in merged.items():
-            fp.write('%s=%s\n' % (k, v))
+    fd, tmp = tempfile.mkstemp(prefix='.cron-env-', dir=confdir)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as fp:
+            fp.write('# 由 custom_bootstrap.ensure_cron_env 生成（[dev] 0016）：\n'
+                     '# cron 服务拿不到容器 env，seahub.sh 的 set_env_config() 需要本文件\n'
+                     '# 提供 JWT_PRIVATE_KEY，否则 /etc/cron.d 的 manage.py 任务每小时失败。\n'
+                     '# 值跟随容器环境变量，每次启动幂等刷新，手改无效。\n')
+            for k, v in merged.items():
+                fp.write('%s=%s\n' % (k, v))
+        os.replace(tmp, env_file)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
     log('已生成 %s（cron 下 seahub.sh 的 .env 检查需要；0016）' % env_file)
+
+
+def ensure_backup_credentials(confdir):
+    """Provide cron a root-only MariaDB option file without exposing argv."""
+    password = os.environ.get('INIT_SEAFILE_MYSQL_ROOT_PASSWORD', '')
+    host = os.environ.get('SEAFILE_MYSQL_DB_HOST', 'db')
+    if not password:
+        log('未设 INIT_SEAFILE_MYSQL_ROOT_PASSWORD，无法配置自动备份')
+        return
+    if any(c in password or c in host for c in ('\n', '\r', '\0')):
+        raise ValueError('Backup database credentials contain a newline or NUL')
+    def quote(value):
+        return '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
+    content = '[client]\nuser=root\nhost=%s\npassword=%s\n' % (quote(host), quote(password))
+    path = os.path.join(confdir, '.backup-mysql.cnf')
+    fd, tmp = tempfile.mkstemp(prefix='.backup-mysql-', dir=confdir)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as fp:
+            fp.write(content)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
 
 
 # ---------------------------------------------------------------------------
