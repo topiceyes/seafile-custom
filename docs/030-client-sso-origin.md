@@ -1,8 +1,16 @@
 # 030 - 客户端 SSO 登录入口跟随请求（1.3.3）
 
-日期：2026-11-05。状态：源码修复及 10 项隔离回归通过，待发布部署。
+日期：2026-11-05。状态：1.3.3 已发布；198 部署因完整备份空间不足被拦截，生产仍为 1.3.2。
 
 本地候选镜像 `seafile-mc-devbuild:1.3.3.e787d69d` 构建及统一冒烟 `SMOKE_OK`；包含 32 项部门业务、4 项任务包装、13 项文件传输和 10 项 SSO 入口回归。Seahub 提交 `18848266c2ddd1dff29c4f2fe3b33c6973679625`，第 14 个发布补丁已导出并通过源码树一致性校验。
+
+## 发布与部署记录
+
+- 发布提交 `1f1e4d3f0b266266424e98e57ad8fdc2b04df31b`，发布分支 `release/1.3.3`。
+- [CI 41982881452](https://github.com/topiceyes/seafile-custom/actions/runs/41982881452) 成功，包含实际镜像的 10 项 SSO 回归、13 项文件传输入口回归及完整冒烟。三层文件指纹与本地构建一致。
+- [Release 1.3.3.e787d69d](https://github.com/topiceyes/seafile-custom/releases/tag/1.3.3.e787d69d) 已发布；固定镜像和 latest 摘要均为 `sha256:ae0183817ab55145835764f58aedefe5f61abc1ae324fd895b1b34a8f1cfc0b3`。三个安装资产摘要与发布提交一致。
+- 198 已拉取且校验新镜像，受限升级入口报告 `Insufficient free disk for an upgrade backup plus 2 GiB reserve.`，尚未进入新备份和应用替换。上一轮备份为 `/var/lib/seafile-project-ops/backup-20261105-134839`；等待用户决定空间处理方式，不删除或绕过备份检查。
+- 生产 SSO 跳转验收尚未执行。线上现有 1.3.2 只包含文件传输地址修复，不包含本次 SSO 修复。
 
 ## 原因
 
