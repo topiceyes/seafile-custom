@@ -85,6 +85,7 @@ COPY image/custom_bootstrap.py /scripts/custom_bootstrap.py
 COPY image/test-department-spaces.py /usr/local/libexec/test-department-spaces.py
 COPY image/test-static-i18n.py /usr/local/libexec/test-static-i18n.py
 COPY image/test-fileserver-origin.py /usr/local/libexec/test-fileserver-origin.py
+COPY image/test-client-sso-origin.py /usr/local/libexec/test-client-sso-origin.py
 COPY image/run-management-task.py image/test-management-task.py /usr/local/libexec/
 COPY image/patch-upstream.py /tmp/patch-upstream.py
 
@@ -114,6 +115,7 @@ COPY --from=frontend /frontend/webpack-stats.pro.json ${INSTALLPATH}/seahub/fron
 # 1) 二开 Python 包与模板（只覆盖 seahub/seahub；thirdpart/、seahub.sh、bin/ 保持官方）
 COPY seahub/seahub/ ${INSTALLPATH}/seahub/seahub/
 COPY seahub/tests/seahub/utils/test_fileserver_origin.py ${INSTALLPATH}/seahub/tests/seahub/utils/test_fileserver_origin.py
+COPY seahub/tests/seahub/views/test_client_sso_origin.py ${INSTALLPATH}/seahub/tests/seahub/views/test_client_sso_origin.py
 COPY seahub/locale/zh_CN/LC_MESSAGES/djangojs.po ${INSTALLPATH}/seahub/locale/zh_CN/LC_MESSAGES/djangojs.po
 COPY seahub/locale/en/LC_MESSAGES/djangojs.po ${INSTALLPATH}/seahub/locale/en/LC_MESSAGES/djangojs.po
 RUN msgfmt ${INSTALLPATH}/seahub/locale/zh_CN/LC_MESSAGES/djangojs.po -o ${INSTALLPATH}/seahub/locale/zh_CN/LC_MESSAGES/djangojs.mo \

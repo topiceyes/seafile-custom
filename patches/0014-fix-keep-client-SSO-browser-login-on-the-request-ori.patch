@@ -1,0 +1,186 @@
+From 18848266c2ddd1dff29c4f2fe3b33c6973679625 Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
+Date: Thu, 5 Nov 2026 14:47:19 +0800
+Subject: [PATCH 14/14] fix: keep client SSO browser login on the request
+ origin
+
+---
+ seahub/api2/endpoints/sso/client_sso_link.py |   7 +-
+ tests/seahub/views/test_client_sso_origin.py | 136 +++++++++++++++++++
+ 2 files changed, 141 insertions(+), 2 deletions(-)
+ create mode 100644 tests/seahub/views/test_client_sso_origin.py
+
+diff --git a/seahub/api2/endpoints/sso/client_sso_link.py b/seahub/api2/endpoints/sso/client_sso_link.py
+index 5d40743e..8ab861ed 100644
+--- a/seahub/api2/endpoints/sso/client_sso_link.py
++++ b/seahub/api2/endpoints/sso/client_sso_link.py
+@@ -11,7 +11,7 @@ from urllib.parse import urlencode
+ 
+ from seahub.api2.throttling import AnonRateThrottle
+ from seahub.base.models import ClientSSOToken, STATUS_ERROR
+-from seahub.utils import gen_token, get_site_scheme_and_netloc
++from seahub.utils import gen_token
+ from seahub.api2.utils import api_error
+ from seahub.settings import CLIENT_SSO_TOKEN_EXPIRATION
+ 
+@@ -46,6 +46,10 @@ class ClientSSOLink(APIView):
+     def post(self, request):
+         # create SSO link
+         token = gen_token(30) + gen_token(30)
++        # Keep browser login on the client's entry, including a nonstandard
++        # port. Validate Host before saving a token; SERVICE_URL is canonical
++        # metadata, not the origin of this interactive login request.
++        base_link = request.build_absolute_uri(reverse('client_sso', args=[token]))
+         transaction.set_autocommit(False)
+         try:
+             t = ClientSSOToken(token=token)
+@@ -58,7 +62,6 @@ class ClientSSOLink(APIView):
+         finally:
+             transaction.set_autocommit(True)
+ 
+-        base_link = get_site_scheme_and_netloc() + reverse('client_sso', args=[t.token])
+         params = {k: request.GET.get(k) for k in request.GET.keys()}
+         qs = urlencode(params)
+         if qs:
+diff --git a/tests/seahub/views/test_client_sso_origin.py b/tests/seahub/views/test_client_sso_origin.py
+new file mode 100644
+index 00000000..82f85bd7
+--- /dev/null
++++ b/tests/seahub/views/test_client_sso_origin.py
+@@ -0,0 +1,136 @@
++"""Client SSO must open the browser on the entry that issued the request."""
++from datetime import timedelta
++from types import ModuleType
++from unittest.mock import patch
++from urllib.parse import parse_qs, urlencode, urlsplit
++
++from django.core.exceptions import DisallowedHost
++from django.db import DatabaseError, transaction
++from django.test import RequestFactory, SimpleTestCase, override_settings
++from django.urls import include, path
++from django.utils import timezone
++from rest_framework.test import APIRequestFactory
++
++from seahub.api2.endpoints.sso.client_sso_link import ClientSSOLink
++from seahub.base.models import ClientSSOToken, STATUS_ERROR
++from seahub.views.sso import client_sso, client_sso_complete
++
++
++routes = [
++    path('client-sso/<str:token>/', client_sso, name='client_sso'),
++    path('client-sso/<str:token>/complete/', client_sso_complete, name='client_sso_complete'),
++]
++urls = ModuleType('client_sso_origin_test_urls')
++urls.urlpatterns = routes
++prefixed_urls = ModuleType('client_sso_origin_prefixed_test_urls')
++prefixed_urls.urlpatterns = [path('seafile/', include(routes))]
++
++
++@override_settings(
++    ROOT_URLCONF=urls,
++    ALLOWED_HOSTS=['m-disc.example.test', 'i-disc.example.test', '192.0.2.10'],
++    USE_X_FORWARDED_HOST=False,
++    SECURE_PROXY_SSL_HEADER=('HTTP_X_FORWARDED_PROTO', 'https'),
++)
++class ClientSSOOriginTest(SimpleTestCase):
++    databases = {'default'}
++
++    def setUp(self):
++        self.factory = APIRequestFactory()
++        self.canonical = patch('seahub.utils.get_service_url',
++                               return_value='https://canonical.example.test')
++        self.canonical_mock = self.canonical.start()
++        self.addCleanup(self.canonical.stop)
++        self.addCleanup(ClientSSOToken.objects.all().delete)
++
++    def create(self, host='m-disc.example.test', secure=True, params=None, **headers):
++        query = '?' + urlencode(params) if params else ''
++        request = self.factory.post('/api2/client-sso-link/' + query,
++                                    HTTP_HOST=host, secure=secure, **headers)
++        return ClientSSOLink.as_view(throttle_classes=[], authentication_classes=[])(request)
++
++    def test_links_follow_each_origin_and_preserve_device_parameters(self):
++        params = {
++            'shib_platform': 'mac', 'shib_device_id': 'a' * 40,
++            'shib_device_name': '测试 Mac & desk', 'shib_client_version': '9.0.21',
++            'shib_platform_version': '15.0',
++        }
++        for host, secure in [('m-disc.example.test', True),
++                             ('i-disc.example.test:7443', True), ('192.0.2.10:9800', False)]:
++            with self.subTest(host=host):
++                response = self.create(host, secure, params)
++                self.assertEqual(response.status_code, 200)
++                link = urlsplit(response.data['link'])
++                self.assertEqual((link.scheme, link.netloc), ('https' if secure else 'http', host))
++                self.assertEqual(parse_qs(link.query), {key: [value] for key, value in params.items()})
++                token = link.path.strip('/').split('/')[-1]
++                self.assertEqual(len(token), 60)
++                self.assertTrue(ClientSSOToken.objects.get(token=token).is_waiting())
++        self.canonical_mock.assert_not_called()
++
++    def test_no_device_parameters_keeps_same_origin_without_empty_query(self):
++        response = self.create()
++        self.assertTrue(response.data['link'].startswith('https://m-disc.example.test/client-sso/'))
++        self.assertNotIn('?', response.data['link'])
++
++    def test_proxy_scheme_and_untrusted_forwarded_host(self):
++        response = self.create(secure=False, HTTP_X_FORWARDED_PROTO='https',
++                               HTTP_X_FORWARDED_HOST='i-disc.example.test:7443')
++        self.assertEqual(urlsplit(response.data['link']).netloc, 'm-disc.example.test')
++        self.assertEqual(urlsplit(response.data['link']).scheme, 'https')
++
++    def test_invalid_host_does_not_create_a_token(self):
++        for host in ['evil.example.test', 'm-disc.example.test/evil']:
++            with self.subTest(host=host), self.assertRaises(DisallowedHost):
++                self.create(host)
++        self.assertEqual(ClientSSOToken.objects.count(), 0)
++
++    @override_settings(ROOT_URLCONF=prefixed_urls)
++    def test_site_prefix_is_preserved_by_reverse(self):
++        response = self.create()
++        self.assertTrue(response.data['link'].startswith('https://m-disc.example.test/seafile/client-sso/'))
++
++    def test_browser_redirect_stays_relative_and_retains_device_parameters(self):
++        params = {'shib_platform': 'mac', 'shib_device_name': 'Mac & desk'}
++        link = urlsplit(self.create(params=params).data['link'])
++        token = link.path.strip('/').split('/')[-1]
++        request = RequestFactory().get(link.path + '?' + link.query,
++                                       HTTP_HOST=link.netloc, secure=True)
++        response = client_sso(request, token)
++        self.assertEqual(response.status_code, 302)
++        redirect = urlsplit(response['Location'])
++        self.assertEqual(redirect.netloc, '')
++        self.assertEqual(redirect.path, '/accounts/login/')
++        next_page = urlsplit(parse_qs(redirect.query)['next'][0])
++        self.assertEqual(next_page.netloc, '')
++        self.assertEqual(next_page.path, '/client-sso/%s/complete/' % token)
++        self.assertEqual(parse_qs(next_page.query), {key: [value] for key, value in params.items()})
++        self.assertIsNotNone(ClientSSOToken.objects.get(token=token).accessed_at)
++
++    def test_waiting_status_does_not_issue_an_api_token(self):
++        self.create()
++        token = ClientSSOToken.objects.get()
++        request = self.factory.get('/api2/client-sso-link/%s/' % token.token)
++        response = ClientSSOLink.as_view(throttle_classes=[], authentication_classes=[])(request, token=token.token)
++        self.assertEqual(response.data, {'status': 'waiting'})
++
++    def test_expired_success_status_does_not_disclose_credentials(self):
++        self.create()
++        token = ClientSSOToken.objects.get()
++        token.accessed_at = timezone.now() - timedelta(days=1)
++        token.completed(username='member@example.test', api_key='test-key')
++        request = self.factory.get('/api2/client-sso-link/%s/' % token.token)
++        response = ClientSSOLink.as_view(throttle_classes=[], authentication_classes=[])(request, token=token.token)
++        self.assertEqual(response.data, {'status': STATUS_ERROR})
++
++    def test_missing_token_is_not_found(self):
++        request = self.factory.get('/api2/client-sso-link/missing/')
++        response = ClientSSOLink.as_view(throttle_classes=[], authentication_classes=[])(request, token='missing')
++        self.assertEqual(response.status_code, 404)
++
++    def test_save_failure_rolls_back_and_restores_autocommit(self):
++        with patch.object(ClientSSOToken, 'save', side_effect=DatabaseError('test failure')):
++            response = self.create()
++        self.assertEqual(response.status_code, 500)
++        self.assertEqual(ClientSSOToken.objects.count(), 0)
++        self.assertTrue(transaction.get_autocommit())

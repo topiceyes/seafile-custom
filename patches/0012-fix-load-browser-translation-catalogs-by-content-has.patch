@@ -1,7 +1,7 @@
 From 36927a5212f49e1c137f7c87ad7472e0c65ba892 Mon Sep 17 00:00:00 2001
 From: topiceyes <273286342+topiceyes@users.noreply.github.com>
 Date: Wed, 4 Nov 2026 20:08:30 +0800
-Subject: [PATCH 12/13] fix: load browser translation catalogs by content hash
+Subject: [PATCH 12/14] fix: load browser translation catalogs by content hash
 
 ---
  seahub/templates/base_for_react.html                 | 4 +++-
