@@ -15,9 +15,10 @@ python3 /usr/local/libexec/test-department-spaces.py \
   --source /opt/seafile/seafile-server-14.0.9/seahub
 python3 /usr/local/libexec/test-management-task.py
 python3 /scripts/test-backup.py
+python3 /scripts/test-dingtalk-handoff-bootstrap.py
 python3 /usr/local/libexec/test-fileserver-origin.py \
   --source /opt/seafile/seafile-server-14.0.9/seahub
-python3 /usr/local/libexec/test-client-sso-origin.py \
+python3 /usr/local/libexec/test-dingtalk-handoff.py \
   --source /opt/seafile/seafile-server-14.0.9/seahub
 python3 /usr/local/libexec/test-dingtalk-cookie.py \
   --source /opt/seafile/seafile-server-14.0.9/seahub
@@ -153,7 +154,7 @@ ok "反代协议判定逻辑正确（按入口分流，非直接透传 \$scheme�
 # 光检查文件存在不够——所以下面在一个假配置目录上真跑一遍，验实际行为。
 test -f /scripts/custom_bootstrap.py || fail "缺 /scripts/custom_bootstrap.py"
 test -x /scripts/custom_bootstrap.py || fail "/scripts/custom_bootstrap.py 不可执行"
-grep -q '^from custom_bootstrap import init_custom_settings, start_service_retry, migrate_department_spaces$' /scripts/start.py \
+grep -q '^from custom_bootstrap import init_custom_settings, start_service_retry, migrate_department_spaces, migrate_dingtalk_sso$' /scripts/start.py \
   || fail "start.py 缺 custom_bootstrap 的 import（patch-upstream.py 没生效？）"
 # 调用点必须在 init_seafile_server() 之后、seafile.sh 启动之前——顺序错了就白搭：
 # 早了会被 setup 的 open('w') 覆盖，晚了 seahub 已经起来、settings.py 改不生效。
@@ -162,6 +163,8 @@ awk '/^    init_seafile_server\(\)$/ {s=NR} /^    init_custom_settings\(\)$/ {c=
   || fail "start.py 里 init_custom_settings() 没有紧跟 init_seafile_server()（顺序不对）"
 awk '/^    init_custom_settings\(\)$/ {c=NR} /^    migrate_department_spaces\(\)$/ {m=NR} END {exit !(c && m == c+1)}' \
   /scripts/start.py || fail "部门共享迁移必须在配置就绪后、服务启动前运行"
+awk '/^    migrate_department_spaces\(\)$/ {d=NR} /^    migrate_dingtalk_sso\(\)$/ {m=NR} END {exit !(d && m == d+1)}' \
+  /scripts/start.py || fail "钉钉登录迁移必须在配置就绪后、服务启动前运行"
 
 # 起 seahub 必须走带重试的那条路。上游 seahub.sh 是「硬编码 sleep 5 再 pgrep 一次」
 # 判定成败，而 gunicorn 带 --preload 要先导入整个 Django 应用，机器一忙就误判失败

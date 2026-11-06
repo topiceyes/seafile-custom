@@ -1,0 +1,903 @@
+From 686aad5bfb079f11cd15ad61b7f2801716bb2596 Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
+Date: Fri, 6 Nov 2026 19:02:19 +0800
+Subject: [PATCH 16/16] feat: support iPhone client SSO through DingTalk app
+
+---
+ locale/zh_CN/LC_MESSAGES/django.po            |  56 ++++
+ seahub/auth/views.py                          |   3 +
+ seahub/dingtalk/handoff.py                    |  88 +++++++
+ .../migrations/0001_client_sso_handoff.py     |  20 ++
+ seahub/dingtalk/models.py                     |  14 +-
+ seahub/dingtalk/views.py                      |  34 ++-
+ seahub/templates/client_dingtalk_error.html   |   8 +
+ seahub/templates/client_dingtalk_landing.html |  34 +++
+ seahub/templates/client_dingtalk_launch.html  |  11 +
+ seahub/templates/client_login_confirm.html    |   2 +
+ seahub/templates/registration/login.html      |  20 +-
+ seahub/urls.py                                |   2 +
+ seahub/views/sso.py                           |  85 +++++-
+ tests/seahub/views/test_client_sso_origin.py  |   1 +
+ tests/seahub/views/test_dingtalk_handoff.py   | 245 ++++++++++++++++++
+ 15 files changed, 600 insertions(+), 23 deletions(-)
+ create mode 100644 seahub/dingtalk/handoff.py
+ create mode 100644 seahub/dingtalk/migrations/0001_client_sso_handoff.py
+ create mode 100644 seahub/templates/client_dingtalk_error.html
+ create mode 100644 seahub/templates/client_dingtalk_landing.html
+ create mode 100644 seahub/templates/client_dingtalk_launch.html
+ create mode 100644 tests/seahub/views/test_dingtalk_handoff.py
+
+diff --git a/locale/zh_CN/LC_MESSAGES/django.po b/locale/zh_CN/LC_MESSAGES/django.po
+index a846070d..ee0510b7 100644
+--- a/locale/zh_CN/LC_MESSAGES/django.po
++++ b/locale/zh_CN/LC_MESSAGES/django.po
+@@ -3871,3 +3871,59 @@ msgstr "无法查看维基"
+ #~ " href=\"%(url_base)s%(obj_url)s\">%(obj_name)s</a> and "
+ #~ "%(obj_path_count_minus_one)s other folder(s) in library <a "
+ #~ "href=\"%(url_base)s%(repo_url)s\">%(repo_name)s</a>."
++
++#: seahub/templates/client_dingtalk_launch.html seahub/templates/client_dingtalk_landing.html seahub/templates/client_dingtalk_error.html seahub/templates/registration/login.html seahub/dingtalk/views.py
++msgid "DingTalk Login"
++msgstr "钉钉登录"
++
++#: seahub/templates/client_dingtalk_launch.html seahub/templates/client_dingtalk_landing.html seahub/templates/client_dingtalk_error.html seahub/templates/registration/login.html seahub/dingtalk/views.py
++msgid "Open DingTalk to log in to the client"
++msgstr "在钉钉中登录客户端"
++
++#: seahub/templates/client_dingtalk_launch.html seahub/templates/client_dingtalk_landing.html seahub/templates/client_dingtalk_error.html seahub/templates/registration/login.html seahub/dingtalk/views.py
++msgid "Continue to DingTalk authorization."
++msgstr "正在进入钉钉授权页面……"
++
++#: seahub/templates/client_dingtalk_launch.html seahub/templates/client_dingtalk_landing.html seahub/templates/client_dingtalk_error.html seahub/templates/registration/login.html seahub/dingtalk/views.py
++msgid "This login link is invalid or has expired. Please start Single Sign-On again in the Seafile app."
++msgstr "此登录链接无效或已过期，请返回 Seafile App 重新发起单点登录。"
++
++#: seahub/templates/client_dingtalk_launch.html seahub/templates/client_dingtalk_landing.html seahub/templates/client_dingtalk_error.html seahub/templates/registration/login.html seahub/dingtalk/views.py
++msgid "Please enable JavaScript and start Single Sign-On again in the Seafile app."
++msgstr "请启用 JavaScript，并在 Seafile App 中重新发起单点登录。"
++
++#: seahub/templates/client_dingtalk_launch.html seahub/templates/client_dingtalk_landing.html seahub/templates/client_dingtalk_error.html seahub/templates/registration/login.html seahub/dingtalk/views.py
++msgid "Unable to continue login"
++msgstr "无法继续登录"
++
++#: seahub/templates/client_dingtalk_launch.html seahub/templates/client_dingtalk_landing.html seahub/templates/client_dingtalk_error.html seahub/templates/registration/login.html seahub/dingtalk/views.py
++msgid "Open DingTalk, authorize, then confirm the client login."
++msgstr "打开钉钉后，请完成授权并确认客户端登录。"
++
++#: seahub/templates/client_dingtalk_launch.html seahub/templates/client_dingtalk_landing.html seahub/templates/client_dingtalk_error.html seahub/templates/registration/login.html seahub/dingtalk/views.py
++msgid "Open DingTalk"
++msgstr "打开钉钉"
++
++#: seahub/templates/client_dingtalk_launch.html seahub/templates/client_dingtalk_landing.html seahub/templates/client_dingtalk_error.html seahub/templates/registration/login.html seahub/dingtalk/views.py
++msgid "If DingTalk does not open, check that it is installed and allow this browser to open it. You can also return to the login page and use the web login."
++msgstr "如果无法打开，请确认已安装钉钉，并允许浏览器打开应用；也可以返回登录页使用网页登录。"
++
++#: seahub/templates/client_dingtalk_launch.html seahub/templates/client_dingtalk_landing.html seahub/templates/client_dingtalk_error.html seahub/templates/registration/login.html seahub/dingtalk/views.py
++msgid "After confirming in DingTalk, return to the Seafile app. If you cancel or the link expires, start Single Sign-On again in the app."
++msgstr "在钉钉中确认后，请返回 Seafile App。如果取消授权或链接过期，请在 App 中重新发起单点登录。"
++
++#: seahub/templates/client_dingtalk_launch.html seahub/templates/client_dingtalk_landing.html seahub/templates/client_dingtalk_error.html seahub/templates/registration/login.html seahub/dingtalk/views.py
++msgid "DingTalk authorization was cancelled or failed. Please start Single Sign-On again in the Seafile app."
++msgstr "钉钉授权已取消或失败。如需登录客户端，请返回 Seafile App 重新发起单点登录。"
++
++#: seahub/templates/client_dingtalk_launch.html seahub/templates/client_dingtalk_landing.html seahub/templates/client_dingtalk_error.html seahub/templates/registration/login.html seahub/dingtalk/views.py
++msgid "DingTalk authorization failed. Please start the login again."
++msgstr "钉钉授权失败，请重新发起登录。"
++
++#: seahub/templates/client_login_confirm.html
++msgid "Account"
++msgstr "账号"
++
++#: seahub/templates/registration/login.html
++msgid "Use DingTalk web login"
++msgstr "使用钉钉网页登录"
+diff --git a/seahub/auth/views.py b/seahub/auth/views.py
+index da012043..db3b0fc8 100644
+--- a/seahub/auth/views.py
++++ b/seahub/auth/views.py
+@@ -201,6 +201,8 @@ def login(request, template_name='registration/login.html',
+                  getattr(settings, 'ENABLE_REMOTE_USER_AUTHENTICATION', False)
+ 
+     login_bg_image_path = get_login_bg_image_path()
++    from seahub.dingtalk.handoff import session_target
++    client_sso_dingtalk_available = bool(session_target(request.session, redirect_to))
+ 
+     return render(request, template_name, {
+         'form': form,
+@@ -212,6 +214,7 @@ def login(request, template_name='registration/login.html',
+         'enable_sso': enable_sso,
+         'enable_multi_adfs': getattr(settings, 'ENABLE_MULTI_ADFS', False),
+         'login_bg_image_path': login_bg_image_path,
++        'client_sso_dingtalk_available': client_sso_dingtalk_available,
+     })
+ 
+ def login_simple_check(request):
+diff --git a/seahub/dingtalk/handoff.py b/seahub/dingtalk/handoff.py
+new file mode 100644
+index 00000000..5797f097
+--- /dev/null
++++ b/seahub/dingtalk/handoff.py
+@@ -0,0 +1,88 @@
++"""One-time client SSO handoffs; never transfer browser sessions or API keys."""
++import hashlib
++import secrets
++from datetime import timedelta
++
++from django.db import transaction
++from django.urls import reverse
++from django.utils import timezone
++from urllib.parse import urlsplit
++
++from seahub.base.models import ClientSSOToken
++from seahub.settings import CLIENT_SSO_TOKEN_EXPIRATION
++from .models import ClientSSOHandoff
++
++SESSION_TARGETS = 'client_sso_dingtalk_targets'
++
++
++class InvalidHandoff(Exception):
++    pass
++
++
++def _digest(value):
++    return hashlib.sha256(value.encode()).hexdigest()
++
++
++def remember_target(session, token, destination):
++    # A separate entry per tab avoids confirming a different client's request.
++    targets = dict(session.get(SESSION_TARGETS, {}))
++    targets[_digest(destination)] = {'token': token, 'destination': destination}
++    session[SESSION_TARGETS] = dict(list(targets.items())[-5:])
++
++
++def session_target(session, destination):
++    target = session.get(SESSION_TARGETS, {}).get(_digest(destination), {})
++    return target if target.get('destination') == destination else {}
++
++
++def _pending(token):
++    if not token or not token.accessed_at or not token.is_waiting():
++        return False
++    age = (timezone.now() - token.accessed_at).total_seconds()
++    return 0 <= age < CLIENT_SSO_TOKEN_EXPIRATION
++
++
++def _origin(request):
++    return request.scheme + '://' + request.get_host()
++
++
++def _destination_valid(destination, token):
++    parts = urlsplit(destination)
++    return (not parts.scheme and not parts.netloc and not parts.fragment and
++            parts.path == reverse('client_sso_complete', args=[token]))
++
++
++def create_handoff(request, destination):
++    target = session_target(request.session, destination)
++    ClientSSOHandoff.objects.filter(created_at__lt=timezone.now() - timedelta(seconds=CLIENT_SSO_TOKEN_EXPIRATION)).delete()
++    with transaction.atomic():
++        token = ClientSSOToken.objects.select_for_update().filter(token=target.get('token', '')).first()
++        if not _pending(token) or not _destination_valid(destination, token.token):
++            raise InvalidHandoff()
++        now = timezone.now()
++        # A deliberate retry invalidates older, unclaimed links for this client.
++        ClientSSOHandoff.objects.filter(client_token=token.token, used_at__isnull=True).update(used_at=now)
++        secret = secrets.token_urlsafe(32)
++        ClientSSOHandoff.objects.create(secret_hash=_digest(secret), client_token=token.token,
++                                        destination=destination, origin=_origin(request))
++        return secret
++
++
++@transaction.atomic
++def consume_handoff(request, secret):
++    if (len(secret) != 43 or any(c not in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_' for c in secret)):
++        raise InvalidHandoff()
++    # Lock the client before the bridge in both creation and consumption.
++    candidate = ClientSSOHandoff.objects.filter(secret_hash=_digest(secret)).first()
++    if not candidate:
++        raise InvalidHandoff()
++    token = ClientSSOToken.objects.select_for_update().filter(token=candidate.client_token).first()
++    handoff = ClientSSOHandoff.objects.select_for_update().filter(pk=candidate.pk).first()
++    if (not handoff or handoff.used_at or not _pending(token) or
++            handoff.origin != _origin(request) or
++            not _destination_valid(handoff.destination, token.token) or
++            (timezone.now() - handoff.created_at).total_seconds() >= CLIENT_SSO_TOKEN_EXPIRATION):
++        raise InvalidHandoff()
++    handoff.used_at = timezone.now()
++    handoff.save(update_fields=['used_at'])
++    return handoff.destination
+diff --git a/seahub/dingtalk/migrations/0001_client_sso_handoff.py b/seahub/dingtalk/migrations/0001_client_sso_handoff.py
+new file mode 100644
+index 00000000..c7316c75
+--- /dev/null
++++ b/seahub/dingtalk/migrations/0001_client_sso_handoff.py
+@@ -0,0 +1,20 @@
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++    initial = True
++    dependencies = []
++    operations = [
++        migrations.CreateModel(
++            name='ClientSSOHandoff',
++            fields=[
++                ('id', models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('secret_hash', models.CharField(max_length=64, unique=True)),
++                ('client_token', models.CharField(db_index=True, max_length=100)),
++                ('destination', models.TextField()),
++                ('origin', models.CharField(max_length=300)),
++                ('created_at', models.DateTimeField(auto_now_add=True, db_index=True)),
++                ('used_at', models.DateTimeField(blank=True, null=True)),
++            ],
++        ),
++    ]
+diff --git a/seahub/dingtalk/models.py b/seahub/dingtalk/models.py
+index 71a83623..4e086d8d 100644
+--- a/seahub/dingtalk/models.py
++++ b/seahub/dingtalk/models.py
+@@ -1,3 +1,15 @@
+ from django.db import models
+ 
+-# Create your models here.
++
++class ClientSSOHandoff(models.Model):
++    """Short-lived, single-use bridge to DingTalk's browser session.
++
++    Keep the client token as an opaque identifier: installations initialized
++    from Seafile SQL have a different base migration history from this tree.
++    """
++    secret_hash = models.CharField(max_length=64, unique=True)
++    client_token = models.CharField(max_length=100, db_index=True)
++    destination = models.TextField()
++    origin = models.CharField(max_length=300)
++    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
++    used_at = models.DateTimeField(null=True, blank=True)
+diff --git a/seahub/dingtalk/views.py b/seahub/dingtalk/views.py
+index beec84cd..2f40b2ec 100644
+--- a/seahub/dingtalk/views.py
++++ b/seahub/dingtalk/views.py
+@@ -335,14 +335,15 @@ def dingtalk_disconnect(request):
+ 
+ 
+ # for 10.0 or later
+-def dingtalk_login_new(request):
++def dingtalk_login_new(request, redirect_to=None):
+     """
+     https://open.dingtalk.com/document/orgapp/sso-overview
+     """
+ 
+     state = str(uuid.uuid4())
+     request.session['dingtalk_login_state'] = state
+-    request.session['dingtalk_login_redirect'] = request.GET.get(auth.REDIRECT_FIELD_NAME, '/')
++    request.session['dingtalk_login_redirect'] = (
++        redirect_to if redirect_to is not None else request.GET.get(auth.REDIRECT_FIELD_NAME, '/'))
+ 
+     data = {
+         'redirect_uri': get_request_scheme_and_netloc(request) + reverse('dingtalk_callback'),
+@@ -365,12 +366,14 @@ def dingtalk_callback_new(request):
+         # [dev] 回调已改为跟随发起请求的域名（get_request_scheme_and_netloc），
+         # host 不一致不再会导致 state 丢失。仍走到这里一般是：会话/cookie 丢失
+         # （无痕窗口、浏览器禁 cookie、会话过期）或同一流程换了浏览器。
+-        logger.error('invalid dingtalk login state: got=%s expected=%s host=%s',
+-                     state or '<empty>',
+-                     request.session.get('dingtalk_login_state', '<none in session>'),
+-                     request.get_host())
++        logger.warning('Invalid DingTalk login state on host %s', request.get_host())
+         return render_error(request, _('Login session expired. Please go back to the login page and try again.'))
+ 
++    request.session.pop('dingtalk_login_state', None)
++    code = request.GET.get('authCode')
++    if request.GET.get('error') or not code:
++        return render_error(request, _('DingTalk authorization was cancelled or failed. Please start Single Sign-On again in the Seafile app.'))
++
+     def get_oauth_access_token(code):
+         """
+         https://open.dingtalk.com/document/orgapp/sso-overview
+@@ -385,13 +388,11 @@ def dingtalk_callback_new(request):
+ 
+         access_token_resp = requests.post(DINGTALK_OAUTH_USER_ACCESS_TOKEN_URL,
+                                           headers=headers,
+-                                          data=json.dumps(data))
++                                          data=json.dumps(data), timeout=10)
+ 
++        access_token_resp.raise_for_status()
+         return access_token_resp.json().get('accessToken')
+ 
+-    code = request.GET.get('authCode')
+-    oauth_access_token = get_oauth_access_token(code)
+-
+     def get_user_info(oauth_access_token, union_id='me'):
+         """
+         https://open.dingtalk.com/document/orgapp/dingtalk-retrieve-user-information#
+@@ -399,7 +400,7 @@ def dingtalk_callback_new(request):
+ 
+         user_info_url = urllib.parse.urljoin(DINGTALK_GET_USER_INFO_URL, union_id)
+         user_info_resp = requests.get(user_info_url,
+-                                      headers={'x-acs-dingtalk-access-token': oauth_access_token})
++                                      headers={'x-acs-dingtalk-access-token': oauth_access_token}, timeout=10)
+         # {
+         #     'avatarUrl': 'https://static-legacy.dingtalk.com/media/lADPDgQ9rt4yNOLNAjDNAjA_560_560.jpg',
+         #     'mobile': '15313912424',
+@@ -408,14 +409,19 @@ def dingtalk_callback_new(request):
+         #     'stateCode': '86',
+         #     'unionId': '3os80f94Zf4oeiPOpiSiSgiigQiEiE'
+         # }
++        user_info_resp.raise_for_status()
+         return user_info_resp.json()
+ 
+-    user_info = get_user_info(oauth_access_token)
++    try:
++        oauth_access_token = get_oauth_access_token(code)
++        user_info = get_user_info(oauth_access_token) if oauth_access_token else {}
++    except (requests.RequestException, ValueError, AttributeError):
++        logger.warning('DingTalk authorization service request failed')
++        return render_error(request, _('DingTalk authorization failed. Please start the login again.'))
+ 
+     # seahub authenticate user
+-    if 'unionId' not in user_info:
++    if not isinstance(user_info, dict) or not user_info.get('unionId'):
+         logger.error('Required user info not found.')
+-        logger.error(user_info)
+         return render_error(request, _('Error, please contact administrator.'))
+ 
+     union_id = user_info['unionId']
+diff --git a/seahub/templates/client_dingtalk_error.html b/seahub/templates/client_dingtalk_error.html
+new file mode 100644
+index 00000000..a50a8ed8
+--- /dev/null
++++ b/seahub/templates/client_dingtalk_error.html
+@@ -0,0 +1,8 @@
++{% extends "base.html" %}
++{% load i18n %}
++{% block main_content %}
++<div class="text-panel">
++  <h2>{% trans "Unable to continue login" %}</h2>
++  <p>{% trans "This login link is invalid or has expired. Please start Single Sign-On again in the Seafile app." %}</p>
++</div>
++{% endblock %}
+diff --git a/seahub/templates/client_dingtalk_landing.html b/seahub/templates/client_dingtalk_landing.html
+new file mode 100644
+index 00000000..ad0829ba
+--- /dev/null
++++ b/seahub/templates/client_dingtalk_landing.html
+@@ -0,0 +1,34 @@
++{% load i18n %}
++<!doctype html>
++<html lang="{{ LANGUAGE_CODE|default:'zh-cn' }}">
++<head>
++  <meta charset="utf-8" />
++  <meta name="viewport" content="width=device-width, initial-scale=1" />
++  <meta name="referrer" content="no-referrer" />
++  <title>{% trans "DingTalk Login" %}</title>
++  <style>body{font:17px -apple-system,sans-serif;line-height:1.6;max-width:32rem;margin:3rem auto;padding:0 1rem}button{font:inherit;padding:.6rem 1rem}</style>
++</head>
++<body>
++  <p id="handoff-message">{% trans "Continue to DingTalk authorization." %}</p>
++  <form id="handoff" method="post" hidden>{% csrf_token %}
++    <input type="hidden" name="handoff" id="handoff-secret" />
++    <button type="submit">{% trans "Continue" %}</button>
++  </form>
++  <p id="handoff-invalid" hidden>{% trans "This login link is invalid or has expired. Please start Single Sign-On again in the Seafile app." %}</p>
++  <noscript>{% trans "Please enable JavaScript and start Single Sign-On again in the Seafile app." %}</noscript>
++  <script>
++    (function () {
++      var secret = window.location.hash.slice(1);
++      history.replaceState(null, '', window.location.pathname);
++      if (/^[A-Za-z0-9_-]{43}$/.test(secret)) {
++        document.getElementById('handoff-secret').value = secret;
++        document.getElementById('handoff').hidden = false;
++        document.getElementById('handoff').submit();
++      } else {
++        document.getElementById('handoff-message').hidden = true;
++        document.getElementById('handoff-invalid').hidden = false;
++      }
++    }());
++  </script>
++</body>
++</html>
+diff --git a/seahub/templates/client_dingtalk_launch.html b/seahub/templates/client_dingtalk_launch.html
+new file mode 100644
+index 00000000..aeb25bd2
+--- /dev/null
++++ b/seahub/templates/client_dingtalk_launch.html
+@@ -0,0 +1,11 @@
++{% extends "base.html" %}
++{% load i18n %}
++{% block main_content %}
++<div class="text-center" style="padding: 3em 1em">
++  <h2>{% trans "DingTalk Login" %}</h2>
++  <p>{% trans "Open DingTalk, authorize, then confirm the client login." %}</p>
++  <p><a class="btn btn-primary" href="{{ dingtalk_link }}">{% trans "Open DingTalk" %}</a></p>
++  <p>{% trans "If DingTalk does not open, check that it is installed and allow this browser to open it. You can also return to the login page and use the web login." %}</p>
++  <p>{% trans "After confirming in DingTalk, return to the Seafile app. If you cancel or the link expires, start Single Sign-On again in the app." %}</p>
++</div>
++{% endblock %}
+diff --git a/seahub/templates/client_login_confirm.html b/seahub/templates/client_login_confirm.html
+index 779756b7..7f71c2f7 100644
+--- a/seahub/templates/client_login_confirm.html
++++ b/seahub/templates/client_login_confirm.html
+@@ -6,6 +6,8 @@
+   <img src="{{MEDIA_URL}}img/client-login-confirm.png" alt="" width="487" height="320" class="mw-100" />
+   <h2 class="hd">{% trans "Client Login Confirm" %}</h2>
+   <p class="m-0">{% trans "Do you want to login to your client?" %}</p>
++  {% if client_account %}<p>{% trans "Account" %}: {{ client_account }}</p>{% endif %}
++  {% if client_device_name %}<p>{% trans "Device" %}: {{ client_device_name }}</p>{% endif %}
+   <form action="" method="post">{% csrf_token %}
+     <button type="submit" class="btn btn-primary">{% trans "Yes" %}</button>
+   </form>
+diff --git a/seahub/templates/registration/login.html b/seahub/templates/registration/login.html
+index 80aebf28..8b47716b 100644
+--- a/seahub/templates/registration/login.html
++++ b/seahub/templates/registration/login.html
+@@ -123,9 +123,27 @@ html, body, #wrapper { height:100%; }
+       {% if enable_dingtalk %}
+         {# [dev] 0012: 保留 next —— 客户端 SSO 的设备参数（shib_*）坐在 next 的 query 里，#}
+         {# 丢了 next 参数链全断，用户首次扫码落在首页而非回到客户端确认页。写法对齐上面 JS SSO 按钮。 #}
+-        <a href="{% url "dingtalk_sso" %}{% if next %}?next={{ next|urlencode }}{% endif %}">
++        <a id="dingtalk-web-login" href="{% url "dingtalk_sso" %}{% if next %}?next={{ next|urlencode }}{% endif %}">
+           <img src="{{MEDIA_URL}}img/dingtalk.png" width="32" alt="" title="{% if LANGUAGE_CODE == 'zh-cn' %}钉钉{% else %}DingTalk{% endif %}" />
+         </a>
++        {% url 'client_sso_dingtalk_prepare' as dingtalk_prepare_url %}
++        {% if client_sso_dingtalk_available and dingtalk_prepare_url %}
++        <form id="dingtalk-client-handoff" action="{{ dingtalk_prepare_url }}" method="post" hidden>{% csrf_token %}
++          <input type="hidden" name="next" value="{{ next }}" />
++          <button class="btn btn-secondary mt-3" type="submit">{% trans "Open DingTalk to log in to the client" %}</button>
++          <p class="mt-2"><a href="{% url 'dingtalk_sso' %}?next={{ next|urlencode }}">{% trans "Use DingTalk web login" %}</a></p>
++        </form>
++        <script>
++          if (/iPhone|iPad|iPod/i.test(navigator.userAgent) && !/DingTalk/i.test(navigator.userAgent)) {
++            var handoffForm = document.getElementById('dingtalk-client-handoff');
++            handoffForm.hidden = false;
++            document.getElementById('dingtalk-web-login').addEventListener('click', function (event) {
++              event.preventDefault();
++              handoffForm.querySelector('button').click();
++            });
++          }
++        </script>
++        {% endif %}
+       {% endif %}
+     </div>
+     {% endif %}
+diff --git a/seahub/urls.py b/seahub/urls.py
+index 7a8b5197..2883bb4a 100644
+--- a/seahub/urls.py
++++ b/seahub/urls.py
+@@ -1142,6 +1142,8 @@ if getattr(settings, 'ENABLE_SEADOC', False):
+ 
+ if getattr(settings, 'CLIENT_SSO_VIA_LOCAL_BROWSER', False):
+     urlpatterns += [
++        re_path(r'^client-sso-dingtalk/prepare/$', client_sso_dingtalk_prepare, name='client_sso_dingtalk_prepare'),
++        re_path(r'^client-sso-dingtalk/landing/$', client_sso_dingtalk_landing, name='client_sso_dingtalk_landing'),
+         re_path(r'^client-sso/(?P<token>[^/]+)/$', client_sso, name="client_sso"),
+         re_path(r'^client-sso/(?P<token>[^/]+)/complete/$', client_sso_complete, name="client_sso_complete"),
+     ]
+diff --git a/seahub/views/sso.py b/seahub/views/sso.py
+index 40e005c3..ed4bbfc7 100644
+--- a/seahub/views/sso.py
++++ b/seahub/views/sso.py
+@@ -4,16 +4,19 @@ import jwt
+ import time
+ import hashlib
+ import logging
++import uuid
+ 
+ from django.conf import settings
+ from django.urls import reverse
+-from django.http import HttpResponseRedirect
++from django.http import HttpResponseRedirect, HttpResponseNotAllowed
+ from urllib.parse import quote
+ from django.utils.http import url_has_allowed_host_and_scheme
+ from django.utils import timezone
+ from django.utils.translation import gettext as _
+ from django.shortcuts import get_object_or_404, render
+ from django.views.decorators.csrf import csrf_protect
++from django.db import transaction
++from django.utils.cache import patch_cache_control
+ 
+ from seahub.base.templatetags.seahub_tags import email2nickname
+ from seahub.auth import REDIRECT_FIELD_NAME
+@@ -23,15 +26,20 @@ from seahub.api2.utils import get_token_v1, get_token_v2
+ from seahub.settings import CLIENT_SSO_VIA_LOCAL_BROWSER, CLIENT_SSO_TOKEN_EXPIRATION, LOGIN_URL
+ from seahub.base.models import ClientSSOToken
+ from seahub.work_weixin.settings import ENABLE_WORK_WEIXIN
+-from seahub.dingtalk.settings import is_dingtalk_enabled
++from seahub.dingtalk.settings import (is_dingtalk_enabled, get_dingtalk_app_key,
++                                       get_dingtalk_app_secret)
++from seahub.dingtalk.handoff import (remember_target, create_handoff, consume_handoff,
++                                      InvalidHandoff)
+ 
+ # Get an instance of a logger
+ logger = logging.getLogger(__name__)
+ 
+ 
+ def _guess_platform_from_browser_ua(user_agent):
+-    """[dev] 0011: 从浏览器 UA 猜桌面平台（windows/mac/linux），猜不出返回 None。"""
++    """Guess iOS or a desktop platform for clients without device parameters."""
+     ua = (user_agent or '').lower()
++    if any(device in ua for device in ('iphone', 'ipad', 'ipod')):
++        return 'ios'
+     if 'windows' in ua:
+         return 'windows'
+     if 'macintosh' in ua or 'mac os x' in ua:
+@@ -65,6 +73,9 @@ def get_token_v2_fallback(request, username):
+         return get_token_v1(username)
+ 
+     device_id = hashlib.sha1(('%s|%s' % (username, user_agent)).encode('utf-8')).hexdigest()
++    if platform == 'ios':
++        # iOS IDs must have UUID length, desktop peer IDs use 40 characters.
++        device_id = str(uuid.UUID(device_id[:32]))
+     device_name = 'SSO 登录设备（浏览器 UA 识别）'
+     return get_token_v2(request, username, platform, device_id,
+                         device_name, client_version='',
+@@ -211,11 +222,12 @@ def shib_login(request):
+     return HttpResponseRedirect(reverse('sso') + params)
+ 
+ 
++@transaction.atomic
+ def client_sso(request, token):
+     if not CLIENT_SSO_VIA_LOCAL_BROWSER:
+         return render_error(request, 'Feature is not enabled.')
+ 
+-    t = get_object_or_404(ClientSSOToken, token=token)
++    t = get_object_or_404(ClientSSOToken.objects.select_for_update(), token=token)
+     if not t.accessed_at:
+         t.accessed()
+     else:
+@@ -234,15 +246,70 @@ def client_sso(request, token):
+         logger.error('%s is not safe url.' % next_page)
+         next_page = reverse('client_sso_complete', args=[token, ])
+ 
++    remember_target(request.session, token, next_page)
+     redirect_url = LOGIN_URL + '?next=' + quote(next_page)
+     return HttpResponseRedirect(redirect_url)
+ 
+ 
++def _private_handoff_response(response):
++    patch_cache_control(response, no_store=True, private=True)
++    response['Referrer-Policy'] = 'no-referrer'
++    response['X-Robots-Tag'] = 'noindex, nofollow'
++    return response
++
++
++def _handoff_enabled():
++    return (CLIENT_SSO_VIA_LOCAL_BROWSER and is_dingtalk_enabled() and
++            get_dingtalk_app_key() and get_dingtalk_app_secret())
++
++
++def _handoff_error(request):
++    return _private_handoff_response(render(
++        request, 'client_dingtalk_error.html', status=400))
++
++
++@csrf_protect
++def client_sso_dingtalk_prepare(request):
++    if request.method != 'POST':
++        return HttpResponseNotAllowed(['POST'])
++    if not _handoff_enabled():
++        return _handoff_error(request)
++    try:
++        secret = create_handoff(request, request.POST.get('next', ''))
++    except InvalidHandoff:
++        return _handoff_error(request)
++    landing = request.build_absolute_uri(reverse('client_sso_dingtalk_landing')) + '#' + secret
++    link = 'dingtalk://dingtalkclient/page/link?url=' + quote(landing, safe='')
++    return _private_handoff_response(render(request, 'client_dingtalk_launch.html', {'dingtalk_link': link}))
++
++
++@csrf_protect
++def client_sso_dingtalk_landing(request):
++    if not _handoff_enabled():
++        return _handoff_error(request)
++    if request.method == 'GET':
++        return _private_handoff_response(render(request, 'client_dingtalk_landing.html'))
++    if request.method != 'POST':
++        return HttpResponseNotAllowed(['GET', 'POST'])
++    try:
++        destination = consume_handoff(request, request.POST.get('handoff', ''))
++    except InvalidHandoff:
++        return _handoff_error(request)
++    # OAuth starts here, in DingTalk's browser session. No pending destination
++    # remains to accidentally affect a later, unrelated browser login.
++    from seahub.dingtalk.views import dingtalk_login_new
++    return _private_handoff_response(dingtalk_login_new(request, redirect_to=destination))
++
++
+ @csrf_protect
+ @login_required
++@transaction.atomic
+ def client_sso_complete(request, token):
+ 
+-    t = get_object_or_404(ClientSSOToken, token=token)
++    if not CLIENT_SSO_VIA_LOCAL_BROWSER or not request.user.is_active:
++        return render_permission_error(request, _('Permission denied.'))
++
++    t = get_object_or_404(ClientSSOToken.objects.select_for_update(), token=token)
+     if not t.accessed_at:
+         error_msg = _('Invalid link, please click the login button on the client again')
+         return render_error(request, error_msg)
+@@ -255,7 +322,11 @@ def client_sso_complete(request, token):
+     if request.method == "GET":
+ 
+         template_name = 'client_login_confirm.html'
+-        return render(request, template_name, {})
++        return render(request, template_name, {
++            'client_account': email2nickname(request.user.username),
++            'client_device_name': request.GET.get('shib_device_name', '') or
++                                  request.session.get('shib_device_name', ''),
++        })
+ 
+     elif request.method == "POST":
+ 
+@@ -294,7 +365,7 @@ def client_sso_complete(request, token):
+                 api_token = get_token_v2_fallback(request, username)
+ 
+             t.completed(username=username, api_key=api_token.key)
+-            logger.info('Client SSO success, token: %s, user: %s' % (token, username))
++            logger.info('Client SSO success for user %s', username)
+         else:
+             logger.warning('Client SSO token is not waiting, skip.')
+ 
+diff --git a/tests/seahub/views/test_client_sso_origin.py b/tests/seahub/views/test_client_sso_origin.py
+index 796e1006..ce287241 100644
+--- a/tests/seahub/views/test_client_sso_origin.py
++++ b/tests/seahub/views/test_client_sso_origin.py
+@@ -97,6 +97,7 @@ class ClientSSOOriginTest(SimpleTestCase):
+         token = link.path.strip('/').split('/')[-1]
+         request = RequestFactory().get(link.path + '?' + link.query,
+                                        HTTP_HOST=link.netloc, secure=True)
++        request.session = {}
+         response = client_sso(request, token)
+         self.assertEqual(response.status_code, 302)
+         redirect = urlsplit(response['Location'])
+diff --git a/tests/seahub/views/test_dingtalk_handoff.py b/tests/seahub/views/test_dingtalk_handoff.py
+new file mode 100644
+index 00000000..f17f8a8c
+--- /dev/null
++++ b/tests/seahub/views/test_dingtalk_handoff.py
+@@ -0,0 +1,245 @@
++"""Exercise real templates, CSRF checks and the bridge using isolated tables."""
++from datetime import timedelta
++from html.parser import HTMLParser
++from types import SimpleNamespace
++from unittest.mock import patch
++from urllib.parse import parse_qs, urlencode, urlsplit
++
++import requests
++from django.http import HttpResponse
++from django.template import engines
++from django.test import RequestFactory, SimpleTestCase, override_settings
++from django.utils import timezone
++from django.middleware.csrf import get_token
++
++from seahub.base.models import ClientSSOToken
++from seahub.dingtalk.models import ClientSSOHandoff
++from seahub.dingtalk.handoff import remember_target
++from seahub.dingtalk.views import dingtalk_callback_new, dingtalk_login_new
++from seahub.views.sso import (client_sso, client_sso_complete,
++                              client_sso_dingtalk_prepare, client_sso_dingtalk_landing)
++
++
++class Links(HTMLParser):
++    def __init__(self, html):
++        super().__init__()
++        self.links = []
++        self.feed(html)
++
++    def handle_starttag(self, tag, attrs):
++        if tag == 'a':
++            self.links.append(dict(attrs).get('href', ''))
++
++
++@override_settings(ALLOWED_HOSTS=['testserver', 'other.test'], ROOT_URLCONF='seahub.urls')
++class DingTalkHandoffTest(SimpleTestCase):
++    databases = {'default'}
++
++    def setUp(self):
++        self.factory = RequestFactory()
++        for name in ['seahub.views.sso.is_dingtalk_enabled',
++                     'seahub.views.sso.get_dingtalk_app_key',
++                     'seahub.views.sso.get_dingtalk_app_secret',
++                     'seahub.dingtalk.views.get_dingtalk_app_key']:
++            mock = patch(name, return_value='test-value')
++            mock.start()
++            self.addCleanup(mock.stop)
++        self.addCleanup(ClientSSOHandoff.objects.all().delete)
++        self.addCleanup(ClientSSOToken.objects.all().delete)
++        self.token = ClientSSOToken.objects.create(accessed_at=timezone.now())
++        self.destination = '/client-sso/%s/complete/?%s' % (self.token.token, urlencode({
++            'shib_platform': 'ios', 'shib_device_id': 'device-test-id',
++            'shib_device_name': 'My iPhone & phone', 'shib_client_version': 'test',
++            'shib_platform_version': 'test'}))
++        self.session = {}
++        remember_target(self.session, self.token.token, self.destination)
++
++    def request(self, method, path, data=None, session=None, csrf=True, host='testserver'):
++        req = getattr(self.factory, method)(path, data or {}, secure=True, HTTP_HOST=host)
++        req.session = session if session is not None else {}
++        req.user = SimpleNamespace(username='member@example.test', is_authenticated=True, is_active=True)
++        if method == 'post' and csrf:
++            # Use the real CSRF validation, including Origin validation.
++            secret = get_token(req)
++            req.COOKIES['sfcsrftoken'] = req.META['CSRF_COOKIE']
++            req.COOKIES['csrftoken'] = req.META['CSRF_COOKIE']
++            req.META['HTTP_X_CSRFTOKEN'] = secret
++            req.META['HTTP_ORIGIN'] = 'https://' + host
++        return req
++
++    def prepare(self, destination=None):
++        req = self.request('post', '/client-sso-dingtalk/prepare/',
++                           {'next': destination or self.destination}, session=self.session)
++        return client_sso_dingtalk_prepare(req)
++
++    def secret(self, response):
++        link = next(link for link in Links(response.content.decode()).links if link.startswith('dingtalk:'))
++        landing = parse_qs(urlsplit(link).query)['url'][0]
++        self.assertNotIn(self.token.token, link)
++        self.assertNotIn('shib_', link)
++        self.assertEqual(urlsplit(landing).netloc, 'testserver')
++        return urlsplit(landing).fragment
++
++    def consume(self, secret, **kwargs):
++        req = self.request('post', '/client-sso-dingtalk/landing/', {'handoff': secret}, **kwargs)
++        return req, client_sso_dingtalk_landing(req)
++
++    def test_cross_session_oauth_then_explicit_client_confirmation(self):
++        response = self.prepare()
++        self.assertEqual(response.status_code, 200)
++        secret = self.secret(response)
++        self.assertNotEqual(secret, ClientSSOHandoff.objects.get().secret_hash)
++        req, response = self.consume(secret)
++        self.assertEqual(response.status_code, 302)
++        self.assertEqual(urlsplit(response['Location']).netloc, 'login.dingtalk.com')
++        self.assertEqual(req.session['dingtalk_login_redirect'], self.destination)
++        query = parse_qs(urlsplit(response['Location']).query)
++        self.assertEqual(query['state'], [req.session['dingtalk_login_state']])
++        self.assertEqual(query['redirect_uri'], ['https://testserver/dingtalk/callback/'])
++        self.token.refresh_from_db()
++        self.assertTrue(self.token.is_waiting())
++        self.assertIsNone(self.token.api_key)
++        self.assertEqual(self.consume(secret)[1].status_code, 400)
++        with patch('seahub.views.sso.email2nickname', return_value='Test Member'), \
++                patch('seahub.views.sso.get_token_v2', return_value=SimpleNamespace(key='api-test-key')) as issue:
++            confirm = self.request('get', self.destination, session=req.session)
++            response = client_sso_complete(confirm, self.token.token)
++            self.assertEqual(response.status_code, 200)
++            self.assertIn('Test Member', response.content.decode())
++            self.assertIn('My iPhone &amp; phone', response.content.decode())
++            issue.assert_not_called()
++            post = self.request('post', self.destination, session=req.session)
++            self.assertEqual(client_sso_complete(post, self.token.token).status_code, 200)
++            issue.assert_called_once_with(post, 'member@example.test', 'ios', 'device-test-id',
++                                          'My iPhone & phone', 'test', 'test')
++            self.assertEqual(client_sso_complete(post, self.token.token).status_code, 200)
++            self.assertEqual(issue.call_count, 1)
++        self.token.refresh_from_db()
++        self.assertEqual(self.token.api_key, 'api-test-key')
++
++    def test_retry_invalidates_unclaimed_link(self):
++        first = self.secret(self.prepare())
++        second = self.secret(self.prepare())
++        self.assertNotEqual(first, second)
++        self.assertEqual(self.consume(first)[1].status_code, 400)
++        self.assertEqual(self.consume(second)[1].status_code, 302)
++
++    def test_origin_mismatch_does_not_consume_link(self):
++        secret = self.secret(self.prepare())
++        self.assertEqual(self.consume(secret, host='other.test')[1].status_code, 400)
++        self.assertEqual(self.consume(secret)[1].status_code, 302)
++
++    def test_multiple_tabs_keep_their_own_destination(self):
++        other = ClientSSOToken.objects.create(accessed_at=timezone.now())
++        other_destination = '/client-sso/%s/complete/' % other.token
++        remember_target(self.session, other.token, other_destination)
++        first = self.secret(self.prepare())
++        self.assertEqual(self.consume(first)[0].session['dingtalk_login_redirect'], self.destination)
++        second = self.secret(self.prepare(other_destination))
++        self.assertEqual(self.consume(second)[0].session['dingtalk_login_redirect'], other_destination)
++
++    def test_missing_session_or_tampered_destination_cannot_prepare(self):
++        response = self.prepare(self.destination + '&shib_device_name=OTHER')
++        self.assertEqual(response.status_code, 400)
++        self.session.clear()
++        self.assertEqual(self.prepare().status_code, 400)
++        self.assertEqual(ClientSSOHandoff.objects.count(), 0)
++
++    def test_expired_completed_and_deleted_clients_are_rejected(self):
++        for mode in ['expired', 'success', 'deleted']:
++            with self.subTest(mode=mode):
++                secret = self.secret(self.prepare())
++                pk = self.token.pk
++                if mode == 'expired':
++                    ClientSSOToken.objects.filter(pk=pk).update(accessed_at=timezone.now() - timedelta(hours=1))
++                elif mode == 'success':
++                    ClientSSOToken.objects.filter(pk=pk).update(status='success')
++                else:
++                    self.token.delete()
++                self.assertEqual(self.consume(secret)[1].status_code, 400)
++                self.token.pk = pk
++                self.token.accessed_at = timezone.now()
++                self.token.status = 'waiting'
++                self.token.save()
++
++    def test_expired_handoff_and_malformed_secrets(self):
++        secret = self.secret(self.prepare())
++        ClientSSOHandoff.objects.update(created_at=timezone.now() - timedelta(hours=1))
++        for value in [secret, '', 'x' * 200, 'a/b' * 14 + 'a']:
++            self.assertEqual(self.consume(value)[1].status_code, 400)
++
++    def test_csrf_is_required_and_missing_fragment_has_recovery_message(self):
++        req = self.request('post', '/client-sso-dingtalk/prepare/', {'next': self.destination}, session=self.session, csrf=False)
++        self.assertEqual(client_sso_dingtalk_prepare(req).status_code, 403)
++        secret = self.secret(self.prepare())
++        self.assertEqual(self.consume(secret, csrf=False)[1].status_code, 403)
++        get = self.request('get', '/client-sso-dingtalk/landing/')
++        response = client_sso_dingtalk_landing(get)
++        html = response.content.decode()
++        self.assertIn('handoff-invalid', html)
++        self.assertIn('history.replaceState', html)
++        self.assertNotIn('src=', html)  # No third-party resources see the fragment.
++        self.assertIn('no-store', response['Cache-Control'])
++        self.assertEqual(response['Referrer-Policy'], 'no-referrer')
++
++    def test_disabled_login_blocks_both_endpoints(self):
++        secret = self.secret(self.prepare())
++        with patch('seahub.views.sso.is_dingtalk_enabled', return_value=False):
++            self.assertEqual(self.prepare().status_code, 400)
++            self.assertEqual(self.consume(secret)[1].status_code, 400)
++        self.assertEqual(self.consume(secret)[1].status_code, 302)
++
++    def test_oauth_cancellation_invalid_state_and_timeout_do_not_call_identity_backend(self):
++        with patch('seahub.dingtalk.views.auth.authenticate') as authenticate, \
++                patch('seahub.dingtalk.views.requests.post') as post:
++            for query, session in [({'state': 'bad'}, {'dingtalk_login_state': 'expected'}),
++                                   ({'state': 'ok', 'error': 'access_denied'}, {'dingtalk_login_state': 'ok'}),
++                                   ({'state': 'ok'}, {'dingtalk_login_state': 'ok'})]:
++                req = self.request('get', '/dingtalk/callback/?' + urlencode(query), session=session)
++                self.assertEqual(dingtalk_callback_new(req).status_code, 200)
++            post.assert_not_called()
++            post.side_effect = requests.Timeout()
++            req = self.request('get', '/dingtalk/callback/?state=ok&authCode=test-code',
++                               session={'dingtalk_login_state': 'ok'})
++            dingtalk_callback_new(req)
++            authenticate.assert_not_called()
++            self.assertNotIn('dingtalk_login_state', req.session)
++
++    def test_templates_keep_desktop_and_non_client_login_compatible(self):
++        template = engines['django'].get_template('registration/login.html')
++        for available in [True, False]:
++            req = self.request('get', '/accounts/login/')
++            html = template.render({'request': req, 'enable_dingtalk': True,
++                                    'client_sso_dingtalk_available': available,
++                                    'next': self.destination})
++            self.assertIn('id="dingtalk-web-login"', html)
++            self.assertEqual('id="dingtalk-client-handoff"' in html, available)
++            if available:
++                self.assertIn('name="next"', html)
++        req = self.request('get', '/dingtalk/login/?next=/normal-page/')
++        response = dingtalk_login_new(req)
++        self.assertEqual(req.session['dingtalk_login_redirect'], '/normal-page/')
++        self.assertEqual(response.status_code, 302)
++
++    def test_inactive_user_or_expired_confirmation_cannot_issue_token(self):
++        req = self.request('post', self.destination)
++        req.user.is_active = False
++        with patch('seahub.views.sso.get_token_v2') as issue:
++            client_sso_complete(req, self.token.token)
++            req.user.is_active = True
++            ClientSSOToken.objects.filter(pk=self.token.pk).update(accessed_at=timezone.now() - timedelta(hours=1))
++            client_sso_complete(req, self.token.token)
++            issue.assert_not_called()
++
++    def test_ios_client_without_device_parameters_uses_valid_ios_token(self):
++        destination = '/client-sso/%s/complete/' % self.token.token
++        req = self.request('post', destination)
++        req.META['HTTP_USER_AGENT'] = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) DingTalk'
++        # Keep actual platform and device-ID validation in get_token_v2.
++        with patch('seahub.api2.utils.TokenV2.objects.get_or_create_token',
++                   return_value=SimpleNamespace(key='ios-test-key')) as save:
++            self.assertEqual(client_sso_complete(req, self.token.token).status_code, 200)
++            self.assertEqual(save.call_args.args[1], 'ios')
++            self.assertEqual(len(save.call_args.args[2]), 36)
++        self.token.refresh_from_db()
++        self.assertEqual(self.token.api_key, 'ios-test-key')

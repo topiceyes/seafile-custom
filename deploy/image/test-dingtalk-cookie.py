@@ -52,8 +52,9 @@ class DingTalkCookieTest(unittest.TestCase):
                         DINGTALK_OAUTH_USER_ACCESS_TOKEN_URL='https://example.test/token',
                         DINGTALK_GET_USER_INFO_URL='https://example.test/users/',
                         requests=SimpleNamespace(
-                            post=Mock(return_value=SimpleNamespace(json=lambda: {'accessToken': 'oauth', 'user_info': {'unionid': 'uid'}})),
-                            get=Mock(return_value=SimpleNamespace(json=lambda: {'unionId': 'uid', 'nick': 'name'}))),
+                            RequestException=type('RequestException', (Exception,), {}),
+                            post=Mock(return_value=SimpleNamespace(raise_for_status=lambda: None, json=lambda: {'accessToken': 'oauth', 'user_info': {'unionid': 'uid'}})),
+                            get=Mock(return_value=SimpleNamespace(raise_for_status=lambda: None, json=lambda: {'unionId': 'uid', 'nick': 'name'}))),
                         SocialAuthUser=SimpleNamespace(objects=SimpleNamespace(get_by_provider_and_uid=lambda *a: SimpleNamespace(username=user.username))),
                         auth=SimpleNamespace(authenticate=lambda **kw: user, login=login),
                         User=SimpleNamespace(DoesNotExist=type('DoesNotExist', (Exception,), {})),

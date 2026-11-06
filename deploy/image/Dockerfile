@@ -84,10 +84,12 @@ RUN chmod 0755 /usr/local/bin/seafile-backup.sh \
 #    （不想动上游脚本的替代方案与代价，见 docs/007 §4.2.2。）
 COPY image/custom_bootstrap.py /scripts/custom_bootstrap.py
 COPY image/test-backup.py /scripts/test-backup.py
+COPY image/test-dingtalk-handoff-bootstrap.py /scripts/test-dingtalk-handoff-bootstrap.py
 COPY image/test-department-spaces.py /usr/local/libexec/test-department-spaces.py
 COPY image/test-static-i18n.py /usr/local/libexec/test-static-i18n.py
 COPY image/test-fileserver-origin.py /usr/local/libexec/test-fileserver-origin.py
 COPY image/test-client-sso-origin.py /usr/local/libexec/test-client-sso-origin.py
+COPY image/test-dingtalk-handoff.py /usr/local/libexec/test-dingtalk-handoff.py
 COPY image/test-dingtalk-cookie.py /usr/local/libexec/test-dingtalk-cookie.py
 COPY image/test-department-policy.py /usr/local/libexec/test-department-policy.py
 COPY image/run-management-task.py image/test-management-task.py /usr/local/libexec/
@@ -119,10 +121,13 @@ COPY --from=frontend /frontend/webpack-stats.pro.json ${INSTALLPATH}/seahub/fron
 # 1) 二开 Python 包与模板（只覆盖 seahub/seahub；thirdpart/、seahub.sh、bin/ 保持官方）
 COPY seahub/seahub/ ${INSTALLPATH}/seahub/seahub/
 COPY seahub/tests/seahub/utils/test_fileserver_origin.py ${INSTALLPATH}/seahub/tests/seahub/utils/test_fileserver_origin.py
+COPY seahub/tests/seahub/views/test_dingtalk_handoff.py ${INSTALLPATH}/seahub/tests/seahub/views/test_dingtalk_handoff.py
 COPY seahub/tests/seahub/views/test_client_sso_origin.py ${INSTALLPATH}/seahub/tests/seahub/views/test_client_sso_origin.py
+COPY seahub/locale/zh_CN/LC_MESSAGES/django.po ${INSTALLPATH}/seahub/locale/zh_CN/LC_MESSAGES/django.po
 COPY seahub/locale/zh_CN/LC_MESSAGES/djangojs.po ${INSTALLPATH}/seahub/locale/zh_CN/LC_MESSAGES/djangojs.po
 COPY seahub/locale/en/LC_MESSAGES/djangojs.po ${INSTALLPATH}/seahub/locale/en/LC_MESSAGES/djangojs.po
-RUN msgfmt ${INSTALLPATH}/seahub/locale/zh_CN/LC_MESSAGES/djangojs.po -o ${INSTALLPATH}/seahub/locale/zh_CN/LC_MESSAGES/djangojs.mo \
+RUN msgfmt ${INSTALLPATH}/seahub/locale/zh_CN/LC_MESSAGES/django.po -o ${INSTALLPATH}/seahub/locale/zh_CN/LC_MESSAGES/django.mo \
+ && msgfmt ${INSTALLPATH}/seahub/locale/zh_CN/LC_MESSAGES/djangojs.po -o ${INSTALLPATH}/seahub/locale/zh_CN/LC_MESSAGES/djangojs.mo \
  && msgfmt ${INSTALLPATH}/seahub/locale/en/LC_MESSAGES/djangojs.po -o ${INSTALLPATH}/seahub/locale/en/LC_MESSAGES/djangojs.mo
 # 清掉官方层遗留的 __pycache__，避免旧字节码遮蔽补丁后的源文件
 RUN find ${INSTALLPATH}/seahub/seahub -name '__pycache__' -prune -exec rm -rf {} +

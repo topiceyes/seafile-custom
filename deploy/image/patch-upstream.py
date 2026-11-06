@@ -81,7 +81,7 @@ def patch_start_py():
     patch(
         START_PY,
         'from bootstrap import ',
-        'from custom_bootstrap import init_custom_settings, start_service_retry, migrate_department_spaces\n'
+        'from custom_bootstrap import init_custom_settings, start_service_retry, migrate_department_spaces, migrate_dingtalk_sso\n'
         'from bootstrap import ',
         'start.py: 插入 custom_bootstrap 的 import',
     )
@@ -91,7 +91,8 @@ def patch_start_py():
         '    init_seafile_server()\n',
         '    init_seafile_server()\n'
         '    init_custom_settings()\n'
-        '    migrate_department_spaces()\n',
+        '    migrate_department_spaces()\n'
+        '    migrate_dingtalk_sso()\n',
         'start.py: 在 init_seafile_server() 之后插入定制追加调用',
     )
 
