@@ -1,6 +1,6 @@
 # iPhone 客户端钉钉登录
 
-日期：2026-11-06。当前版本：[1.3.7.5c0ca473 已部署到 198 生产环境](https://github.com/topiceyes/seafile-custom/releases/tag/1.3.7.5c0ca473)。完整备份、镜像校验、独立迁移和正式 HTTPS 登录链路检查通过。iPhone 钉钉授权及返回 Seafile App 仍待真机验收。下文前半部分保留分阶段实施记录，以末尾生产结果为准。
+日期：2026-11-06。当前版本：[1.3.7.5c0ca473 已部署到 198 生产环境](https://github.com/topiceyes/seafile-custom/releases/tag/1.3.7.5c0ca473)。完整备份、镜像校验、独立迁移和正式 HTTPS 登录链路检查通过。部署后用户反馈“可以登录”，iPhone Seafile App 钉钉登录主流程真机验收通过。下文前半部分保留分阶段实施记录，以末尾生产结果为准。
 
 ## 已取得的真机证据
 
@@ -118,6 +118,6 @@ iPhone 反馈中转页 403。日志明确记录落地 POST 因 Origin 为 null �
 - React 主页真实模板可渲染，全部 Webpack 入口可解析；正式域名引用的静态资源严格 HTTPS 检查通过。
 - `https://m-disc.moresec.cn` 与 `https://i-disc.moresec.cn:7443` 均通过真实匿名客户端 SSO 创建、登录入口、中转 CSRF POST、落地单次领取和正确域名 OAuth 回调跳转检查；同源 Referrer-Policy 正确，请求仍为 waiting，未签发用户 API token。
 
-下一步真机验收：从 iPhone Seafile App 使用证书有效的正式域名重新发起 SSO，点击钉钉入口，完成钉钉授权并在客户端确认页确认，再切回 Seafile App。不要复用本地 IP 或旧登录页。服务端检查不替代此项真机结果。
+真机验收结果：生产部署后，已请用户从 iPhone Seafile App 通过正式域名重新发起 SSO，唤起钉钉授权、确认客户端登录并切回 App。用户反馈“可以登录”，据此确认本次 iPhone 客户端登录主流程通过。取消授权、未安装钉钉和过期等分支未新增真机验收结论。
 
 回退入口（198 root）：`SSH_ORIGINAL_COMMAND=rollback /usr/local/sbin/seafile-project-ops`。当前保存的旧镜像为 1.3.5.70c7f317（配置 ID `sha256:d4a66d298906f15faff607d62c7b2d87a41d96da132af17becd02fc0d9f10804`）；回退只切换应用，保留新增中转表及业务数据。
