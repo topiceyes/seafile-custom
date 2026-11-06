@@ -1,6 +1,6 @@
 # iPhone 客户端钉钉登录
 
-日期：2026-11-06。版本：[1.3.6.a7ce5f47 已发布](https://github.com/topiceyes/seafile-custom/releases/tag/1.3.6.a7ce5f47)。CI 构建与整镜像冒烟通过，latest 已更新。尚未在业务库执行迁移或升级生产服务，iPhone 全链路仍待真机验收。
+日期：2026-11-06。当前版本：[1.3.7.5c0ca473 已部署到 198 生产环境](https://github.com/topiceyes/seafile-custom/releases/tag/1.3.7.5c0ca473)。完整备份、镜像校验、独立迁移和正式 HTTPS 登录链路检查通过。iPhone 钉钉授权及返回 Seafile App 仍待真机验收。下文前半部分保留分阶段实施记录，以末尾生产结果为准。
 
 ## 已取得的真机证据
 
@@ -103,3 +103,21 @@ iPhone 反馈中转页 403。日志明确记录落地 POST 因 Origin 为 null �
 ## 1.3.7 生产升级准备
 
 用户已明确授权升级 198。补丁 0017 修复中转页 Referrer-Policy 导致 WebKit POST Origin:null 的问题，保留 CSRF 校验；25 项中转及客户端回归测试通过。计划先发布 1.3.7 并验证镜像冒烟，再由现有运维工具保存三库、配置及文件数据备份，按不可变镜像 tag 和已发布 digest 升级应用容器，保持数据库、Redis 与每日备份挂载。正式域名的真实钉钉授权及客户端确认由用户验收。
+
+
+## 1.3.7 生产升级结果（2026-11-06 21:14 CST）
+
+用户明确授权“上生产吧”后，198 通过现有 seafile-project-ops 完成升级：
+
+- 版本：`ghcr.io/topiceyes/seafile-mc:1.3.7.5c0ca473`；发布提交 `e71088ec6124e49f8985cb39ceb885bc8db8a664`，源码提交 `db530b790a43b1f9cca3a07afd474d4e9de3c6f1`，补丁 0017。
+- [CI 42216108812](https://github.com/topiceyes/seafile-custom/actions/runs/42216108812) 构建与整镜像冒烟成功；运行镜像与发布 digest `sha256:84e0cff75188cb4ed85489dc3befb31054c24751fe913cf1a02effa5e7f3cf2a` 一致。
+- 升级前备份：`/var/lib/seafile-project-ops/backup-20261106-202455`，含三库 SQL、部署配置和完整文件数据；gzip 测试及 SHA256 校验均通过。该路径在 /home 所在数据盘，旧版本镜像及回退状态已保存。
+- 应用容器已重建并返回登录页 200。MariaDB、Redis 的启动时间未变，`/shared` 与 `/shared/backup` 仍为原数据及每日备份挂载；每日备份状态检查通过。
+- 启动日志确认仅执行独立钉钉中转迁移；数据库 `dingtalk.0001_client_sso_handoff` 已应用，新表存在。没有执行 `migrate base`。
+- Django 检查通过；部门 196、空间 195（全部 active）、应有授权 200、已应用授权 200、授权错误 0，与升级前一致。
+- React 主页真实模板可渲染，全部 Webpack 入口可解析；正式域名引用的静态资源严格 HTTPS 检查通过。
+- `https://m-disc.moresec.cn` 与 `https://i-disc.moresec.cn:7443` 均通过真实匿名客户端 SSO 创建、登录入口、中转 CSRF POST、落地单次领取和正确域名 OAuth 回调跳转检查；同源 Referrer-Policy 正确，请求仍为 waiting，未签发用户 API token。
+
+下一步真机验收：从 iPhone Seafile App 使用证书有效的正式域名重新发起 SSO，点击钉钉入口，完成钉钉授权并在客户端确认页确认，再切回 Seafile App。不要复用本地 IP 或旧登录页。服务端检查不替代此项真机结果。
+
+回退入口（198 root）：`SSH_ORIGINAL_COMMAND=rollback /usr/local/sbin/seafile-project-ops`。当前保存的旧镜像为 1.3.5.70c7f317（配置 ID `sha256:d4a66d298906f15faff607d62c7b2d87a41d96da132af17becd02fc0d9f10804`）；回退只切换应用，保留新增中转表及业务数据。
