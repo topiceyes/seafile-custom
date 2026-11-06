@@ -1,0 +1,66 @@
+From db530b790a43b1f9cca3a07afd474d4e9de3c6f1 Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
+Date: Fri, 6 Nov 2026 19:59:17 +0800
+Subject: [PATCH 17/17] fix: preserve same-origin CSRF headers in DingTalk
+ handoff
+
+---
+ seahub/templates/client_dingtalk_landing.html |  2 +-
+ seahub/views/sso.py                           |  4 +++-
+ tests/seahub/views/test_dingtalk_handoff.py   | 11 ++++++++++-
+ 3 files changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/seahub/templates/client_dingtalk_landing.html b/seahub/templates/client_dingtalk_landing.html
+index ad0829ba..3c704f29 100644
+--- a/seahub/templates/client_dingtalk_landing.html
++++ b/seahub/templates/client_dingtalk_landing.html
+@@ -4,7 +4,7 @@
+ <head>
+   <meta charset="utf-8" />
+   <meta name="viewport" content="width=device-width, initial-scale=1" />
+-  <meta name="referrer" content="no-referrer" />
++  <meta name="referrer" content="same-origin" />
+   <title>{% trans "DingTalk Login" %}</title>
+   <style>body{font:17px -apple-system,sans-serif;line-height:1.6;max-width:32rem;margin:3rem auto;padding:0 1rem}button{font:inherit;padding:.6rem 1rem}</style>
+ </head>
+diff --git a/seahub/views/sso.py b/seahub/views/sso.py
+index ed4bbfc7..971ece7b 100644
+--- a/seahub/views/sso.py
++++ b/seahub/views/sso.py
+@@ -253,7 +253,9 @@ def client_sso(request, token):
+ 
+ def _private_handoff_response(response):
+     patch_cache_control(response, no_store=True, private=True)
+-    response['Referrer-Policy'] = 'no-referrer'
++    # Keep same-origin POST Origin/Referer for CSRF. no-referrer makes
++    # WebKit serialize Origin as null for the automatic landing form.
++    response['Referrer-Policy'] = 'same-origin'
+     response['X-Robots-Tag'] = 'noindex, nofollow'
+     return response
+ 
+diff --git a/tests/seahub/views/test_dingtalk_handoff.py b/tests/seahub/views/test_dingtalk_handoff.py
+index f17f8a8c..879c2077 100644
+--- a/tests/seahub/views/test_dingtalk_handoff.py
++++ b/tests/seahub/views/test_dingtalk_handoff.py
+@@ -180,7 +180,9 @@ class DingTalkHandoffTest(SimpleTestCase):
+         self.assertIn('history.replaceState', html)
+         self.assertNotIn('src=', html)  # No third-party resources see the fragment.
+         self.assertIn('no-store', response['Cache-Control'])
+-        self.assertEqual(response['Referrer-Policy'], 'no-referrer')
++        self.assertEqual(response['Referrer-Policy'], 'same-origin')
++        self.assertIn('name="referrer" content="same-origin"', html)
++        self.assertNotIn('content="no-referrer"', html)
+ 
+     def test_disabled_login_blocks_both_endpoints(self):
+         secret = self.secret(self.prepare())
+@@ -243,3 +245,10 @@ class DingTalkHandoffTest(SimpleTestCase):
+             self.assertEqual(len(save.call_args.args[2]), 36)
+         self.token.refresh_from_db()
+         self.assertEqual(self.token.api_key, 'ios-test-key')
++
++    def test_null_origin_is_still_rejected_with_valid_csrf_token(self):
++        secret = self.secret(self.prepare())
++        req = self.request('post', '/client-sso-dingtalk/landing/', {'handoff': secret})
++        req.META['HTTP_ORIGIN'] = 'null'
++        self.assertEqual(client_sso_dingtalk_landing(req).status_code, 403)
++        self.assertEqual(self.consume(secret)[1].status_code, 302)

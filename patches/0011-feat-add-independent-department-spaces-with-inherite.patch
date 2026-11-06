@@ -1,7 +1,7 @@
 From abbfccfd913b6378f06f6c9101f5a24639bd1e5d Mon Sep 17 00:00:00 2001
 From: topiceyes <273286342+topiceyes@users.noreply.github.com>
 Date: Wed, 4 Nov 2026 18:05:41 +0800
-Subject: [PATCH 11/16] feat: add independent department spaces with inherited
+Subject: [PATCH 11/17] feat: add independent department spaces with inherited
  supervisor management
 
 ---

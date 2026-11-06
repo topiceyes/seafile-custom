@@ -63,3 +63,43 @@
 - 镜像：`ghcr.io/topiceyes/seafile-mc:1.3.6.a7ce5f47`，与 `latest` 的 digest 相同：`sha256:8e47b841ff42b9a9ef03906ca11af9ea85e16cd74ea848746de55f6cea5a7362`。
 - Release 的 compose、初始化脚本、环境模板三个资产齐全；说明已包含新增迁移及尚未完成的真机验收。
 - 尚未部署：下一步在测试环境加载此镜像、执行独立迁移，并由用户验证 iPhone 全链路。生产服务器本次没有执行 pull/up 或重启。
+
+## 本地部署及 500 恢复（2026-11-06）
+
+用户访问 `https://10.10.2.44` 反馈 500。检查确认旧 Web 进程处理 `/` 和 `/accounts/login/` 返回 500，而同容器中新进程加载当前源码时分别返回 302、200。已在本地开发环境执行以下操作，198 生产环境未修改：
+
+- 三库迁移前快照：`/private/tmp/seafile-local-before-1.3.6-20261106-193100`，gzip 解压及 SHA256 已校验；首轮导出实际为未压缩 SQL，已保留原始 SQL 并生成正确的 gzip。
+- 独立迁移 `dingtalk.0001_client_sso_handoff` 成功，系统检查通过。另保存三库与配置快照：`/private/tmp/seafile-local-before-1.3.6-20261106-193118`（迁移后），gzip 与配置归档已校验。快照仅供本地操作回退，位于临时目录，不作为长期备份。
+- 加载已发布源码及中文文案。Web 重启时发现原文件服务监控进程已经退出；文件服务本身仍在，恢复标准监控脚本后成功启动 Web，未重建数据库或 Redis。
+- 实际本地 HTTPS 登录页返回 200；携带局域网 Host 的 `/`、`/accounts/login/` 均返回 200；文件服务 RPC 正常。
+- 真实 HTTPS 匿名探测通过客户端 SSO、中转 POST/CSRF、落地领取和 OAuth 跳转；未访问外部钉钉授权页，客户端仍为 waiting、没有签发客户端 token。
+
+本地以源码挂载方式加载本版功能，容器基础镜像仍为官方 14.0.9，未替换成已发布 amd64 镜像。局域网入口为 `https://10.10.2.44`；现有开发证书 SAN 仅含 127.0.0.1、localhost、seafile-dev.test，尚不包含该局域网 IP。钉钉回调对本地 IP 的允许情况及真机完整登录仍需用户验证。
+
+## 本地真机反馈：CSRF 403（2026-11-06）
+
+iPhone 反馈中转页 403。日志明确记录落地 POST 因 Origin 为 null 被拒绝。通过无凭据的真实 WebKit 浏览器自动表单验证：`no-referrer` 会使自动 POST 带 Origin:null，`same-origin` 则保留正确的同源 Origin/Referer。
+
+本地修正落地页 meta 和中转响应 Referrer-Policy 为 same-origin；凭据仍在 fragment 中，落地后立即移除，不加载外部资源，跨域请求不发送 Referer。没有信任 null 来源或关闭 CSRF。补充有效 CSRF token 配合 null 来源仍拒绝的测试，共 25 项通过。修正已加载到本地 Web 服务；正式 1.3.6 镜像尚未包含此后续补丁。
+
+用户应从 Seafile App 重新发起 SSO，不能续用去掉 fragment 后的旧错误页。真机下一轮结果待确认。
+
+## 本地登录后首页 500（2026-11-06）
+
+用户反馈 Page unavailable。日志显示桌面浏览器完成 OAuth 回调后跳转首页，首页因 `Missing staticfiles manifest entry for frontend/static/js/runtime.10358ed3.js` 返回 500。此前匿名登录页 200 的检查没有覆盖已登录的 React 主页；本地 Webpack 索引引用的 runtime 与已有 bundle/collectstatic 清单不匹配。
+
+已备份容器旧 build 和 webpack-stats 到 `/tmp/frontend-before-136-recovery`，从已有本地发布镜像 `seafile-mc-devbuild:1.3.5.70c7f317` 同时恢复配套 build 和 webpack-stats。已核验此镜像对应源码至当前 HEAD 的 frontend 目录无差异，本次登录改动只涉及服务端及 Django 模板。分别编译中英文 JavaScript 语言包并重新 collectstatic，重启 Web 清理旧索引缓存。
+
+真实 React 主页模板渲染成功；47 个 Webpack 入口全部可解析；主页引用的 6 个 HTTPS 静态资源返回 200。Django 系统检查及匿名真实 HTTPS 中转链路通过。此为本地静态部署修复，不涉及生产环境，也不代表已完成 iPhone 客户端登录验收。
+
+## 本地入口被钉钉拦截（2026-11-06）
+
+用户明确说明：已唤起钉钉，但页面加载失败，刷新后提示网站存在风险；点击“使用系统浏览器打开”后进入钉钉网页登录页。由此确认该轮测试没有在钉钉端内继续授权，而是转回系统浏览器，不能据此认定钉钉端内 OAuth 不支持当前身份。
+
+核对本地证书：自签发，CN=127.0.0.1，SAN 只有 127.0.0.1、localhost、seafile-dev.test，不含实际访问的 10.10.2.44。这是无效的 HTTPS 测试入口；修改 Cookie、关闭 CSRF 或仅给证书增加 IP 均不能替代有效信任链。
+
+现有 m-disc.moresec.cn 和 i-disc.moresec.cn:7443 的登录页均通过严格 HTTPS 校验（ssl_verify_result=0）并返回 200。下一轮应使用具有有效证书和已登记 OAuth 回调的域名：升级 198 后使用现有正式域名，或为隔离测试环境准备独立域名、有效证书及 OAuth 回调。选择生产环境将涉及应用重建，不能把本地测试部署等同于生产升级。目前生产未升级，CSRF 修复尚未发布。
+
+## 1.3.7 生产升级准备
+
+用户已明确授权升级 198。补丁 0017 修复中转页 Referrer-Policy 导致 WebKit POST Origin:null 的问题，保留 CSRF 校验；25 项中转及客户端回归测试通过。计划先发布 1.3.7 并验证镜像冒烟，再由现有运维工具保存三库、配置及文件数据备份，按不可变镜像 tag 和已发布 digest 升级应用容器，保持数据库、Redis 与每日备份挂载。正式域名的真实钉钉授权及客户端确认由用户验收。

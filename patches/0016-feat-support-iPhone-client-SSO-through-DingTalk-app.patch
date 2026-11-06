@@ -1,7 +1,7 @@
 From 686aad5bfb079f11cd15ad61b7f2801716bb2596 Mon Sep 17 00:00:00 2001
 From: topiceyes <273286342+topiceyes@users.noreply.github.com>
 Date: Fri, 6 Nov 2026 19:02:19 +0800
-Subject: [PATCH 16/16] feat: support iPhone client SSO through DingTalk app
+Subject: [PATCH 16/17] feat: support iPhone client SSO through DingTalk app
 
 ---
  locale/zh_CN/LC_MESSAGES/django.po            |  56 ++++
