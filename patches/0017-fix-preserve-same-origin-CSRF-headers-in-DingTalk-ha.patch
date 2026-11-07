@@ -1,7 +1,7 @@
 From db530b790a43b1f9cca3a07afd474d4e9de3c6f1 Mon Sep 17 00:00:00 2001
 From: topiceyes <273286342+topiceyes@users.noreply.github.com>
 Date: Fri, 6 Nov 2026 19:59:17 +0800
-Subject: [PATCH 17/17] fix: preserve same-origin CSRF headers in DingTalk
+Subject: [PATCH 17/18] fix: preserve same-origin CSRF headers in DingTalk
  handoff
 
 ---

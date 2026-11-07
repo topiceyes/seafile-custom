@@ -1,0 +1,425 @@
+From c73c37bd62bf4f797aeec8740662db847e309821 Mon Sep 17 00:00:00 2001
+From: topiceyes <273286342+topiceyes@users.noreply.github.com>
+Date: Sat, 7 Nov 2026 10:05:58 +0800
+Subject: [PATCH 18/18] feat: expose department sharing in mobile web
+ navigation
+
+---
+ frontend/src/pages/app/index.js               |  9 +++
+ .../main-panel/department-spaces/index.css    | 27 +++++++++
+ .../app/main-panel/department-spaces/index.js | 46 ++++++++-------
+ .../src/pages/app/mobile-file-nav/index.css   | 46 +++++++++++++++
+ .../src/pages/app/mobile-file-nav/index.js    | 53 +++++++++++++++++
+ .../pages/app/mobile-file-nav/index.test.js   | 57 +++++++++++++++++++
+ frontend/src/pages/app/side-panel/index.js    |  5 +-
+ .../src/pages/app/side-panel/main-side-nav.js |  6 +-
+ locale/en/LC_MESSAGES/djangojs.po             |  4 ++
+ locale/zh_CN/LC_MESSAGES/djangojs.po          |  4 ++
+ 10 files changed, 233 insertions(+), 24 deletions(-)
+ create mode 100644 frontend/src/pages/app/main-panel/department-spaces/index.css
+ create mode 100644 frontend/src/pages/app/mobile-file-nav/index.css
+ create mode 100644 frontend/src/pages/app/mobile-file-nav/index.js
+ create mode 100644 frontend/src/pages/app/mobile-file-nav/index.test.js
+
+diff --git a/frontend/src/pages/app/index.js b/frontend/src/pages/app/index.js
+index 354a28fa..94d5c0f5 100644
+--- a/frontend/src/pages/app/index.js
++++ b/frontend/src/pages/app/index.js
+@@ -14,6 +14,7 @@ import { siteRoot, siteTitle, mediaUrl, faviconPath } from '@/utils/constants';
+ import { Utils, isMobile } from '@/utils/utils';
+ import Header from './header';
+ import MainPanelRouter from './main-panel';
++import MobileFileNav from './mobile-file-nav';
+ import SidePanel from './side-panel';
+ import SystemNotification from './system-notification';
+ import SystemUserNotification from './system-user-notification';
+@@ -283,6 +284,14 @@ class App extends Component {
+           isSidePanelFolded={isSidePanelFolded}
+           searchType={searchType}
+         />
++        <MediaQuery query="(max-width: 767.8px)">
++          <MobileFileNav
++            currentTab={currentTab}
++            onTabClick={this.tabItemClick}
++            onShowSidePanel={this.onShowSidePanel}
++            isSidePanelClosed={isSidePanelClosed}
++          />
++        </MediaQuery>
+         <div
+           id="main"
+           className="user-panel"
+diff --git a/frontend/src/pages/app/main-panel/department-spaces/index.css b/frontend/src/pages/app/main-panel/department-spaces/index.css
+new file mode 100644
+index 00000000..8671fe90
+--- /dev/null
++++ b/frontend/src/pages/app/main-panel/department-spaces/index.css
+@@ -0,0 +1,27 @@
++.department-spaces {
++  min-width: 0;
++}
++
++.department-spaces__content {
++  padding: 1.5rem;
++}
++
++.department-spaces__table {
++  max-width: 100%;
++  overflow-x: auto;
++}
++
++@media (max-width: 767.8px) {
++  .department-spaces__content {
++    padding: 1rem;
++    overflow-wrap: anywhere;
++  }
++
++  .department-spaces__role-column {
++    width: 5.5rem;
++  }
++
++  .department-spaces__status-column {
++    width: 6rem;
++  }
++}
+diff --git a/frontend/src/pages/app/main-panel/department-spaces/index.js b/frontend/src/pages/app/main-panel/department-spaces/index.js
+index 6147a21b..83fc71c5 100644
+--- a/frontend/src/pages/app/main-panel/department-spaces/index.js
++++ b/frontend/src/pages/app/main-panel/department-spaces/index.js
+@@ -5,6 +5,7 @@ import { seafileAPI } from '@/api/seafile-api';
+ import Loading from '@/components/loading';
+ import { gettext, siteRoot } from '@/utils/constants';
+ import { Utils } from '@/utils/utils';
++import './index.css';
+ 
+ function DepartmentSpaces({ spaceID }) {
+   const [loading, setLoading] = useState(true);
+@@ -90,13 +91,13 @@ function DepartmentSpaces({ spaceID }) {
+   };
+ 
+   return (
+-    <div className="main-panel-center flex-row">
++    <div className="main-panel-center flex-row department-spaces">
+       <div className="cur-view-container">
+         <div className="cur-view-path">
+           <Link to={`${siteRoot}department-spaces/`}>{gettext('Department sharing')}</Link>
+           {detail && <span> / {detail.name}</span>}
+         </div>
+-        <div className="cur-view-content p-4">
++        <div className="cur-view-content department-spaces__content">
+           {error && <div className="alert alert-danger" role="alert">{error}</div>}
+           {loading ? <Loading /> : (
+             <>
+@@ -108,17 +109,20 @@ function DepartmentSpaces({ spaceID }) {
+                     <input className="form-control mt-2" value={query} onChange={e => setQuery(e.target.value)} placeholder={gettext('Enter a department name')} />
+                   </label>
+                   {spaces.length === 0 && <p className="text-muted mt-4">{gettext('No department spaces are available yet. They appear automatically after provisioning.')}</p>}
+-                  <table className="table mt-3">
+-                    <thead><tr><th>{gettext('Department')}</th><th>{gettext('My role')}</th><th>{gettext('Status')}</th></tr></thead>
+-                    <tbody>{spaces.filter(s => parentName(s).includes(query)).map(space => (
+-                      <tr key={space.id}>
+-                        <td><Link to={`${siteRoot}department-spaces/${space.id}/`}>{parentName(space)}</Link></td>
+-                        <td>{space.role === 'manager' ? gettext('Manager') : space.role === 'member' ? gettext('Member') : gettext('System administrator')}</td>
+-                        <td>{space.state === 'archived' ? gettext('Archived') : space.error ? gettext('Synchronization needs attention') : space.access_ready ? gettext('Ready') : gettext('Access pending')}</td>
+-                      </tr>
+-                    ))}
+-                    </tbody>
+-                  </table>
++                  <div className="department-spaces__table">
++                    <table className="table mt-3">
++                      <colgroup><col /><col className="department-spaces__role-column" /><col className="department-spaces__status-column" /></colgroup>
++                      <thead><tr><th>{gettext('Department')}</th><th>{gettext('My role')}</th><th>{gettext('Status')}</th></tr></thead>
++                      <tbody>{spaces.filter(s => parentName(s).includes(query)).map(space => (
++                        <tr key={space.id}>
++                          <td><Link to={`${siteRoot}department-spaces/${space.id}/`}>{parentName(space)}</Link></td>
++                          <td>{space.role === 'manager' ? gettext('Manager') : space.role === 'member' ? gettext('Department member') : gettext('System administrator')}</td>
++                          <td>{space.state === 'archived' ? gettext('Archived') : space.error ? gettext('Synchronization needs attention') : space.access_ready ? gettext('Ready') : gettext('Access pending')}</td>
++                        </tr>
++                      ))}
++                      </tbody>
++                    </table>
++                  </div>
+                 </>
+               )}
+               {detail && (
+@@ -155,13 +159,15 @@ function DepartmentSpaces({ spaceID }) {
+                   )}
+                   {trash && (
+                     <>
+-                      <table className="table mt-4">
+-                        <thead><tr><th>{gettext('Deleted item')}</th><th>{gettext('Action')}</th></tr></thead>
+-                        <tbody>{trash.items.map((item, index) => (
+-                          <tr key={index}><td>{item.path}</td><td><button type="button" className="btn btn-secondary btn-sm" disabled={saving} onClick={() => restore(item)}>{gettext('Restore')}</button></td></tr>
+-                        ))}
+-                        </tbody>
+-                      </table>
++                      <div className="department-spaces__table">
++                        <table className="table mt-4">
++                          <thead><tr><th>{gettext('Deleted item')}</th><th>{gettext('Action')}</th></tr></thead>
++                          <tbody>{trash.items.map((item, index) => (
++                            <tr key={index}><td>{item.path}</td><td><button type="button" className="btn btn-secondary btn-sm" disabled={saving} onClick={() => restore(item)}>{gettext('Restore')}</button></td></tr>
++                          ))}
++                          </tbody>
++                        </table>
++                      </div>
+                       {trash.next_scan_stat && <button type="button" className="btn btn-secondary" onClick={() => loadTrash(true)}>{gettext('Load more')}</button>}
+                     </>
+                   )}
+diff --git a/frontend/src/pages/app/mobile-file-nav/index.css b/frontend/src/pages/app/mobile-file-nav/index.css
+new file mode 100644
+index 00000000..50f9a8c4
+--- /dev/null
++++ b/frontend/src/pages/app/mobile-file-nav/index.css
+@@ -0,0 +1,46 @@
++.mobile-file-nav {
++  display: flex;
++  flex-shrink: 0;
++  gap: .25rem;
++  padding: .25rem .5rem;
++  overflow-x: auto;
++  background: var(--bs-body-bg);
++  border-bottom: 1px solid var(--bs-border-secondary-color);
++}
++
++.mobile-file-nav__link,
++.mobile-file-nav__more {
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++  flex-shrink: 0;
++  min-height: 44px;
++  padding: .5rem;
++  color: var(--bs-body-color);
++  white-space: nowrap;
++  font-size: .875rem;
++  background: transparent;
++  border: 0;
++  border-bottom: 2px solid transparent;
++}
++
++.mobile-file-nav__more {
++  margin-left: auto;
++}
++
++.mobile-file-nav__link.is-active {
++  font-weight: 600;
++  border-bottom-color: currentColor;
++}
++
++.mobile-file-nav__link:hover,
++.mobile-file-nav__more:hover {
++  color: var(--bs-body-color);
++  text-decoration: underline;
++}
++
++.mobile-file-nav__link:focus-visible,
++.mobile-file-nav__more:focus-visible {
++  outline: 2px solid currentColor;
++  outline-offset: -2px;
++}
+diff --git a/frontend/src/pages/app/mobile-file-nav/index.js b/frontend/src/pages/app/mobile-file-nav/index.js
+new file mode 100644
+index 00000000..cbbb36fe
+--- /dev/null
++++ b/frontend/src/pages/app/mobile-file-nav/index.js
+@@ -0,0 +1,53 @@
++import React from 'react';
++import { Link } from '@gatsbyjs/reach-router';
++import PropTypes from 'prop-types';
++import { canAddRepo, gettext, siteRoot } from '@/utils/constants';
++import './index.css';
++
++function MobileFileNav({ currentTab, onTabClick, onShowSidePanel, isSidePanelClosed }) {
++  const items = [
++    ...(canAddRepo ? [{ tab: 'my-libs', label: gettext('My Libraries') }] : []),
++    { tab: 'department-spaces', label: gettext('Department sharing') },
++    { tab: 'shared-libs', label: gettext('Shared with me') },
++  ];
++
++  const navigate = (event, tab) => {
++    if (window.uploader && window.uploader.isUploadProgressDialogShow && window.uploader.totalProgress !== 100) {
++      if (!window.confirm(gettext('A file is being uploaded. Are you sure you want to leave this page?'))) {
++        event.preventDefault();
++        return;
++      }
++      window.uploader.isUploadProgressDialogShow = false;
++    }
++    onTabClick(tab);
++  };
++
++  return (
++    <nav className="mobile-file-nav" aria-label={gettext('Libraries')}>
++      {items.map(({ tab, label }) => {
++        const active = currentTab === tab || (tab === 'my-libs' && currentTab === 'deleted');
++        return (
++          <Link key={tab} to={`${siteRoot}${tab}/`}
++            className={`mobile-file-nav__link${active ? ' is-active' : ''}`}
++            aria-current={active ? 'page' : undefined}
++            onClick={event => navigate(event, tab)}>
++            {label}
++          </Link>
++        );
++      })}
++      <button type="button" className="mobile-file-nav__more" onClick={onShowSidePanel}
++        aria-expanded={!isSidePanelClosed} aria-controls="app-side-panel">
++        {gettext('More')}
++      </button>
++    </nav>
++  );
++}
++
++MobileFileNav.propTypes = {
++  currentTab: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
++  onTabClick: PropTypes.func.isRequired,
++  onShowSidePanel: PropTypes.func.isRequired,
++  isSidePanelClosed: PropTypes.bool.isRequired,
++};
++
++export default MobileFileNav;
+diff --git a/frontend/src/pages/app/mobile-file-nav/index.test.js b/frontend/src/pages/app/mobile-file-nav/index.test.js
+new file mode 100644
+index 00000000..c7606f35
+--- /dev/null
++++ b/frontend/src/pages/app/mobile-file-nav/index.test.js
+@@ -0,0 +1,57 @@
++import React, { act } from 'react';
++import { createRoot } from 'react-dom/client';
++import MobileFileNav from './index';
++
++let mockCanAddRepo = true;
++jest.mock('@/utils/constants', () => ({ get canAddRepo() { return mockCanAddRepo; }, siteRoot: '/drive/', gettext: text => text }));
++jest.mock('@gatsbyjs/reach-router', () => ({
++  Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
++}));
++
++let container;
++let root;
++let props;
++beforeEach(() => {
++  global.IS_REACT_ACT_ENVIRONMENT = true;
++  mockCanAddRepo = true;
++  container = document.createElement('div');
++  document.body.appendChild(container);
++  root = createRoot(container);
++  props = { currentTab: 'department-spaces', onTabClick: jest.fn(), onShowSidePanel: jest.fn(), isSidePanelClosed: true };
++});
++afterEach(() => {
++  act(() => root.unmount());
++  container.remove();
++  delete window.uploader;
++  jest.restoreAllMocks();
++});
++
++it('keeps department sharing separate, with the same routes and active state', () => {
++  act(() => root.render(<MobileFileNav {...props} />));
++  expect([...container.querySelectorAll('a')].map(link => link.getAttribute('href'))).toEqual([
++    '/drive/my-libs/', '/drive/department-spaces/', '/drive/shared-libs/'
++  ]);
++  expect(container.querySelector('[aria-current="page"]').textContent).toBe('Department sharing');
++});
++
++it('respects the personal-library capability and exposes the full navigation', () => {
++  mockCanAddRepo = false;
++  act(() => root.render(<MobileFileNav {...props} />));
++  expect(container.querySelector('a[href="/drive/my-libs/"]')).toBeNull();
++  const more = container.querySelector('button');
++  act(() => more.click());
++  expect(props.onShowSidePanel).toHaveBeenCalledTimes(1);
++  expect(more.getAttribute('aria-controls')).toBe('app-side-panel');
++  expect(more.getAttribute('aria-expanded')).toBe('false');
++});
++
++it('cancels navigation if an unfinished upload should stay on the page', () => {
++  window.uploader = { isUploadProgressDialogShow: true, totalProgress: 30 };
++  jest.spyOn(window, 'confirm').mockReturnValue(false);
++  act(() => root.render(<MobileFileNav {...props} />));
++  const event = new MouseEvent('click', { bubbles: true, cancelable: true });
++  act(() => container.querySelector('a').dispatchEvent(event));
++  expect(event.defaultPrevented).toBe(true);
++  expect(props.onTabClick).not.toHaveBeenCalled();
++  expect(window.uploader.isUploadProgressDialogShow).toBe(true);
++});
+diff --git a/frontend/src/pages/app/side-panel/index.js b/frontend/src/pages/app/side-panel/index.js
+index 7ff623bb..ca5c85ad 100644
+--- a/frontend/src/pages/app/side-panel/index.js
++++ b/frontend/src/pages/app/side-panel/index.js
+@@ -4,6 +4,7 @@ import classnames from 'classnames';
+ import PropTypes from 'prop-types';
+ import Logo from '@/components/logo';
+ import { SIDE_PANEL_FOLDED_WIDTH } from '@/constants';
++import { Utils } from '@/utils/utils';
+ import MainSideNav from './main-side-nav';
+ import MainSideNavFolded from './main-side-nav-folded';
+ 
+@@ -22,9 +23,11 @@ const propTypes = {
+ class SidePanel extends React.Component {
+ 
+   render() {
+-    const { children, isSidePanelFolded, style, eventBus, isSidePanelClosed } = this.props;
++    const { children, style, eventBus, isSidePanelClosed } = this.props;
++    const isSidePanelFolded = Utils.isDesktop() && this.props.isSidePanelFolded;
+     return (
+       <div
++        id="app-side-panel"
+         className={classnames('side-panel', { 'side-panel-folded': isSidePanelFolded, 'left-zero': !isSidePanelClosed })}
+         style={isSidePanelFolded ? { flexBasis: SIDE_PANEL_FOLDED_WIDTH } : style}
+       >
+diff --git a/frontend/src/pages/app/side-panel/main-side-nav.js b/frontend/src/pages/app/side-panel/main-side-nav.js
+index 0b0a673d..bbe587bd 100644
+--- a/frontend/src/pages/app/side-panel/main-side-nav.js
++++ b/frontend/src/pages/app/side-panel/main-side-nav.js
+@@ -40,7 +40,7 @@ class MainSideNav extends React.Component {
+     super(props);
+ 
+     this.state = {
+-      filesNavUnfolded: localStorage.getItem(SIDE_NAV_FILES_UNFOLDED_KEY) === 'true',
++      filesNavUnfolded: !Utils.isDesktop() || localStorage.getItem(SIDE_NAV_FILES_UNFOLDED_KEY) === 'true',
+       isAboutDialogShow: false,
+       sharedExtended: localStorage.getItem(SIDE_NAV_SHARE_ADMIN_UNFOLDED_KEY) === 'true',
+       groupItems: [],
+@@ -360,14 +360,14 @@ class MainSideNav extends React.Component {
+     const visibleGroupItems = onlyShowGroupsWithLibraries ? groupItems.filter(group => group.repos.length > 0) : groupItems;
+     const showSharedLibraries = !onlyShowGroupsWithLibraries || hasSharedLibraries;
+     const showPublicLibraries = !onlyShowGroupsWithLibraries || hasPublicLibraries;
+-    const filesNavHeight = (visibleGroupItems.length + (canAddGroup ? 1 : 0) + (canAddRepo ? 1 : 0) + (canViewOrg && showPublicLibraries ? 1 : 0) + (enableOCM ? 1 : 0) + (enableOCMViaWebdav ? 1 : 0) + (showSharedLibraries ? 1 : 0)) * SUB_NAV_ITEM_HEIGHT;
++    const filesNavHeight = (1 + visibleGroupItems.length + (canAddGroup ? 1 : 0) + (canAddRepo ? 1 : 0) + (canViewOrg && showPublicLibraries ? 1 : 0) + (enableOCM ? 1 : 0) + (enableOCMViaWebdav ? 1 : 0) + (showSharedLibraries ? 1 : 0)) * SUB_NAV_ITEM_HEIGHT;
+     return (
+       <Fragment>
+         <div className="side-nav">
+           {/* Make sure scrollbar is hidden by default in the UI. */}
+           <div
+             className="side-nav-con d-flex flex-column"
+-            style={{ overflowY: this.state.isSideNavHovered ? 'auto' : 'hidden' }}
++            style={{ overflowY: !Utils.isDesktop() || this.state.isSideNavHovered ? 'auto' : 'hidden' }}
+             onMouseEnter={this.onSideNavMouseEnter}
+             onMouseLeave={this.onSideNavMouseLeave}
+           >
+diff --git a/locale/en/LC_MESSAGES/djangojs.po b/locale/en/LC_MESSAGES/djangojs.po
+index 102c5d22..3e63a02e 100644
+--- a/locale/en/LC_MESSAGES/djangojs.po
++++ b/locale/en/LC_MESSAGES/djangojs.po
+@@ -13570,6 +13570,10 @@ msgstr "Ancestor department manager"
+ msgid "Department manager"
+ msgstr "Department manager"
+ 
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Department member"
++msgstr "Department member"
++
+ #: frontend/src/pages/app/main-panel/department-spaces/index.js
+ msgid "System administrator"
+ msgstr "System administrator"
+diff --git a/locale/zh_CN/LC_MESSAGES/djangojs.po b/locale/zh_CN/LC_MESSAGES/djangojs.po
+index 76ae0654..4a29beb7 100644
+--- a/locale/zh_CN/LC_MESSAGES/djangojs.po
++++ b/locale/zh_CN/LC_MESSAGES/djangojs.po
+@@ -12682,6 +12682,10 @@ msgstr "上级主管"
+ msgid "Department manager"
+ msgstr "直属主管"
+ 
++#: frontend/src/pages/app/main-panel/department-spaces/index.js
++msgid "Department member"
++msgstr "部门成员"
++
+ #: frontend/src/pages/app/main-panel/department-spaces/index.js
+ msgid "System administrator"
+ msgstr "系统管理员"
